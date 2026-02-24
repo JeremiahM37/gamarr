@@ -34,3 +34,12 @@ def has_qbittorrent():
 
 def has_clamav():
     return bool(DOCKER_SOCKET and os.path.exists(DOCKER_SOCKET))
+
+# ── AI Monitor ─────────────────────────────────────────────────────────────────
+AI_MONITOR_ENABLED = os.getenv("AI_MONITOR_ENABLED", "false").lower() in ("true", "1", "yes")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "ollama")      # ollama | openai | anthropic
+AI_API_URL = os.getenv("AI_API_URL", "http://localhost:11434/v1")
+AI_API_KEY = os.getenv("AI_API_KEY", "")
+AI_MODEL = os.getenv("AI_MODEL", "llama3.2")
+AI_MONITOR_INTERVAL = int(os.getenv("AI_MONITOR_INTERVAL", "300"))
+AI_AUTO_FIX = os.getenv("AI_AUTO_FIX", "true").lower() in ("true", "1", "yes")

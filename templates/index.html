@@ -127,6 +127,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   <button class="tab-btn" onclick="switchTab('downloads')" id="downloads-tab-btn">Downloads <span class="badge" id="dl-badge">0</span></button>
   <button class="tab-btn" onclick="switchTab('library')">Library</button>
   <button class="tab-btn" onclick="switchTab('sources')">Sources</button>
+  <button class="tab-btn" onclick="switchTab('monitor')">Monitor</button>
 </div>
 
 <div class="content">
@@ -181,6 +182,40 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 
 <div class="toast-container" id="toasts"></div>
 
+  <!-- Monitor Tab -->
+  <div class="tab-content" id="tab-monitor">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h3 style="margin:0;font-size:16px;color:#e1e4ed">AI Monitor</h3>
+      <button class="btn" id="analyze-now-btn" onclick="triggerAnalysis()">Analyze Now</button>
+    </div>
+
+    <div id="monitor-status-bar" style="display:flex;gap:14px;align-items:center;margin-bottom:16px;padding:10px 14px;background:#1e2130;border-radius:8px;border:1px solid #2d3148">
+      <span id="monitor-dot" style="width:10px;height:10px;border-radius:50%;background:#374151;flex-shrink:0"></span>
+      <span id="monitor-status-text" style="color:#9ca3af;font-size:13px">Loading...</span>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#6b7280;margin-bottom:8px">Diagnosis</div>
+      <div id="monitor-diagnosis" style="padding:12px 14px;background:#1e2130;border:1px solid #2d3148;border-radius:8px;font-size:13px;line-height:1.6;min-height:44px;white-space:pre-wrap;color:#e1e4ed">—</div>
+    </div>
+
+    <div id="monitor-pending-section" style="margin-bottom:16px;display:none">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#6b7280;margin-bottom:8px">Pending Approvals</div>
+      <div id="monitor-pending-list"></div>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#6b7280;margin-bottom:8px">Recent Events</div>
+      <div id="monitor-errors" style="background:#1e2130;border:1px solid #2d3148;border-radius:8px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:12px"></div>
+    </div>
+
+    <div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#6b7280;margin-bottom:8px">Action History</div>
+      <div id="monitor-history" style="background:#1e2130;border:1px solid #2d3148;border-radius:8px;max-height:180px;overflow-y:auto;font-size:12px"></div>
+    </div>
+  </div>
+
+
 <script>
 const HOST = location.hostname;
 let searchResults = [];
@@ -212,6 +247,7 @@ function switchTab(tab) {
     dlPollTimer = null;
   }
   if (tab === 'sources') loadSources();
+  if (tab === 'monitor') { loadMonitorStatus(); startMonitorPolling(); } else { stopMonitorPolling(); }
 }
 
 function startBgPoll() {
@@ -538,6 +574,118 @@ function esc(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+
+// ---- AI Monitor ----
+let _monitorTimer = null;
+
+function startMonitorPolling() {
+  if (_monitorTimer) return;
+  _monitorTimer = setInterval(loadMonitorStatus, 5000);
+}
+
+function stopMonitorPolling() {
+  if (_monitorTimer) { clearInterval(_monitorTimer); _monitorTimer = null; }
+}
+
+async function loadMonitorStatus() {
+  try {
+    const r = await fetch('/api/monitor/status');
+    const d = await r.json();
+    renderMonitorStatus(d);
+  } catch (e) {
+    document.getElementById('monitor-status-text').textContent = 'Error loading status';
+  }
+}
+
+async function triggerAnalysis() {
+  const btn = document.getElementById('analyze-now-btn');
+  btn.disabled = true;
+  btn.textContent = 'Analyzing…';
+  try {
+    const r = await fetch('/api/monitor/analyze', { method: 'POST' });
+    const d = await r.json();
+    renderMonitorStatus(d);
+  } catch (e) {}
+  btn.disabled = false;
+  btn.textContent = 'Analyze Now';
+}
+
+function renderMonitorStatus(d) {
+  const dot = document.getElementById('monitor-dot');
+  const statusText = document.getElementById('monitor-status-text');
+  if (d.enabled) {
+    dot.style.background = '#22c55e';
+    const last = d.last_checked ? timeSince(d.last_checked) + ' ago' : 'never';
+    statusText.textContent = 'Active  ·  ' + d.provider + ' (' + d.model + ')  ·  Last checked: ' + last;
+  } else {
+    dot.style.background = '#374151';
+    statusText.textContent = 'Disabled — set AI_MONITOR_ENABLED=true to enable';
+  }
+
+  document.getElementById('monitor-diagnosis').textContent = d.diagnosis || '—';
+
+  const pending = d.pending_actions || [];
+  const pSection = document.getElementById('monitor-pending-section');
+  const pList = document.getElementById('monitor-pending-list');
+  if (pending.length > 0) {
+    pSection.style.display = '';
+    pList.innerHTML = pending.map(a =>
+      '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:#1e2130;border:1px solid #2d3148;border-radius:8px;margin-bottom:6px">' +
+        '<span style="flex:1;font-size:13px;color:#e1e4ed">' + gesc(a.description) + '</span>' +
+        '<span style="font-size:11px;padding:2px 7px;border-radius:4px;background:' + (a.risk==='approval'?'rgba(239,68,68,.15)':'rgba(34,197,94,.15)') + ';color:' + (a.risk==='approval'?'#ef4444':'#22c55e') + '">' + a.risk + '</span>' +
+        '<button class="btn" style="padding:4px 12px;font-size:12px" onclick="approveAction('' + a.id + '')">Approve</button>' +
+        '<button class="btn" style="padding:4px 12px;font-size:12px;background:#2d3148" onclick="dismissAction('' + a.id + '')">Dismiss</button>' +
+      '</div>'
+    ).join('');
+  } else {
+    pSection.style.display = 'none';
+  }
+
+  const errors = d.recent_errors || [];
+  const errEl = document.getElementById('monitor-errors');
+  if (errors.length === 0) {
+    errEl.innerHTML = '<div style="padding:10px 14px;color:#6b7280">No recent warnings or errors.</div>';
+  } else {
+    errEl.innerHTML = [...errors].reverse().map(e => {
+      const col = e.level === 'ERROR' ? '#ef4444' : e.level === 'WARNING' ? '#f59e0b' : '#6b7280';
+      return '<div style="padding:5px 14px;border-bottom:1px solid #2d3148;line-height:1.4"><span style="color:#6b7280">[' + e.ts_str + ']</span> <span style="color:' + col + '">' + gesc(e.level) + '</span> <span style="color:#6b7280">' + gesc(e.logger) + '</span> ' + gesc(e.message) + '</div>';
+    }).join('');
+  }
+
+  const history = d.action_history || [];
+  const histEl = document.getElementById('monitor-history');
+  if (history.length === 0) {
+    histEl.innerHTML = '<div style="padding:10px 14px;color:#6b7280">No actions taken yet.</div>';
+  } else {
+    histEl.innerHTML = history.map(a => {
+      const result = a.result || '';
+      const col = result === 'dismissed' ? '#6b7280' : result.startsWith('Error') ? '#ef4444' : '#22c55e';
+      return '<div style="padding:7px 14px;border-bottom:1px solid #2d3148;line-height:1.4;color:#e1e4ed"><span style="color:' + col + '">●</span> <strong>' + gesc(a.action) + '</strong> — ' + gesc(result) + '</div>';
+    }).join('');
+  }
+}
+
+async function approveAction(id) {
+  await fetch('/api/monitor/actions/' + id + '/approve', { method: 'POST' });
+  loadMonitorStatus();
+}
+
+async function dismissAction(id) {
+  await fetch('/api/monitor/actions/' + id + '/dismiss', { method: 'POST' });
+  loadMonitorStatus();
+}
+
+function timeSince(ts) {
+  const sec = Math.round(Date.now() / 1000 - ts);
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.round(sec / 60) + 'm';
+  return Math.round(sec / 3600) + 'h';
+}
+
+function gesc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 </script>
 </body>
 </html>

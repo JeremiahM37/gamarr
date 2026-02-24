@@ -13,6 +13,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from flask import Flask, jsonify, request, send_file
 
 import config
+import monitor
 import sources
 from db import JobStore
 from platforms import (
@@ -33,6 +34,7 @@ logger = logging.getLogger("gamarr")
 # Declared at module level so all functions can reference it before __main__
 # creates the real instance.
 download_jobs: JobStore = None  # type: ignore[assignment]
+_monitor = None  # initialized in __main__
 
 
 # =============================================================================
@@ -1314,6 +1316,64 @@ def recover_orphaned_torrents():
 # =============================================================================
 # Main
 # =============================================================================
+
+# =============================================================================
+# Health endpoint
+# =============================================================================
+
+@app.route("/api/health")
+def api_health():
+    return jsonify({"status": "ok", "version": "1.0.0"})
+
+
+# =============================================================================
+# AI Monitor helpers
+# =============================================================================
+
+def _clear_myrient_cache():
+    """Clear the Myrient directory listing cache."""
+    from sources import myrient as _myrient_src
+    _myrient_src._dir_cache.clear()
+    _myrient_src._dir_cache_time.clear()
+    logger.info("Myrient directory cache cleared by AI monitor")
+
+
+# =============================================================================
+# AI Monitor API
+# =============================================================================
+
+@app.route("/api/monitor/status")
+def api_monitor_status():
+    if _monitor is None:
+        return jsonify({"enabled": False, "error": "Monitor not initialized"})
+    return jsonify(_monitor.get_status())
+
+
+@app.route("/api/monitor/analyze", methods=["POST"])
+def api_monitor_analyze():
+    if _monitor is None:
+        return jsonify({"success": False, "error": "Monitor not initialized"})
+    _monitor.trigger_manual()
+    import time as _time; _time.sleep(0.1)
+    return jsonify({"success": True, **_monitor.get_status()})
+
+
+@app.route("/api/monitor/actions/<action_id>/approve", methods=["POST"])
+def api_monitor_approve(action_id):
+    if _monitor is None:
+        return jsonify({"success": False, "error": "Monitor not initialized"})
+    success, message = _monitor.execute_approved(action_id)
+    return jsonify({"success": success, "message": message})
+
+
+@app.route("/api/monitor/actions/<action_id>/dismiss", methods=["POST"])
+def api_monitor_dismiss(action_id):
+    if _monitor is None:
+        return jsonify({"success": False, "error": "Monitor not initialized"})
+    dismissed = _monitor.action_queue.dismiss(action_id)
+    return jsonify({"success": dismissed})
+
+
 if __name__ == "__main__":
     # Ensure all required directories exist
     os.makedirs(config.DATA_DIR, exist_ok=True)
@@ -1327,4 +1387,16 @@ if __name__ == "__main__":
     logger.info("Gamarr starting on port 5001")
     # Recover any orphaned torrents from before restart
     threading.Thread(target=recover_orphaned_torrents, daemon=True).start()
+
+    # Initialize and start AI monitor
+    global _monitor
+    _monitor = monitor.GamarrMonitor(
+        get_jobs=lambda: list(download_jobs.items()),
+        qb_reauth=lambda: qb.login(),
+        clear_myrient_cache=_clear_myrient_cache,
+        run_orphan_recovery=recover_orphaned_torrents,
+        docker_socket=config.DOCKER_SOCKET,
+    )
+    _monitor.start()
+
     app.run(host="0.0.0.0", port=5001, debug=False)
