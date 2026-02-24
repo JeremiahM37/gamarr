@@ -13,72 +13,26 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from flask import Flask, jsonify, request, send_file
 
 import config
+import sources
+from db import JobStore
+from platforms import (
+    PLATFORM_MAP,
+    EXTRA_PLATFORMS,
+    ALL_GAME_CATEGORIES,
+    detect_platform,
+    get_categories_for_platform,
+    _detect_platform_from_metadata,
+    _detect_platform_from_files,
+)
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger("gamarr")
 
-# In-memory download job tracker
-download_jobs = {}
-
-
-# =============================================================================
-# Platform Mapping
-# =============================================================================
-# Prowlarr category ID -> (display_name, romm_slug, is_pc)
-PLATFORM_MAP = {
-    4000:   ("PC",        None,       True),
-    100010: ("PC",        None,       True),
-    100011: ("PS2",       "ps2",      False),
-    100012: ("PSP",       "psp",      False),
-    100013: ("Xbox",      "xbox",     False),
-    100014: ("Xbox 360",  "xbox360",  False),
-    100015: ("PS1",       "psx",      False),
-    100016: ("Dreamcast", "dc",       False),
-    100017: ("Other",     None,       False),
-    100043: ("PS3",       "ps3",      False),
-    100044: ("Wii",       "wii",      False),
-    100045: ("DS",        "nds",      False),
-    100046: ("GameCube",  "ngc",      False),
-    100072: ("3DS",       "3ds",      False),
-    100077: ("PS4",       "ps4",      False),
-    100082: ("Switch",    "switch",   False),
-    4050:   ("Switch",    "switch",   False),  # Nyaa Switch category
-}
-
-# Extra platforms for user override (not in Prowlarr categories)
-EXTRA_PLATFORMS = [
-    ("n64",     "Nintendo 64"),
-    ("snes",    "SNES"),
-    ("nes",     "NES"),
-    ("gb",      "Game Boy"),
-    ("gba",     "Game Boy Advance"),
-    ("genesis", "Sega Genesis"),
-    ("saturn",  "Sega Saturn"),
-    ("wiiu",    "Wii U"),
-    ("psvita",  "PS Vita"),
-]
-
-ALL_GAME_CATEGORIES = list(PLATFORM_MAP.keys())
-
-
-def detect_platform(categories):
-    for cat in categories:
-        cat_id = cat.get("id") if isinstance(cat, dict) else cat
-        if cat_id in PLATFORM_MAP:
-            name, slug, is_pc = PLATFORM_MAP[cat_id]
-            return {"name": name, "slug": slug, "is_pc": is_pc}
-    return {"name": "Unknown", "slug": None, "is_pc": False}
-
-
-def get_categories_for_platform(platform_filter):
-    if platform_filter == "pc":
-        return [4000, 100010]
-    matches = [cat_id for cat_id, (name, slug, is_pc) in PLATFORM_MAP.items()
-               if slug == platform_filter or str(cat_id) == platform_filter]
-    if matches:
-        return matches
-    return ALL_GAME_CATEGORIES
+# Persistent job store — initialised at startup once DATA_DIR is available.
+# Declared at module level so all functions can reference it before __main__
+# creates the real instance.
+download_jobs: JobStore = None  # type: ignore[assignment]
 
 
 # =============================================================================
@@ -277,16 +231,12 @@ def scan_torrent_file_list(torrent_hash):
     return is_safe, issues
 
 
-CLAMD_SOCKET = "/run/clamav/clamd.sock"
-DOCKER_SOCKET = "/var/run/docker.sock"
-
-
 def _docker_api(method, path, **kwargs):
     """Call Docker Engine API via Unix socket."""
     import http.client
     conn = http.client.HTTPConnection("localhost")
     conn.sock = __import__("socket").socket(__import__("socket").AF_UNIX, __import__("socket").SOCK_STREAM)
-    conn.sock.connect(DOCKER_SOCKET)
+    conn.sock.connect(config.DOCKER_SOCKET)
     conn.request(method, path, **kwargs)
     resp = conn.getresponse()
     data = resp.read()
@@ -296,21 +246,21 @@ def _docker_api(method, path, **kwargs):
 
 def _start_clamav():
     """Start ClamAV container and wait for socket to be ready."""
-    if os.path.exists(CLAMD_SOCKET):
+    if os.path.exists(config.CLAMAV_SOCKET):
         return True  # Already running
 
-    if not os.path.exists(DOCKER_SOCKET):
+    if not os.path.exists(config.DOCKER_SOCKET):
         logger.warning("Docker socket not available, cannot start ClamAV")
         return False
 
     try:
-        status, _ = _docker_api("POST", "/containers/clamav/start")
+        status, _ = _docker_api("POST", f"/containers/{config.CLAMAV_CONTAINER}/start")
         if status not in (204, 304):  # 204=started, 304=already running
             logger.warning(f"Failed to start ClamAV container: HTTP {status}")
             return False
         logger.info("Starting ClamAV container, waiting for socket...")
         for _ in range(150):  # Wait up to ~150s for DB to load
-            if os.path.exists(CLAMD_SOCKET):
+            if os.path.exists(config.CLAMAV_SOCKET):
                 logger.info("ClamAV socket ready")
                 return True
             time.sleep(1)
@@ -324,7 +274,7 @@ def _start_clamav():
 def _stop_clamav():
     """Stop ClamAV container to free RAM."""
     try:
-        _docker_api("POST", "/containers/clamav/stop")
+        _docker_api("POST", f"/containers/{config.CLAMAV_CONTAINER}/stop")
         logger.info("ClamAV container stopped")
     except Exception as e:
         logger.warning(f"Failed to stop ClamAV: {e}")
@@ -484,223 +434,13 @@ def _safety_score(result):
 
 
 # =============================================================================
-# Direct Download Sources
+# Direct Download helpers
 # =============================================================================
 import json
 from html.parser import HTMLParser
 from urllib.parse import unquote, urljoin, quote
 
-DDL_SOURCES_FILE = os.getenv("DDL_SOURCES_FILE", "/app/ddl_sources.json")
-
-# Myrient platform directory mapping
-MYRIENT_BASE = "https://myrient.erista.me/files/"
-MYRIENT_PLATFORMS = {
-    "gba": "No-Intro/Nintendo - Game Boy Advance/",
-    "gb": "No-Intro/Nintendo - Game Boy/",
-    "gbc": "No-Intro/Nintendo - Game Boy Color/",
-    "nes": "No-Intro/Nintendo - Nintendo Entertainment System (Headered)/",
-    "snes": "No-Intro/Nintendo - Super Nintendo Entertainment System/",
-    "n64": "No-Intro/Nintendo - Nintendo 64 (BigEndian)/",
-    "nds": "No-Intro/Nintendo - Nintendo DS (Decrypted)/",
-    "3ds": "No-Intro/Nintendo - Nintendo 3DS (Decrypted)/",
-    "psx": "Redump/Sony - PlayStation/",
-    "ps2": "Redump/Sony - PlayStation 2/",
-    "ps3": "Redump/Sony - PlayStation 3/",
-    "psp": "Redump/Sony - PlayStation Portable/",
-    "dc": "Redump/Sega - Dreamcast/",
-    "saturn": "Redump/Sega - Saturn/",
-    "genesis": "No-Intro/Sega - Mega Drive - Genesis/",
-    "ngc": "Redump/Nintendo - GameCube - NKit RVZ [zstd-19-128k]/",
-    "wii": "Redump/Nintendo - Wii - NKit RVZ [zstd-19-128k]/",
-    "xbox": "Redump/Microsoft - Xbox/",
-    "xbox360": "Redump/Microsoft - Xbox 360/",
-}
-
-# Directory listing cache (platform_slug -> [(filename, url)])
-_dir_cache = {}
-_dir_cache_time = {}
-DIR_CACHE_TTL = 3600  # 1 hour
-
-
-class DirListingParser(HTMLParser):
-    """Parse Apache/nginx directory listing for file links."""
-    def __init__(self):
-        super().__init__()
-        self.files = []
-        self._in_a = False
-        self._href = None
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "a":
-            for name, val in attrs:
-                if name == "href" and val and not val.startswith("?") and not val.startswith("/") and val != "../":
-                    self._href = val
-                    self._in_a = True
-
-    def handle_data(self, data):
-        if self._in_a and self._href:
-            self.files.append((data.strip(), self._href))
-            self._in_a = False
-            self._href = None
-
-    def handle_endtag(self, tag):
-        if tag == "a":
-            self._in_a = False
-            self._href = None
-
-
-def _get_myrient_listing(platform_slug):
-    """Fetch and cache directory listing for a Myrient platform."""
-    now = time.time()
-    if platform_slug in _dir_cache and now - _dir_cache_time.get(platform_slug, 0) < DIR_CACHE_TTL:
-        return _dir_cache[platform_slug]
-
-    path = MYRIENT_PLATFORMS.get(platform_slug)
-    if not path:
-        return []
-
-    url = MYRIENT_BASE + path
-    try:
-        resp = requests.get(url, timeout=30, headers={"User-Agent": "Gamarr/1.0"})
-        if resp.status_code != 200:
-            logger.warning(f"Myrient listing failed for {platform_slug}: HTTP {resp.status_code}")
-            return []
-        parser = DirListingParser()
-        parser.feed(resp.text)
-        files = [(unquote(name), urljoin(url, href)) for name, href in parser.files if not name.endswith("/")]
-        _dir_cache[platform_slug] = files
-        _dir_cache_time[platform_slug] = now
-        logger.info(f"Myrient: cached {len(files)} files for {platform_slug}")
-        return files
-    except Exception as e:
-        logger.warning(f"Myrient listing error for {platform_slug}: {e}")
-        return []
-
-
-def search_myrient(query, platform_slug=None):
-    """Search Myrient for a game across one or all platforms."""
-    results = []
-    q_words = set(re.findall(r"\w+", query.lower())) - _STOPWORDS
-
-    if platform_slug and platform_slug not in MYRIENT_PLATFORMS:
-        return []  # Platform not supported by Myrient
-    slugs = [platform_slug] if platform_slug else list(MYRIENT_PLATFORMS.keys())
-    # Limit to 3 platforms if searching all (too slow otherwise)
-    if len(slugs) > 3 and not platform_slug:
-        return []  # Require platform filter for Myrient
-
-    for slug in slugs:
-        files = _get_myrient_listing(slug)
-        for filename, url in files:
-            f_words = set(re.findall(r"\w+", filename.lower())) - _STOPWORDS
-            overlap = len(q_words & f_words)
-            if overlap < max(1, len(q_words) - 1) or overlap < 1:
-                continue
-            # Skip non-English regions
-            if re.search(r"\(Japan\)|\(Korea\)|\(China\)|\(Taiwan\)|\(France\)|\(Germany\)|\(Spain\)|\(Italy\)", filename) and not re.search(r"\(USA|World|Europe|En\)", filename):
-                continue
-            plat_name, _, is_pc = PLATFORM_MAP.get(
-                next((k for k, v in PLATFORM_MAP.items() if v[1] == slug), 0),
-                ("Unknown", slug, False)
-            )
-            results.append({
-                "title": filename,
-                "size": 0,
-                "size_human": "?",
-                "seeders": 0,
-                "leechers": 0,
-                "indexer": "Myrient",
-                "download_url": url,
-                "magnet_url": "",
-                "info_hash": "",
-                "guid": url,
-                "platform": plat_name,
-                "platform_slug": slug,
-                "is_pc": is_pc,
-                "age": 0,
-                "source_type": "ddl",
-                "safety_score": 95,
-                "safety_warnings": [],
-            })
-    # Sort by relevance (title match quality)
-    results.sort(key=lambda r: -len(set(re.findall(r"\w+", r["title"].lower())) & q_words))
-    return results[:20]
-
-
-def search_vimm(query, platform_slug=None):
-    """Search Vimm's Lair for a game."""
-    results = []
-    vimm_system_map = {
-        "nes": "NES", "snes": "SNES", "n64": "N64", "ngc": "GameCube",
-        "wii": "Wii", "gb": "GB", "gbc": "GBC", "gba": "GBA", "nds": "DS",
-        "genesis": "Genesis", "saturn": "Saturn", "dc": "Dreamcast",
-        "psx": "PS1", "ps2": "PS2", "ps3": "PS3", "psp": "PSP",
-        "xbox": "Xbox", "xbox360": "Xbox360",
-    }
-
-    params = {"p": "list", "q": query}
-    if platform_slug and platform_slug in vimm_system_map:
-        params["system"] = vimm_system_map[platform_slug]
-
-    try:
-        resp = requests.get(
-            "https://vimm.net/vault/",
-            params=params,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
-            timeout=15,
-            verify=False,
-        )
-        if resp.status_code != 200:
-            return []
-
-        # Parse game links: <a href="/vault/{ID}" ...>Game Name</a>
-        reverse_map = {v: k for k, v in vimm_system_map.items()}
-        system_from_filter = vimm_system_map.get(platform_slug, "")
-
-        for match in re.finditer(
-            r'<a\s+href=\s*"/vault/(\d+)"[^>]*>([^<]+)</a>',
-            resp.text,
-        ):
-            game_id = match.group(1)
-            game_name = match.group(2).strip()
-
-            slug = platform_slug
-            system_clean = system_from_filter or "Unknown"
-            is_pc = False
-
-            # Detect platform from title when no filter is set, e.g. "Castlevania (NES)"
-            if not slug:
-                title_system = re.search(r'\(([A-Za-z0-9]+)\)\s*$', game_name)
-                if title_system:
-                    sys_name = title_system.group(1)
-                    reverse_map_lower = {v.lower(): k for k, v in vimm_system_map.items()}
-                    if sys_name.lower() in reverse_map_lower:
-                        slug = reverse_map_lower[sys_name.lower()]
-                        system_clean = sys_name
-
-            results.append({
-                "title": f"{game_name}" + (f" ({system_clean})" if system_clean and system_clean != "Unknown" and f"({system_clean})" not in game_name else ""),
-                "size": 0,
-                "size_human": "?",
-                "seeders": 0,
-                "leechers": 0,
-                "indexer": "Vimm's Lair",
-                "download_url": "",
-                "magnet_url": "",
-                "info_hash": "",
-                "guid": f"https://vimm.net/vault/{game_id}",
-                "platform": system_clean,
-                "platform_slug": slug,
-                "is_pc": is_pc,
-                "age": 0,
-                "source_type": "ddl",
-                "vimm_id": game_id,
-                "safety_score": 90,
-                "safety_warnings": [],
-            })
-    except Exception as e:
-        logger.warning(f"Vimm search error: {e}")
-    return results[:20]
+DDL_SOURCES_FILE = os.path.join(config.DATA_DIR, "ddl_sources.json")
 
 
 def download_ddl(url, dest_path, job_id):
@@ -730,7 +470,6 @@ def download_ddl(url, dest_path, job_id):
                 now = time.time()
                 if now - last_update > 2 and total > 0:
                     pct = round(downloaded / total * 100, 1)
-                    speed = _human_size(downloaded / max(now - last_update, 1))
                     download_jobs[job_id]["detail"] = f"Downloading... {pct}% ({_human_size(downloaded)}/{_human_size(total)})"
                     last_update = now
 
@@ -860,83 +599,21 @@ def download_vimm_game(game_id, dest_path, job_id):
 # Load custom DDL sources from config file
 def _load_ddl_sources():
     """Load custom DDL sources (user-configurable)."""
-    if not os.path.exists(DDL_SOURCES_FILE):
+    sources_file = os.path.join(config.DATA_DIR, "ddl_sources.json")
+    if not os.path.exists(sources_file):
         return []
     try:
-        with open(DDL_SOURCES_FILE) as f:
+        with open(sources_file) as f:
             return json.load(f)
     except Exception:
         return []
 
 
-def _save_ddl_sources(sources):
-    with open(DDL_SOURCES_FILE, "w") as f:
-        json.dump(sources, f, indent=2)
-
-
-# =============================================================================
-# Prowlarr Search
-# =============================================================================
-def search_prowlarr_games(query, platform_filter=None):
-    results = []
-    filter_categories = None
-    if platform_filter and platform_filter != "all":
-        filter_categories = set(get_categories_for_platform(platform_filter))
-
-    # Search game-friendly indexers individually to avoid slow indexer timeouts
-    # 1337x(7), ThePirateBay(5), KickAssTorrents(15), BitSearch(9), Knaben(8)
-    game_indexers = [7, 5, 15, 9, 8, 3, 4]  # 3=Nyaa, 4=LimeTorrents
-    all_items = []
-
-    for indexer_id in game_indexers:
-        try:
-            resp = requests.get(
-                f"{config.PROWLARR_URL}/api/v1/search",
-                params={
-                    "query": query,
-                    "indexerIds": indexer_id,
-                    "type": "search",
-                    "limit": 50,
-                },
-                headers={"X-Api-Key": config.PROWLARR_API_KEY},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                all_items.extend(resp.json())
-        except Exception as e:
-            logger.warning(f"Indexer {indexer_id} timed out: {e}")
-
-    try:
-        for item in all_items:
-            size = item.get("size", 0)
-            cats = item.get("categories", [])
-            detected = detect_platform(cats)
-
-            # Local category filtering
-            if filter_categories:
-                cat_ids = {c.get("id") if isinstance(c, dict) else c for c in cats}
-                if not cat_ids & filter_categories:
-                    continue
-
-            results.append({
-                "title": item.get("title", ""),
-                "size": size,
-                "size_human": _human_size(size),
-                "seeders": item.get("seeders", 0),
-                "leechers": item.get("leechers", 0),
-                "indexer": item.get("indexer", ""),
-                "download_url": item.get("downloadUrl", ""),
-                "magnet_url": item.get("magnetUrl", ""),
-                "info_hash": item.get("infoHash", ""),
-                "guid": item.get("guid", ""),
-                "platform": detected["name"],
-                "platform_slug": detected["slug"],
-                "is_pc": detected["is_pc"],
-                "age": item.get("age", 0),
-            })
-    except Exception as e:
-        logger.error(f"Prowlarr game search failed: {e}")
-    return results
+def _save_ddl_sources(custom_sources):
+    sources_file = os.path.join(config.DATA_DIR, "ddl_sources.json")
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    with open(sources_file, "w") as f:
+        json.dump(custom_sources, f, indent=2)
 
 
 def filter_game_results(results, query):
@@ -1082,134 +759,6 @@ def watch_game_torrent(job_id, title, platform, platform_slug, is_pc):
     download_jobs[job_id]["error"] = "Timed out waiting for download"
 
 
-def _detect_platform_from_metadata(content_path):
-    """Try to read metadata.json in content folder for platform info."""
-    import json
-    meta_path = None
-    if os.path.isdir(content_path):
-        meta_path = os.path.join(content_path, "metadata.json")
-    if not meta_path or not os.path.exists(meta_path):
-        return None, None, None
-    try:
-        with open(meta_path) as f:
-            meta = json.load(f)
-        plat = meta.get("platform", "").lower().strip()
-        if not plat:
-            return None, None, None
-        # Map common metadata platform names to RomM slugs
-        meta_map = {
-            "gamecube": ("GameCube", "ngc", False),
-            "ngc": ("GameCube", "ngc", False),
-            "wii": ("Wii", "wii", False),
-            "switch": ("Switch", "switch", False),
-            "nintendo switch": ("Switch", "switch", False),
-            "ps1": ("PS1", "psx", False), "psx": ("PS1", "psx", False), "playstation": ("PS1", "psx", False),
-            "ps2": ("PS2", "ps2", False), "playstation 2": ("PS2", "ps2", False),
-            "ps3": ("PS3", "ps3", False), "playstation 3": ("PS3", "ps3", False),
-            "ps4": ("PS4", "ps4", False),
-            "psp": ("PSP", "psp", False),
-            "xbox": ("Xbox", "xbox", False),
-            "xbox 360": ("Xbox 360", "xbox360", False), "xbox360": ("Xbox 360", "xbox360", False),
-            "ds": ("DS", "nds", False), "nds": ("DS", "nds", False), "nintendo ds": ("DS", "nds", False),
-            "3ds": ("3DS", "3ds", False), "nintendo 3ds": ("3DS", "3ds", False),
-            "dreamcast": ("Dreamcast", "dc", False),
-            "n64": ("Nintendo 64", "n64", False), "nintendo 64": ("Nintendo 64", "n64", False),
-            "snes": ("SNES", "snes", False), "super nintendo": ("SNES", "snes", False),
-            "nes": ("NES", "nes", False),
-            "gba": ("Game Boy Advance", "gba", False), "game boy advance": ("Game Boy Advance", "gba", False),
-            "gb": ("Game Boy", "gb", False), "game boy": ("Game Boy", "gb", False),
-            "genesis": ("Sega Genesis", "genesis", False), "sega genesis": ("Sega Genesis", "genesis", False),
-            "saturn": ("Sega Saturn", "saturn", False), "sega saturn": ("Sega Saturn", "saturn", False),
-            "pc": ("PC", None, True), "windows": ("PC", None, True),
-        }
-        if plat in meta_map:
-            return meta_map[plat]
-        logger.info(f"Unknown metadata platform: {plat}")
-        return None, None, None
-    except Exception as e:
-        logger.warning(f"Failed to read metadata.json: {e}")
-        return None, None, None
-
-
-def _detect_platform_from_files(content_path, title):
-    """Detect platform from file extensions and title keywords."""
-    # Collect all file extensions in the content
-    exts = set()
-    if os.path.isdir(content_path):
-        for root, dirs, files in os.walk(content_path):
-            for f in files:
-                ext = os.path.splitext(f)[1].lower()
-                if ext:
-                    exts.add(ext)
-    else:
-        ext = os.path.splitext(content_path)[1].lower()
-        if ext:
-            exts.add(ext)
-
-    # Extension -> platform mapping
-    ext_map = {
-        ".nsp": ("Switch", "switch", False),
-        ".xci": ("Switch", "switch", False),
-        ".nsz": ("Switch", "switch", False),
-        ".3ds": ("3DS", "3ds", False),
-        ".cia": ("3DS", "3ds", False),
-        ".nds": ("DS", "nds", False),
-        ".gba": ("Game Boy Advance", "gba", False),
-        ".gbc": ("Game Boy Color", "gbc", False),
-        ".gb": ("Game Boy", "gb", False),
-        ".nes": ("NES", "nes", False),
-        ".sfc": ("SNES", "snes", False),
-        ".smc": ("SNES", "snes", False),
-        ".n64": ("Nintendo 64", "n64", False),
-        ".z64": ("Nintendo 64", "n64", False),
-        ".v64": ("Nintendo 64", "n64", False),
-        ".gcm": ("GameCube", "ngc", False),
-        ".gcz": ("GameCube", "ngc", False),
-        ".wbfs": ("Wii", "wii", False),
-        ".wad": ("Wii", "wii", False),
-        ".pbp": ("PSP", "psp", False),
-        ".cso": ("PSP", "psp", False),
-        ".chd": None,  # Ambiguous - could be PS1, PS2, Saturn, Dreamcast
-        ".gdi": ("Dreamcast", "dc", False),
-        ".cdi": ("Dreamcast", "dc", False),
-    }
-
-    for ext in exts:
-        if ext in ext_map and ext_map[ext] is not None:
-            logger.info(f"Platform detected from extension {ext}")
-            return ext_map[ext]
-
-    # Title keyword detection
-    title_lower = title.lower()
-    title_hints = [
-        (r"\[nsp\]|\bnsp\b|switch", ("Switch", "switch", False)),
-        (r"\[xci\]|\bxci\b", ("Switch", "switch", False)),
-        (r"\bwiiu\b|wii\s*u", ("Wii U", "wiiu", False)),
-        (r"\bwii\b", ("Wii", "wii", False)),
-        (r"\bgamecube\b|\bngc\b|\bgcn\b", ("GameCube", "ngc", False)),
-        (r"\b3ds\b", ("3DS", "3ds", False)),
-        (r"\bnds\b|\bnintendo\s*ds\b", ("DS", "nds", False)),
-        (r"\bgba\b", ("Game Boy Advance", "gba", False)),
-        (r"\bps3\b|playstation\s*3", ("PS3", "ps3", False)),
-        (r"\bps2\b|playstation\s*2", ("PS2", "ps2", False)),
-        (r"\bps1\b|\bpsx\b|playstation(?!\s*[2345])", ("PS1", "psx", False)),
-        (r"\bpsp\b", ("PSP", "psp", False)),
-        (r"\bxbox\s*360", ("Xbox 360", "xbox360", False)),
-        (r"\bxbox\b(?!\s*360)", ("Xbox", "xbox", False)),
-        (r"\bdreamcast\b", ("Dreamcast", "dc", False)),
-        (r"\bn64\b|nintendo\s*64", ("Nintendo 64", "n64", False)),
-        (r"\bsnes\b|super\s*nintendo", ("SNES", "snes", False)),
-        (r"\bnes\b(?!\w)", ("NES", "nes", False)),
-        (r"\bgenesis\b|mega\s*drive", ("Sega Genesis", "genesis", False)),
-    ]
-    for pattern, result in title_hints:
-        if re.search(pattern, title_lower):
-            logger.info(f"Platform detected from title keyword: {pattern}")
-            return result
-
-    return None
-
-
 def organize_game(job_id, torrent, platform, platform_slug, is_pc):
     content_path = torrent.get("content_path", "")
     torrent_name = torrent.get("name", "")
@@ -1305,32 +854,45 @@ def api_search():
         return jsonify({"results": [], "error": "No query"})
     start = time.time()
 
-    # Torrent results from Prowlarr
-    results = search_prowlarr_games(query, platform_filter=platform)
-    results = filter_game_results(results, query)
-    for r in results:
-        r.setdefault("source_type", "torrent")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    all_results = []
+    enabled = sources.get_enabled_sources()
 
-    # DDL results from Myrient (only when a platform is selected)
-    ddl_slug = platform if platform != "all" and platform != "pc" else None
-    if ddl_slug:
-        try:
-            myrient_results = search_myrient(query, platform_slug=ddl_slug)
-            results.extend(myrient_results)
-        except Exception as e:
-            logger.warning(f"Myrient search failed: {e}")
+    with ThreadPoolExecutor(max_workers=max(len(enabled), 1)) as executor:
+        futures = {
+            executor.submit(s.search, query, platform if platform != "all" else None): s
+            for s in enabled
+        }
+        for future in as_completed(futures, timeout=30):
+            src = futures[future]
+            try:
+                res = future.result()
+                all_results.extend(res)
+            except Exception as e:
+                logger.error(f"Source {src.name} search error: {e}")
 
-    # DDL results from Vimm's Lair
-    try:
-        vimm_results = search_vimm(query, platform_slug=ddl_slug)
-        results.extend(vimm_results)
-    except Exception as e:
-        logger.warning(f"Vimm search failed: {e}")
+    # Filter torrent results
+    torrent_results = filter_game_results(
+        [r for r in all_results if r.get("source_type") == "torrent"], query
+    )
+    ddl_results = [r for r in all_results if r.get("source_type") == "ddl"]
+    results = torrent_results + ddl_results
 
-    # Sort: torrents with seeders first, then DDL
-    results.sort(key=lambda r: (r.get("seeders", 0) * 10 if r.get("source_type") == "torrent" else 5), reverse=True)
+    results.sort(
+        key=lambda r: (r.get("seeders", 0) * 10 if r.get("source_type") == "torrent" else 5),
+        reverse=True,
+    )
     elapsed = int((time.time() - start) * 1000)
-    return jsonify({"results": results, "search_time_ms": elapsed})
+    return jsonify({
+        "results": results,
+        "search_time_ms": elapsed,
+        "sources": sources.get_source_metadata(),
+    })
+
+
+@app.route("/api/sources")
+def api_sources():
+    return jsonify({"sources": sources.get_source_metadata()})
 
 
 @app.route("/api/platforms")
@@ -1464,6 +1026,7 @@ def _organize_ddl_file(job_id, filepath, title, platform, platform_slug, is_pc):
 @app.route("/api/ddl-sources")
 def api_ddl_sources():
     """List all DDL sources (built-in + custom)."""
+    from sources.myrient import MYRIENT_BASE, MYRIENT_PLATFORMS
     built_in = [
         {"name": "Myrient", "url": MYRIENT_BASE, "type": "myrient", "builtin": True,
          "platforms": list(MYRIENT_PLATFORMS.keys())},
@@ -1483,19 +1046,19 @@ def api_add_ddl_source():
     url = data.get("url", "").strip()
     if not name or not url:
         return jsonify({"success": False, "error": "Name and URL required"}), 400
-    sources = _load_ddl_sources()
-    sources.append({"name": name, "url": url, "type": "custom"})
-    _save_ddl_sources(sources)
+    custom_sources = _load_ddl_sources()
+    custom_sources.append({"name": name, "url": url, "type": "custom"})
+    _save_ddl_sources(custom_sources)
     return jsonify({"success": True})
 
 
 @app.route("/api/ddl-sources/<int:idx>", methods=["DELETE"])
 def api_delete_ddl_source(idx):
     """Delete a custom DDL source."""
-    sources = _load_ddl_sources()
-    if 0 <= idx < len(sources):
-        sources.pop(idx)
-        _save_ddl_sources(sources)
+    custom_sources = _load_ddl_sources()
+    if 0 <= idx < len(custom_sources):
+        custom_sources.pop(idx)
+        _save_ddl_sources(custom_sources)
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Not found"}), 404
 
@@ -1752,9 +1315,15 @@ def recover_orphaned_torrents():
 # Main
 # =============================================================================
 if __name__ == "__main__":
+    # Ensure all required directories exist
+    os.makedirs(config.DATA_DIR, exist_ok=True)
     os.makedirs(config.QB_SAVE_PATH, exist_ok=True)
     os.makedirs(config.GAMES_VAULT_PATH, exist_ok=True)
     os.makedirs(config.GAMES_ROMS_PATH, exist_ok=True)
+
+    # Initialise persistent job store
+    download_jobs = JobStore(os.path.join(config.DATA_DIR, "gamarr.db"))
+
     logger.info("Gamarr starting on port 5001")
     # Recover any orphaned torrents from before restart
     threading.Thread(target=recover_orphaned_torrents, daemon=True).start()

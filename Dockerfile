@@ -9,7 +9,8 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY config.py app.py clamd.conf ./
+COPY config.py platforms.py db.py app.py clamd.conf ./
+COPY sources/ sources/
 COPY templates/ templates/
 
 EXPOSE 5001

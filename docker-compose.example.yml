@@ -1,65 +1,96 @@
-version: "3.8"
+# =============================================================================
+# Gamarr — Docker Compose Example
+# Copy this file to docker-compose.yml and adjust paths to your setup.
+# =============================================================================
 
 services:
-  # ── VPN (optional but recommended) ──────────────────────────────────────────
-  gluetun:
-    image: qmcgaw/gluetun
-    container_name: gluetun
-    cap_add:
-      - NET_ADMIN
-    environment:
-      - VPN_SERVICE_PROVIDER=mullvad        # or your provider
-      - VPN_TYPE=wireguard
-      - WIREGUARD_PRIVATE_KEY=your_key_here
-      - SERVER_COUNTRIES=Switzerland
-    ports:
-      - "5001:5001"     # gamarr UI (exposed via gluetun network)
-    volumes:
-      - gluetun_data:/gluetun
 
-  # ── qBittorrent ───────────────────────────────────────────────────────────────
-  qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent
-    container_name: qbittorrent
-    network_mode: "service:gluetun"   # routes through VPN
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - WEBUI_PORT=8080
-    volumes:
-      - qbittorrent_config:/config
-      - /your/games/path:/games-incoming   # must be owned by 1000:1000
-
-  # ── Gamarr ───────────────────────────────────────────────────────────────────
+  # -- Gamarr -----------------------------------------------------------------
   gamarr:
     build: .
     container_name: gamarr
-    network_mode: "service:gluetun"   # routes through VPN
-    environment:
-      - PROWLARR_URL=http://prowlarr:9696
-      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
-      - QB_URL=http://localhost:8080
-      - QB_USER=admin
-      - QB_PASS=${QB_PASS}
-      - QB_SAVE_PATH=/games-incoming/
-      - GAMES_VAULT_PATH=/vault
-      - GAMES_ROMS_PATH=/roms
+    restart: unless-stopped
+    # If using a VPN container, uncomment the next two lines and comment out ports:
+    # network_mode: "service:gluetun"
+    # depends_on: [gluetun]
+    ports:
+      - "5001:5001"   # Gamarr web UI
+    env_file:
+      - .env
     volumes:
-      - /your/games/incoming:/games-incoming
-      - /your/games/vault:/vault
-      - /your/games/roms:/roms
-      - /var/run/docker.sock:/var/run/docker.sock:ro   # for ClamAV (optional)
-    depends_on:
-      - gluetun
+      # Game storage — adjust paths to your setup
+      - /your/games/incoming:/data/incoming      # Torrent download staging area
+      - /your/games/vault:/data/vault            # Organized PC games
+      - /your/games/roms:/data/roms              # Organized ROMs (subfolders per platform)
+      # Gamarr data (SQLite DB, custom sources)
+      - gamarr_data:/data/gamarr
+      # Optional: Docker socket for on-demand ClamAV (antivirus)
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
 
-  # ── ClamAV (optional — for virus scanning) ───────────────────────────────────
+  # -- qBittorrent ------------------------------------------------------------
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    # If using a VPN: network_mode: "service:gluetun"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - WEBUI_PORT=8080
+    ports:
+      - "8080:8080"   # qBittorrent web UI
+    volumes:
+      - qbittorrent_config:/config
+      - /your/games/incoming:/data/incoming   # Same path as gamarr's incoming
+
+  # -- VPN (optional — recommended for privacy) -------------------------------
+  # Uncomment and configure to route gamarr + qBit through a VPN.
+  # gluetun:
+  #   image: qmcgaw/gluetun:latest
+  #   container_name: gluetun
+  #   cap_add:
+  #     - NET_ADMIN
+  #   environment:
+  #     - VPN_SERVICE_PROVIDER=mullvad      # mullvad, nordvpn, expressvpn, etc.
+  #     - VPN_TYPE=wireguard
+  #     - WIREGUARD_PRIVATE_KEY=${VPN_WIREGUARD_KEY}
+  #     - SERVER_COUNTRIES=Switzerland
+  #   ports:
+  #     - "5001:5001"   # Gamarr web UI (must be declared on gluetun when using network_mode)
+  #     - "8080:8080"   # qBittorrent web UI
+  #   volumes:
+  #     - gluetun_data:/gluetun
+
+  # -- ClamAV (optional — antivirus scanning) ---------------------------------
+  # Gamarr starts this container on-demand before each scan and stops it after.
   # clamav:
-  #   image: clamav/clamav
+  #   image: clamav/clamav:latest
   #   container_name: clamav
   #   volumes:
   #     - clamav_data:/var/lib/clamav
+  #     - /run/clamav:/run/clamav   # shared socket path
+
+  # -- RomM (optional — ROM library manager) ----------------------------------
+  # romm:
+  #   image: rommapp/romm:latest
+  #   container_name: romm
+  #   ports:
+  #     - "8086:8080"
+  #   volumes:
+  #     - /your/games/roms:/romm/library/roms   # same path as GAMES_ROMS_PATH
+
+  # -- GameVault (optional — PC game library) ---------------------------------
+  # gamevault:
+  #   image: phalcode/gamevault-backend:latest
+  #   container_name: gamevault
+  #   ports:
+  #     - "8087:8080"
+  #   volumes:
+  #     - /your/games/vault:/files   # same path as GAMES_VAULT_PATH
 
 volumes:
-  gluetun_data:
+  gamarr_data:
   qbittorrent_config:
+  # gluetun_data:
   # clamav_data:
