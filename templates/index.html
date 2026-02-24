@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gamarr</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e1e4ed; min-height: 100vh; }
+
+/* Header */
+.header { background: #1a1d27; border-bottom: 1px solid #2e3346; padding: 12px 20px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 20px; font-weight: 700; color: #00b4d8; }
+.header .subtitle { font-size: 12px; color: #8b90a0; }
+
+/* Tabs */
+.tabs { display: flex; background: #1a1d27; border-bottom: 1px solid #2e3346; padding: 0 20px; }
+.tab-btn { padding: 10px 20px; background: none; border: none; color: #8b90a0; cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent; transition: all 0.2s; position: relative; }
+.tab-btn:hover { color: #e1e4ed; }
+.tab-btn.active { color: #00b4d8; border-bottom-color: #00b4d8; }
+.tab-btn .badge { background: #d63031; color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 10px; margin-left: 6px; display: none; }
+
+/* Content */
+.content { max-width: 900px; margin: 0 auto; padding: 20px; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Search */
+.search-box { display: flex; gap: 8px; margin-bottom: 20px; }
+.search-box input { flex: 1; padding: 10px 14px; background: #242836; border: 1px solid #2e3346; border-radius: 6px; color: #e1e4ed; font-size: 14px; outline: none; }
+.search-box input:focus { border-color: #00b4d8; }
+.search-box select { padding: 10px 12px; background: #242836; border: 1px solid #2e3346; border-radius: 6px; color: #e1e4ed; font-size: 13px; cursor: pointer; }
+.search-box button { padding: 10px 20px; background: #00b4d8; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; }
+.search-box button:hover { background: #48cae4; }
+.search-box button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Search info */
+.search-info { font-size: 12px; color: #8b90a0; margin-bottom: 12px; }
+
+/* Results */
+.result { background: #1a1d27; border: 1px solid #2e3346; border-radius: 8px; padding: 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
+.result:hover { border-color: #3e4356; }
+.result-info { flex: 1; min-width: 0; }
+.result-title { font-size: 13px; font-weight: 500; word-break: break-word; margin-bottom: 4px; }
+.result-meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: #8b90a0; }
+.result-meta .seeds { color: #00b894; }
+.platform-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.platform-badge.pc { background: rgba(225, 112, 85, 0.2); color: #e17055; }
+.platform-badge.console { background: rgba(0, 184, 148, 0.2); color: #00b894; }
+.source-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.source-badge.torrent { background: rgba(116, 185, 255, 0.2); color: #74b9ff; }
+.source-badge.ddl { background: rgba(162, 155, 254, 0.2); color: #a29bfe; }
+.platform-override { margin-top: 6px; }
+.platform-override select { padding: 4px 8px; background: #242836; border: 1px solid #2e3346; border-radius: 4px; color: #e1e4ed; font-size: 11px; }
+.dl-btn { padding: 8px 16px; background: #00b4d8; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.dl-btn:hover { background: #48cae4; }
+.dl-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Downloads */
+.download-item { background: #1a1d27; border: 1px solid #2e3346; border-radius: 8px; padding: 14px; margin-bottom: 8px; }
+.download-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.download-title { font-size: 13px; font-weight: 500; word-break: break-word; flex: 1; }
+.download-meta { display: flex; gap: 12px; font-size: 11px; color: #8b90a0; margin-bottom: 6px; }
+.progress-bar-bg { background: #242836; border-radius: 4px; height: 6px; overflow: hidden; }
+.progress-bar { background: #00b4d8; height: 100%; border-radius: 4px; transition: width 0.3s; }
+.progress-bar.complete { background: #00b894; }
+.progress-bar.error { background: #d63031; }
+.status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+.status-badge.downloading { background: rgba(0, 180, 216, 0.2); color: #00b4d8; }
+.status-badge.completed { background: rgba(0, 184, 148, 0.2); color: #00b894; }
+.status-badge.error { background: rgba(214, 48, 49, 0.2); color: #d63031; }
+.status-badge.organizing { background: rgba(253, 203, 110, 0.2); color: #fdcb6e; }
+.status-badge.scanning { background: rgba(108, 92, 231, 0.2); color: #a29bfe; }
+.status-badge.seeding, .status-badge.stalled, .status-badge.paused, .status-badge.queued, .status-badge.metadata, .status-badge.checking { background: rgba(139, 144, 160, 0.2); color: #8b90a0; }
+.status-badge.completed_unorganized { background: rgba(253, 203, 110, 0.2); color: #fdcb6e; }
+.remove-btn { padding: 4px 10px; background: none; border: 1px solid #2e3346; border-radius: 4px; color: #8b90a0; cursor: pointer; font-size: 11px; }
+.remove-btn:hover { border-color: #d63031; color: #d63031; }
+.clear-btn { padding: 8px 16px; background: #242836; border: 1px solid #2e3346; border-radius: 6px; color: #8b90a0; cursor: pointer; font-size: 12px; margin-bottom: 16px; }
+.clear-btn:hover { border-color: #d63031; color: #d63031; }
+.error-msg { font-size: 11px; color: #d63031; margin-top: 4px; }
+.detail-msg { font-size: 11px; color: #8b90a0; margin-top: 4px; }
+
+/* Safety */
+.safety-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+.safety-badge.safe { background: rgba(0, 184, 148, 0.2); color: #00b894; }
+.safety-badge.caution { background: rgba(253, 203, 110, 0.2); color: #fdcb6e; }
+.safety-badge.risky { background: rgba(214, 48, 49, 0.2); color: #d63031; }
+.safety-warnings { font-size: 10px; color: #d63031; margin-top: 2px; }
+.result.low-safety { opacity: 0.6; border-color: rgba(214, 48, 49, 0.3); }
+
+/* Library */
+.library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.library-card { display: flex; flex-direction: column; align-items: center; padding: 30px 20px; background: #1a1d27; border: 1px solid #2e3346; border-radius: 12px; text-decoration: none; color: #e1e4ed; transition: all 0.2s; }
+.library-card:hover { border-color: #00b4d8; transform: translateY(-2px); }
+.library-card .icon { font-size: 48px; margin-bottom: 12px; }
+.library-card .name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.library-card .desc { font-size: 12px; color: #8b90a0; }
+
+/* Toast */
+.toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 1000; }
+.toast { background: #1a1d27; border: 1px solid #2e3346; border-radius: 8px; padding: 12px 16px; margin-top: 8px; font-size: 13px; animation: slideIn 0.3s; min-width: 250px; }
+.toast.success { border-left: 3px solid #00b894; }
+.toast.error { border-left: 3px solid #d63031; }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* Empty state */
+.empty { text-align: center; padding: 60px 20px; color: #8b90a0; }
+.empty .icon { font-size: 48px; margin-bottom: 12px; }
+
+@media (max-width: 600px) {
+  .search-box { flex-wrap: wrap; }
+  .search-box input { min-width: 100%; }
+  .result { flex-wrap: wrap; }
+  .dl-btn { width: 100%; text-align: center; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Gamarr</h1>
+  <span class="subtitle">Game Search & Download</span>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('search')">Search</button>
+  <button class="tab-btn" onclick="switchTab('downloads')" id="downloads-tab-btn">Downloads <span class="badge" id="dl-badge">0</span></button>
+  <button class="tab-btn" onclick="switchTab('library')">Library</button>
+  <button class="tab-btn" onclick="switchTab('sources')">Sources</button>
+</div>
+
+<div class="content">
+  <!-- Search Tab -->
+  <div class="tab-content active" id="tab-search">
+    <div class="search-box">
+      <input type="text" id="search-input" placeholder="Search for games..." onkeydown="if(event.key==='Enter')doSearch()">
+      <select id="platform-filter"></select>
+      <button onclick="doSearch()" id="search-btn">Search</button>
+    </div>
+    <div class="search-info" id="search-info"></div>
+    <div id="results"></div>
+  </div>
+
+  <!-- Downloads Tab -->
+  <div class="tab-content" id="tab-downloads">
+    <button class="clear-btn" onclick="clearFinished()">Clear Finished</button>
+    <div id="downloads"></div>
+  </div>
+
+  <!-- Sources Tab -->
+  <div class="tab-content" id="tab-sources">
+    <h3 style="margin-bottom:12px;font-size:16px;color:#e1e4ed">Download Sources</h3>
+    <p style="font-size:12px;color:#8b90a0;margin-bottom:16px">Gamarr searches these sources for games. Torrent sources go through Prowlarr. DDL sources download directly.</p>
+    <div id="sources-list"></div>
+    <div style="margin-top:16px;padding:14px;background:#1a1d27;border:1px solid #2e3346;border-radius:8px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px">Add Custom DDL Source</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="text" id="source-name" placeholder="Name" style="padding:8px;background:#242836;border:1px solid #2e3346;border-radius:6px;color:#e1e4ed;font-size:13px;width:120px">
+        <input type="text" id="source-url" placeholder="URL" style="flex:1;padding:8px;background:#242836;border:1px solid #2e3346;border-radius:6px;color:#e1e4ed;font-size:13px;min-width:200px">
+        <button class="dl-btn" onclick="addSource()">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Library Tab -->
+  <div class="tab-content" id="tab-library">
+    <div class="library-grid">
+      <a class="library-card" id="romm-link" target="_blank">
+        <div class="icon">&#127918;</div>
+        <div class="name">RomM</div>
+        <div class="desc">Retro ROM Library</div>
+      </a>
+      <a class="library-card" id="gamevault-link" target="_blank">
+        <div class="icon">&#128187;</div>
+        <div class="name">GameVault</div>
+        <div class="desc">PC Game Library</div>
+      </a>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+const HOST = location.hostname;
+let searchResults = [];
+let allPlatforms = [];
+let currentTab = 'search';
+let dlPollTimer = null;
+let bgPollTimer = null;
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+  loadPlatforms();
+  startBgPoll();
+  // Set library links
+  document.getElementById('romm-link').href = `http://${HOST}:8086`;
+  document.getElementById('gamevault-link').href = `http://${HOST}:8087`;
+});
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector(`[onclick="switchTab('${tab}')"]`).classList.add('active');
+  document.getElementById('tab-' + tab).classList.add('active');
+  if (tab === 'downloads') {
+    pollDownloads();
+    dlPollTimer = setInterval(pollDownloads, 5000);
+  } else if (dlPollTimer) {
+    clearInterval(dlPollTimer);
+    dlPollTimer = null;
+  }
+  if (tab === 'sources') loadSources();
+}
+
+function startBgPoll() {
+  bgPollTimer = setInterval(updateBadge, 15000);
+}
+
+async function loadPlatforms() {
+  try {
+    const resp = await fetch('/api/platforms');
+    const data = await resp.json();
+    allPlatforms = data.platforms;
+    const sel = document.getElementById('platform-filter');
+    sel.innerHTML = allPlatforms.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  } catch (e) {
+    console.error('Failed to load platforms:', e);
+  }
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const platform = document.getElementById('platform-filter').value;
+  const btn = document.getElementById('search-btn');
+  btn.disabled = true;
+  btn.textContent = 'Searching...';
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('search-info').textContent = '';
+
+  try {
+    const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}&platform=${platform}`);
+    const data = await resp.json();
+    searchResults = data.results || [];
+    document.getElementById('search-info').textContent =
+      `${searchResults.length} results in ${data.search_time_ms}ms`;
+    renderResults();
+  } catch (e) {
+    document.getElementById('search-info').textContent = 'Search failed';
+    toast('Search failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Search';
+  }
+}
+
+function renderResults() {
+  const container = document.getElementById('results');
+  if (searchResults.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="icon">&#128270;</div><div>No results found</div></div>';
+    return;
+  }
+  container.innerHTML = searchResults.map((r, i) => {
+    const badgeClass = r.is_pc ? 'pc' : 'console';
+    const showOverride = !r.is_pc || r.platform === 'Unknown' || r.platform === 'Other';
+    let overrideHtml = '';
+    if (showOverride) {
+      const opts = allPlatforms.filter(p => p.id !== 'all').map(p => {
+        const sel = (p.id === r.platform_slug || (r.is_pc && p.id === 'pc')) ? ' selected' : '';
+        return `<option value="${p.id}"${sel}>${esc(p.name)}</option>`;
+      }).join('');
+      overrideHtml = `<div class="platform-override"><select id="override-${i}" onchange="applyOverride(${i}, this.value)">${opts}</select></div>`;
+    }
+    // Safety scoring
+    const score = r.safety_score || 50;
+    let safetyClass, safetyLabel;
+    if (score >= 70) { safetyClass = 'safe'; safetyLabel = 'Safe'; }
+    else if (score >= 40) { safetyClass = 'caution'; safetyLabel = 'Caution'; }
+    else { safetyClass = 'risky'; safetyLabel = 'Risky'; }
+    const warnings = (r.safety_warnings || []);
+    const warningHtml = warnings.length ? `<div class="safety-warnings">${warnings.map(esc).join(' · ')}</div>` : '';
+    const resultClass = score < 40 ? 'result low-safety' : 'result';
+
+    const isDDL = r.source_type === 'ddl';
+    const sourceBadge = isDDL ? '<span class="source-badge ddl">DDL</span>' : '<span class="source-badge torrent">Torrent</span>';
+
+    return `<div class="${resultClass}">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:70px">
+        <span class="platform-badge ${badgeClass}">${esc(r.platform)}</span>
+        ${sourceBadge}
+        <span class="safety-badge ${safetyClass}">${safetyLabel}</span>
+      </div>
+      <div class="result-info">
+        <div class="result-title">${esc(r.title)}</div>
+        <div class="result-meta">
+          <span>${esc(r.indexer)}</span>
+          ${isDDL ? '<span style="color:#a29bfe">Direct Download</span>' : `<span class="seeds">${r.seeders} seeds</span><span>${r.leechers} leeches</span>`}
+          <span>${r.size_human}</span>
+          ${!isDDL ? `<span>${r.age}d old</span>` : ''}
+        </div>
+        ${warningHtml}
+        ${overrideHtml}
+      </div>
+      <button class="dl-btn" id="dl-btn-${i}" onclick="dlGame(${i})">Download</button>
+    </div>`;
+  }).join('');
+}
+
+function applyOverride(idx, value) {
+  const r = searchResults[idx];
+  if (value === 'pc') {
+    r.is_pc = true;
+    r.platform = 'PC';
+    r.platform_slug = null;
+  } else {
+    r.is_pc = false;
+    r.platform_slug = value;
+    const p = allPlatforms.find(x => x.id === value);
+    r.platform = p ? p.name : value;
+  }
+}
+
+async function dlGame(idx) {
+  const r = searchResults[idx];
+  const btn = document.getElementById('dl-btn-' + idx);
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+
+  try {
+    const resp = await fetch('/api/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(r),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      toast(`Downloading: ${r.title}`, 'success');
+      btn.textContent = 'Sent';
+      updateBadge();
+    } else {
+      toast(data.error || 'Download failed', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Download';
+    }
+  } catch (e) {
+    toast('Download failed: ' + e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Download';
+  }
+}
+
+async function pollDownloads() {
+  try {
+    const resp = await fetch('/api/downloads');
+    const data = await resp.json();
+    renderDownloads(data.downloads || []);
+  } catch (e) {
+    console.error('Poll error:', e);
+  }
+}
+
+async function updateBadge() {
+  try {
+    const resp = await fetch('/api/downloads');
+    const data = await resp.json();
+    const active = (data.downloads || []).filter(d =>
+      d.status === 'downloading' || d.status === 'stalled' || d.status === 'metadata' ||
+      d.status === 'organizing' || d.status === 'scanning' || d.status === 'queued'
+    ).length;
+    const badge = document.getElementById('dl-badge');
+    if (active > 0) {
+      badge.style.display = 'inline';
+      badge.textContent = active;
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (e) {}
+}
+
+function renderDownloads(downloads) {
+  const container = document.getElementById('downloads');
+  if (downloads.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="icon">&#128229;</div><div>No active downloads</div></div>';
+    return;
+  }
+  container.innerHTML = downloads.map(d => {
+    const hasProgress = d.progress !== undefined && d.progress !== null;
+    const pctClass = d.progress >= 100 ? 'complete' : (d.status === 'error' ? 'error' : '');
+    const etaStr = d.eta > 0 ? formatEta(d.eta) : '';
+
+    // Organize button for completed_unorganized torrents
+    let actionBtns = '';
+    if (d.status === 'completed_unorganized' && d.hash) {
+      actionBtns = `<button class="dl-btn" style="font-size:11px;padding:4px 10px" onclick="organizeTorrent('${d.hash}','${d.job_id||''}')">Organize</button>
+        <button class="remove-btn" onclick="removeTorrent('${d.hash}');removeJob('${d.job_id}')">Remove</button>`;
+    } else if (d.hash) {
+      actionBtns = `<button class="remove-btn" onclick="removeTorrent('${d.hash}')${d.job_id ? ";removeJob('"+d.job_id+"')" : ''}">Remove</button>`;
+    } else if (d.job_id) {
+      actionBtns = `<button class="remove-btn" onclick="removeJob('${d.job_id}')">Dismiss</button>`;
+    }
+
+    return `<div class="download-item">
+      <div class="download-header">
+        <span class="download-title">${esc(d.title)}</span>
+        ${actionBtns}
+      </div>
+      <div class="download-meta">
+        <span class="status-badge ${d.status}">${d.status}</span>
+        ${d.platform ? `<span class="platform-badge console">${esc(d.platform)}</span>` : ''}
+        ${d.size ? `<span>${d.size}</span>` : ''}
+        ${d.speed && d.speed !== '0 B/s' ? `<span>${d.speed}</span>` : ''}
+        ${etaStr ? `<span>ETA: ${etaStr}</span>` : ''}
+        ${hasProgress ? `<span>${d.progress}%</span>` : ''}
+      </div>
+      ${hasProgress ? `<div class="progress-bar-bg"><div class="progress-bar ${pctClass}" style="width:${d.progress}%"></div></div>` : ''}
+      ${d.detail ? `<div class="detail-msg">${esc(d.detail)}</div>` : ''}
+      ${d.error ? `<div class="error-msg">${esc(d.error)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function formatEta(seconds) {
+  if (seconds <= 0 || seconds > 864000) return '';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+async function removeTorrent(hash) {
+  await fetch(`/api/downloads/torrent/${hash}`, { method: 'DELETE' });
+  pollDownloads();
+}
+
+async function removeJob(jobId) {
+  await fetch(`/api/downloads/${jobId}`, { method: 'DELETE' });
+  pollDownloads();
+}
+
+async function organizeTorrent(hash, jobId) {
+  // Ask user to pick platform before organizing
+  const platform = prompt('Platform? (pc, wii, ngc, switch, ps2, ps3, psp, nds, 3ds, dc, psx, xbox, xbox360, ps4, gba, n64, snes, nes, gb, genesis, saturn, wiiu, psvita)', 'pc');
+  if (!platform) return;
+  const isPC = platform === 'pc';
+  const pName = isPC ? 'PC' : platform.toUpperCase();
+  const pSlug = isPC ? null : platform;
+  try {
+    const resp = await fetch(`/api/downloads/organize/${hash}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: pName, platform_slug: pSlug, is_pc: isPC }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      if (jobId) removeJob(jobId);
+      toast('Organizing: ' + pName, 'success');
+    } else {
+      toast(data.error || 'Organize failed', 'error');
+    }
+  } catch (e) { toast('Organize failed: ' + e.message, 'error'); }
+  pollDownloads();
+}
+
+async function clearFinished() {
+  await fetch('/api/downloads/clear', { method: 'POST' });
+  pollDownloads();
+  toast('Cleared finished downloads', 'success');
+}
+
+function toast(msg, type) {
+  const container = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type || '');
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+async function loadSources() {
+  try {
+    const resp = await fetch('/api/ddl-sources');
+    const data = await resp.json();
+    const container = document.getElementById('sources-list');
+    const prowlarr = {name: 'Prowlarr (Torrents)', url: '', type: 'prowlarr', builtin: true,
+      platforms: ['All platforms via torrent indexers']};
+    const all = [prowlarr, ...(data.sources || [])];
+    container.innerHTML = all.map((s, i) => {
+      const typeLabel = s.type === 'prowlarr' ? 'Torrent Aggregator' :
+        s.type === 'myrient' ? 'ROM Archive (No-Intro/Redump)' :
+        s.type === 'vimm' ? 'Curated ROM Collection' : 'Custom Source';
+      const delBtn = !s.builtin ? `<button class="remove-btn" onclick="deleteSource(${i - 1})">Remove</button>` : '';
+      return `<div style="background:#1a1d27;border:1px solid #2e3346;border-radius:8px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-size:14px;font-weight:600">${esc(s.name)}</div>
+          <div style="font-size:11px;color:#8b90a0">${typeLabel}</div>
+          ${s.url ? `<div style="font-size:10px;color:#8b90a0;margin-top:2px">${esc(s.url)}</div>` : ''}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="source-badge ${s.type === 'prowlarr' ? 'torrent' : 'ddl'}">${s.type === 'prowlarr' ? 'Torrent' : 'DDL'}</span>
+          ${delBtn}
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) { console.error('Failed to load sources:', e); }
+}
+
+async function addSource() {
+  const name = document.getElementById('source-name').value.trim();
+  const url = document.getElementById('source-url').value.trim();
+  if (!name || !url) { toast('Name and URL required', 'error'); return; }
+  try {
+    const resp = await fetch('/api/ddl-sources', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, url})
+    });
+    const data = await resp.json();
+    if (data.success) {
+      toast('Source added', 'success');
+      document.getElementById('source-name').value = '';
+      document.getElementById('source-url').value = '';
+      loadSources();
+    } else { toast(data.error, 'error'); }
+  } catch (e) { toast('Failed: ' + e.message, 'error'); }
+}
+
+async function deleteSource(idx) {
+  try {
+    await fetch(`/api/ddl-sources/${idx}`, {method: 'DELETE'});
+    loadSources();
+  } catch (e) { toast('Failed: ' + e.message, 'error'); }
+}
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

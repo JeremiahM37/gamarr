@@ -1,0 +1,65 @@
+version: "3.8"
+
+services:
+  # ── VPN (optional but recommended) ──────────────────────────────────────────
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - VPN_SERVICE_PROVIDER=mullvad        # or your provider
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=your_key_here
+      - SERVER_COUNTRIES=Switzerland
+    ports:
+      - "5001:5001"     # gamarr UI (exposed via gluetun network)
+    volumes:
+      - gluetun_data:/gluetun
+
+  # ── qBittorrent ───────────────────────────────────────────────────────────────
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent
+    container_name: qbittorrent
+    network_mode: "service:gluetun"   # routes through VPN
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - WEBUI_PORT=8080
+    volumes:
+      - qbittorrent_config:/config
+      - /your/games/path:/games-incoming   # must be owned by 1000:1000
+
+  # ── Gamarr ───────────────────────────────────────────────────────────────────
+  gamarr:
+    build: .
+    container_name: gamarr
+    network_mode: "service:gluetun"   # routes through VPN
+    environment:
+      - PROWLARR_URL=http://prowlarr:9696
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
+      - QB_URL=http://localhost:8080
+      - QB_USER=admin
+      - QB_PASS=${QB_PASS}
+      - QB_SAVE_PATH=/games-incoming/
+      - GAMES_VAULT_PATH=/vault
+      - GAMES_ROMS_PATH=/roms
+    volumes:
+      - /your/games/incoming:/games-incoming
+      - /your/games/vault:/vault
+      - /your/games/roms:/roms
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # for ClamAV (optional)
+    depends_on:
+      - gluetun
+
+  # ── ClamAV (optional — for virus scanning) ───────────────────────────────────
+  # clamav:
+  #   image: clamav/clamav
+  #   container_name: clamav
+  #   volumes:
+  #     - clamav_data:/var/lib/clamav
+
+volumes:
+  gluetun_data:
+  qbittorrent_config:
+  # clamav_data:
