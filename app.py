@@ -1317,6 +1317,49 @@ def recover_orphaned_torrents():
 # Main
 # =============================================================================
 
+
+
+# =============================================================================
+# Collection Stats
+# =============================================================================
+
+@app.route("/api/stats")
+def api_stats():
+    """Collection statistics: completed games by platform, recent additions."""
+    if download_jobs is None:
+        return jsonify({"platforms": {}, "total_completed": 0, "total_jobs": 0, "recent": [], "by_status": {}})
+
+    jobs = list(download_jobs.items())
+    by_platform = {}
+    by_status = {}
+    recent_completed = []
+
+    for _, job in jobs:
+        status = job.get("status", "unknown")
+        by_status[status] = by_status.get(status, 0) + 1
+
+        if status in ("completed", "organized"):
+            slug = job.get("platform_slug") or job.get("platform") or "unknown"
+            by_platform[slug] = by_platform.get(slug, 0) + 1
+            recent_completed.append({
+                "title": job.get("title", ""),
+                "platform": job.get("platform", slug),
+                "platform_slug": slug,
+                "completed_at": job.get("completed_at"),
+            })
+
+    sorted_platforms = dict(sorted(by_platform.items(), key=lambda x: -x[1]))
+    recent_completed.sort(key=lambda x: x.get("completed_at") or 0, reverse=True)
+
+    return jsonify({
+        "platforms": sorted_platforms,
+        "by_status": by_status,
+        "total_completed": sum(by_platform.values()),
+        "total_jobs": len(jobs),
+        "recent": recent_completed[:10],
+    })
+
+
 # =============================================================================
 # Health endpoint
 # =============================================================================
@@ -1389,7 +1432,6 @@ if __name__ == "__main__":
     threading.Thread(target=recover_orphaned_torrents, daemon=True).start()
 
     # Initialize and start AI monitor
-    global _monitor
     _monitor = monitor.GamarrMonitor(
         get_jobs=lambda: list(download_jobs.items()),
         qb_reauth=lambda: qb.login(),
