@@ -1278,7 +1278,7 @@ def recover_orphaned_torrents():
                 for hint, (p_name, p_slug, p_is_pc) in platform_hints.items():
                     if hint in name_lower:
                         platform, platform_slug, is_pc = p_name, p_slug, p_is_pc
-                    break
+                        break
 
             if progress >= 1.0:
                 # Completed but not organized - create a job for it
