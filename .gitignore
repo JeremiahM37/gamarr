@@ -6,3 +6,4 @@ venv/
 *.db
 ddl_sources.json
 *.log
+CLAUDE.md
