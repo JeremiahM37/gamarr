@@ -35,6 +35,9 @@ def has_qbittorrent():
 def has_clamav():
     return bool(DOCKER_SOCKET and os.path.exists(DOCKER_SOCKET))
 
+# Experimental: extract archives after organizing ROMs (default off)
+EXTRACT_ARCHIVES = os.getenv("EXTRACT_ARCHIVES", "false").lower() in ("true", "1", "yes")
+
 # ── AI Monitor ─────────────────────────────────────────────────────────────────
 AI_MONITOR_ENABLED = os.getenv("AI_MONITOR_ENABLED", "false").lower() in ("true", "1", "yes")
 AI_PROVIDER = os.getenv("AI_PROVIDER", "ollama")      # ollama | openai | anthropic

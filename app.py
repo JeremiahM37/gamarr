@@ -444,6 +444,87 @@ from urllib.parse import unquote, urljoin, quote
 
 DDL_SOURCES_FILE = os.path.join(config.DATA_DIR, "ddl_sources.json")
 
+# ── Settings persistence ────────────────────────────────────────────────────
+SETTINGS_FILE = os.path.join(config.DATA_DIR, "settings.json")
+
+DEFAULT_SETTINGS = {
+    "extract_archives": config.EXTRACT_ARCHIVES,
+}
+
+
+def _load_settings():
+    if not os.path.exists(SETTINGS_FILE):
+        return dict(DEFAULT_SETTINGS)
+    try:
+        with open(SETTINGS_FILE) as f:
+            saved = json.load(f)
+        return {**DEFAULT_SETTINGS, **saved}
+    except Exception:
+        return dict(DEFAULT_SETTINGS)
+
+
+def _save_settings(settings):
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+# ── Post-download helpers ───────────────────────────────────────────────────
+def extract_archives(directory):
+    """Extract RAR/ZIP/7z archives in a directory (recursive). Returns list of extracted archive paths."""
+    import subprocess
+    import glob as _glob
+    extracted = []
+    for pattern in ("*.rar", "*.RAR", "*.zip", "*.ZIP", "*.7z"):
+        for archive in _glob.glob(os.path.join(directory, pattern)):
+            extract_dir = archive + ".extracted"
+            if os.path.isdir(extract_dir):
+                continue
+            os.makedirs(extract_dir, exist_ok=True)
+            ext = archive.lower().rsplit(".", 1)[-1]
+            try:
+                if ext == "rar":
+                    subprocess.run(
+                        ["unrar", "x", "-o+", "-y", archive, extract_dir + "/"],
+                        capture_output=True, timeout=3600, check=True,
+                    )
+                else:
+                    subprocess.run(
+                        ["7z", "x", f"-o{extract_dir}", "-y", archive],
+                        capture_output=True, timeout=3600, check=True,
+                    )
+                extracted.append(archive)
+                logger.info(f"Extracted: {os.path.basename(archive)}")
+            except Exception as e:
+                logger.warning(f"Extraction failed for {os.path.basename(archive)}: {e}")
+                shutil.rmtree(extract_dir, ignore_errors=True)
+    for entry in os.listdir(directory):
+        subdir = os.path.join(directory, entry)
+        if os.path.isdir(subdir) and not subdir.endswith(".extracted"):
+            extracted.extend(extract_archives(subdir))
+    return extracted
+
+
+def write_metadata_sidecar(dest_path, title, platform, platform_slug, is_pc, source_type="torrent"):
+    """Write a .gamarr.json metadata sidecar next to the organized file/dir."""
+    meta = {
+        "title": title,
+        "platform": platform or "",
+        "platform_slug": platform_slug or "",
+        "is_pc": is_pc,
+        "source": source_type,
+        "organized_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if os.path.isdir(dest_path):
+        sidecar = os.path.join(dest_path, ".gamarr.json")
+    else:
+        sidecar = dest_path + ".gamarr.json"
+    try:
+        with open(sidecar, "w") as f:
+            json.dump(meta, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to write metadata sidecar: {e}")
+
 
 def download_ddl(url, dest_path, job_id):
     """Download a file via direct HTTP with progress tracking."""
@@ -810,6 +891,7 @@ def organize_game(job_id, torrent, platform, platform_slug, is_pc):
                 shutil.move(content_path, dest)
             download_jobs[job_id]["status"] = "completed"
             download_jobs[job_id]["detail"] = "Moved to GameVault"
+            write_metadata_sidecar(dest, torrent_name, platform, platform_slug, is_pc, "torrent")
             logger.info(f"PC game organized: {torrent_name} -> {dest}")
 
         elif platform_slug:
@@ -823,7 +905,20 @@ def organize_game(job_id, torrent, platform, platform_slug, is_pc):
                 shutil.move(content_path, dest)
             download_jobs[job_id]["status"] = "completed"
             download_jobs[job_id]["detail"] = f"Moved to RomM ({platform})"
+            write_metadata_sidecar(dest, torrent_name, platform, platform_slug, is_pc, "torrent")
             logger.info(f"ROM organized: {torrent_name} -> {dest}")
+
+            # Experimental: extract archives in ROM downloads
+            settings = _load_settings()
+            if settings.get("extract_archives"):
+                try:
+                    target = dest if os.path.isdir(dest) else os.path.dirname(dest)
+                    extracted = extract_archives(target)
+                    if extracted:
+                        download_jobs[job_id]["detail"] += f" (extracted {len(extracted)} archive(s))"
+                        logger.info(f"Extracted {len(extracted)} archive(s) for {torrent_name}")
+                except Exception as e:
+                    logger.warning(f"Post-download extraction failed for {torrent_name}: {e}")
 
         else:
             download_jobs[job_id]["status"] = "completed"
@@ -1007,6 +1102,7 @@ def _organize_ddl_file(job_id, filepath, title, platform, platform_slug, is_pc):
             shutil.move(filepath, dest)
             download_jobs[job_id]["status"] = "completed"
             download_jobs[job_id]["detail"] = "Moved to GameVault"
+            write_metadata_sidecar(dest, title, platform, platform_slug, is_pc, "ddl")
             logger.info(f"DDL PC game: {filename} -> {dest}")
         elif platform_slug:
             dest_dir = os.path.join(config.GAMES_ROMS_PATH, platform_slug)
@@ -1015,7 +1111,20 @@ def _organize_ddl_file(job_id, filepath, title, platform, platform_slug, is_pc):
             shutil.move(filepath, dest)
             download_jobs[job_id]["status"] = "completed"
             download_jobs[job_id]["detail"] = f"Moved to RomM ({platform})"
+            write_metadata_sidecar(dest, title, platform, platform_slug, is_pc, "ddl")
             logger.info(f"DDL ROM: {filename} -> {dest}")
+
+            # Experimental: extract archives in ROM downloads
+            settings = _load_settings()
+            if settings.get("extract_archives"):
+                try:
+                    target = dest if os.path.isdir(dest) else os.path.dirname(dest)
+                    extracted = extract_archives(target)
+                    if extracted:
+                        download_jobs[job_id]["detail"] += f" (extracted {len(extracted)} archive(s))"
+                        logger.info(f"Extracted {len(extracted)} archive(s) for {filename}")
+                except Exception as e:
+                    logger.warning(f"Post-download extraction failed for {filename}: {e}")
         else:
             download_jobs[job_id]["status"] = "completed"
             download_jobs[job_id]["detail"] = "Downloaded (unknown platform, left in staging)"
@@ -1063,6 +1172,22 @@ def api_delete_ddl_source(idx):
         _save_ddl_sources(custom_sources)
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Not found"}), 404
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings():
+    return jsonify(_load_settings())
+
+
+@app.route("/api/settings", methods=["PUT"])
+def api_update_settings():
+    data = request.json or {}
+    settings = _load_settings()
+    for key in DEFAULT_SETTINGS:
+        if key in data:
+            settings[key] = data[key]
+    _save_settings(settings)
+    return jsonify(settings)
 
 
 @app.route("/api/downloads")

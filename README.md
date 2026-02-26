@@ -83,6 +83,7 @@ When doing this, expose ports via the gluetun service, not the gamarr service di
 | `CLAMAV_CONTAINER` | `clamav` | ClamAV container name (optional) |
 | `CLAMAV_SOCKET` | `/run/clamav/clamd.sock` | ClamAV Unix socket path |
 | `DOCKER_SOCKET` | `/var/run/docker.sock` | Docker socket for on-demand ClamAV |
+| `EXTRACT_ARCHIVES` | `false` | Auto-extract ROM archives after organizing (experimental) |
 
 See `.env.example` for a copy-paste template with explanatory comments.
 
@@ -160,6 +161,33 @@ To enable:
 
 ClamAV is **optional** — if the Docker socket is not mounted, scanning is skipped silently.
 
+## Archive Handling
+
+ROM torrents frequently contain compressed archives (RAR, ZIP, 7z) rather than
+bare ROM files — for example, a Switch torrent may contain three separate RAR
+archives inside a folder. By default Gamarr moves these archives as-is to the
+ROM destination directory, leaving extraction to downstream tools or the user.
+
+### Metadata Sidecar
+
+Every organized download gets a `.gamarr.json` file written alongside it with
+the title, platform, source type, and timestamp. This makes it easy for
+downstream scripts to identify where files came from without parsing directory
+names.
+
+### Experimental: Auto-Extraction
+
+Enable **Extract archives after download** in the Settings tab (or set
+`EXTRACT_ARCHIVES=true`) to have Gamarr automatically extract archives in ROM
+downloads after organizing. Archives are extracted in-place alongside the
+originals so that tools like rsync won't re-download deleted archives.
+
+PC game repacks are never auto-extracted — they rely on their installer
+structure (setup.exe + data files) being intact.
+
+**Requirements:** The container image includes `unrar` and `7z`. If you use a
+custom image, install `unrar` and `p7zip-full`.
+
 ## Persistent Jobs
 
 Download job state is stored in a SQLite database at `DATA_DIR/gamarr.db`. Jobs survive container restarts — any jobs that were `downloading`, `scanning`, or `organizing` at restart are marked `interrupted` so you can see what was in progress.
@@ -182,6 +210,7 @@ All endpoints return JSON.
 | POST | `/api/downloads/organize/<hash>` | Manually organize a completed torrent |
 | POST | `/api/downloads/clear` | Clear all completed/errored jobs |
 | GET/POST/DELETE | `/api/ddl-sources` | Manage custom DDL sources |
+| GET/PUT | `/api/settings` | Read/update settings (extraction, etc.) |
 
 ## License
 
