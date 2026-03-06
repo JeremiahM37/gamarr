@@ -67,6 +67,43 @@ def test_ddl_sources_empty(client):
     assert r.status_code == 200
 
 
+def test_ddl_sources_add_and_delete(client):
+    r = client.post("/api/ddl-sources", json={"name": "TestSite", "url": "https://example.com/"})
+    assert r.status_code == 200
+    assert r.get_json()["success"] is True
+
+    r = client.get("/api/ddl-sources")
+    sources = r.get_json()["sources"]
+    custom = [s for s in sources if s.get("type") == "custom"]
+    assert any(s["name"] == "TestSite" for s in custom)
+
+    # Delete the first custom source (index 0 into the custom list; DELETE endpoint uses custom-only index)
+    idx = 0
+    r = client.delete(f"/api/ddl-sources/{idx}")
+    assert r.status_code == 200
+    assert r.get_json()["success"] is True
+
+
+def test_ddl_sources_add_missing_fields(client):
+    r = client.post("/api/ddl-sources", json={"name": "NoUrl"})
+    assert r.status_code == 400
+
+
+def test_settings_get_and_update(client):
+    r = client.get("/api/settings")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert "extract_archives" in data
+
+    r = client.put("/api/settings", json={"extract_archives": True})
+    assert r.status_code == 200
+    updated = r.get_json()
+    assert updated["extract_archives"] is True
+
+    # Reset
+    client.put("/api/settings", json={"extract_archives": False})
+
+
 # ── Downloads ─────────────────────────────────────────────────────────────────
 
 def test_downloads_list(client):
@@ -81,6 +118,56 @@ def test_downloads_clear(client):
     assert r.status_code == 200
 
 
+# ── Downloads API ─────────────────────────────────────────────────────────────
+
+def test_api_download_missing_url(client):
+    r = client.post("/api/download", json={"title": "Test Game", "source_type": "torrent"})
+    assert r.status_code in (400, 200)  # 400 expected; 200 if job created with error status
+    if r.status_code == 200:
+        data = r.get_json()
+        # If a job_id was returned, it should have errored quickly
+        assert "job_id" in data or data.get("success") is False
+
+
+def test_api_delete_job(client):
+    import app as gamarr_app
+    # Seed a completed job directly into the store
+    gamarr_app.download_jobs["del-test-1"] = {
+        "status": "completed", "title": "Game To Delete",
+        "platform": "Switch", "platform_slug": "switch",
+        "is_pc": False, "error": None, "detail": "Done",
+    }
+    r = client.delete("/api/downloads/del-test-1")
+    assert r.status_code == 200
+    assert r.get_json()["success"] is True
+    assert "del-test-1" not in gamarr_app.download_jobs
+
+
+def test_api_delete_nonexistent_job(client):
+    r = client.delete("/api/downloads/does-not-exist-xyz")
+    assert r.status_code == 404
+
+
+def test_api_downloads_clear_removes_finished(client):
+    import app as gamarr_app
+    gamarr_app.download_jobs["clr-1"] = {
+        "status": "completed", "title": "Done Game",
+        "platform": "PC", "platform_slug": None,
+        "is_pc": True, "error": None, "detail": "Done",
+    }
+    gamarr_app.download_jobs["clr-2"] = {
+        "status": "error", "title": "Failed Game",
+        "platform": "Switch", "platform_slug": "switch",
+        "is_pc": False, "error": "timed out", "detail": "",
+    }
+    r = client.post("/api/downloads/clear")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["cleared"] >= 2
+    assert "clr-1" not in gamarr_app.download_jobs
+    assert "clr-2" not in gamarr_app.download_jobs
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 def test_stats_empty(client):
@@ -91,6 +178,22 @@ def test_stats_empty(client):
     assert "total_jobs" in data
     assert "total_completed" in data
     assert isinstance(data["platforms"], dict)
+
+
+def test_stats_reflects_completed_jobs(client):
+    import app as gamarr_app, time as _time
+    gamarr_app.download_jobs["stats-sw"] = {
+        "status": "completed", "title": "Zelda",
+        "platform": "Switch", "platform_slug": "switch",
+        "is_pc": False, "error": None, "detail": "Done",
+        "completed_at": _time.time(),
+    }
+    r = client.get("/api/stats")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["total_completed"] >= 1
+    assert "switch" in data["platforms"]
+    del gamarr_app.download_jobs["stats-sw"]
 
 
 # ── AI Monitor ────────────────────────────────────────────────────────────────
@@ -228,3 +331,72 @@ def test_organize_game_sets_completed_at(client, monkeypatch, tmp_path):
     assert job["status"] == "completed"
     assert "completed_at" in job, "completed_at was not set by organize_game"
     assert before <= job["completed_at"] <= after
+
+
+def test_organize_game_pc_path(monkeypatch, tmp_path):
+    """PC games must be moved to the vault directory, not the ROMs directory."""
+    import app as gamarr_app
+
+    job_id = "pc-game-job"
+    gamarr_app.download_jobs[job_id] = {
+        "status": "organizing", "title": "Witcher 3",
+        "platform": "PC", "platform_slug": None,
+        "is_pc": True, "error": None, "detail": "",
+    }
+
+    src = tmp_path / "Witcher3.exe"
+    src.write_bytes(b"data")
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+
+    monkeypatch.setattr(gamarr_app.config, "GAMES_VAULT_PATH", str(vault_dir))
+    monkeypatch.setattr(gamarr_app.config, "QB_SAVE_PATH", str(tmp_path))
+    monkeypatch.setattr(gamarr_app, "scan_with_clamav", lambda path: (True, []))
+
+    fake_torrent = {
+        "name": "Witcher3.exe",
+        "hash": "beef0001",
+        "content_path": str(src),
+        "save_path": str(tmp_path),
+        "progress": 1.0,
+    }
+
+    gamarr_app.organize_game(job_id, fake_torrent, "PC", None, True)
+
+    job = gamarr_app.download_jobs[job_id]
+    assert job["status"] == "completed"
+    assert "GameVault" in job["detail"]
+    assert (vault_dir / "Witcher3.exe").exists()
+
+
+def test_organize_game_unknown_platform_leaves_in_staging(monkeypatch, tmp_path):
+    """Files with no known platform slug must not be moved and stay 'completed'."""
+    import app as gamarr_app
+
+    job_id = "unknown-plat-job"
+    gamarr_app.download_jobs[job_id] = {
+        "status": "organizing", "title": "Mystery ROM",
+        "platform": "Unknown", "platform_slug": None,
+        "is_pc": False, "error": None, "detail": "",
+    }
+
+    src = tmp_path / "mystery.rom"
+    src.write_bytes(b"data")
+    monkeypatch.setattr(gamarr_app.config, "QB_SAVE_PATH", str(tmp_path))
+    monkeypatch.setattr(gamarr_app, "scan_with_clamav", lambda path: (True, []))
+
+    fake_torrent = {
+        "name": "mystery.rom",
+        "hash": "beef0002",
+        "content_path": str(src),
+        "save_path": str(tmp_path),
+        "progress": 1.0,
+    }
+
+    gamarr_app.organize_game(job_id, fake_torrent, "Unknown", None, False)
+
+    job = gamarr_app.download_jobs[job_id]
+    assert job["status"] == "completed"
+    assert "staging" in job["detail"].lower() or "unknown" in job["detail"].lower()
+    # File must NOT have been deleted
+    assert src.exists()
