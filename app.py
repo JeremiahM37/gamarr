@@ -8,8 +8,6 @@ import time
 import uuid
 
 import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from flask import Flask, jsonify, request, send_file
 
 import config
@@ -534,13 +532,17 @@ def download_ddl(url, dest_path, job_id):
         resp.raise_for_status()
         total = int(resp.headers.get("Content-Length", 0))
 
-        # Get filename from Content-Disposition or URL
+        # Get filename from Content-Disposition or URL.
+        # Use os.path.basename to strip any path traversal sequences
+        # (e.g. Content-Disposition: filename="../../etc/cron.d/evil").
         cd = resp.headers.get("Content-Disposition", "")
         fname_match = re.search(r'filename="?([^";\n]+)"?', cd)
         if fname_match:
-            filename = fname_match.group(1).strip()
+            filename = os.path.basename(fname_match.group(1).strip())
         else:
-            filename = unquote(url.split("/")[-1].split("?")[0])
+            filename = os.path.basename(unquote(url.split("/")[-1].split("?")[0]))
+        if not filename:
+            filename = "downloaded_file"
 
         filepath = os.path.join(dest_path, filename)
         downloaded = 0
@@ -572,7 +574,7 @@ def download_vimm_game(game_id, dest_path, job_id):
         # Step 1: Get game page
         game_url = f"https://vimm.net/vault/{game_id}"
         download_jobs[job_id]["detail"] = "Fetching game page..."
-        resp = session.get(game_url, headers={"User-Agent": ua}, timeout=15, verify=False)
+        resp = session.get(game_url, headers={"User-Agent": ua}, timeout=15)
         if "unavailable at the request of" in resp.text:
             download_jobs[job_id]["status"] = "error"
             download_jobs[job_id]["error"] = "Game removed by DMCA takedown"
@@ -638,7 +640,7 @@ def download_vimm_game(game_id, dest_path, job_id):
                         "Origin": "https://vimm.net",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     },
-                    stream=True, timeout=60, verify=False,
+                    stream=True, timeout=60,
                     allow_redirects=True,
                 )
                 if dl_resp.status_code == 200:
@@ -658,7 +660,10 @@ def download_vimm_game(game_id, dest_path, job_id):
         total = int(dl_resp.headers.get("Content-Length", 0))
         cd = dl_resp.headers.get("Content-Disposition", "")
         fname_match = re.search(r'filename="?([^";\n]+)"?', cd)
-        filename = fname_match.group(1).strip() if fname_match else f"{game_id}.7z"
+        # Strip path components to prevent Content-Disposition path traversal
+        filename = os.path.basename(fname_match.group(1).strip()) if fname_match else f"{game_id}.7z"
+        if not filename:
+            filename = f"{game_id}.7z"
         filepath = os.path.join(dest_path, filename)
 
         downloaded = 0

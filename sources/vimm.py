@@ -3,9 +3,6 @@ import logging
 import re
 
 import requests
-import urllib3
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from .base import GameSource
 
@@ -53,7 +50,6 @@ class VimmSource(GameSource):
                     )
                 },
                 timeout=15,
-                verify=False,
             )
             if resp.status_code != 200:
                 return []

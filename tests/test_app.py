@@ -400,3 +400,66 @@ def test_organize_game_unknown_platform_leaves_in_staging(monkeypatch, tmp_path)
     assert "staging" in job["detail"].lower() or "unknown" in job["detail"].lower()
     # File must NOT have been deleted
     assert src.exists()
+
+
+# =============================================================================
+# Security regression tests
+# =============================================================================
+
+def test_download_ddl_path_traversal_via_content_disposition(monkeypatch, tmp_path):
+    """Content-Disposition filename with path components must be stripped."""
+    import app as gamarr_app
+
+    job_id = "sec-ddl-job"
+    gamarr_app.download_jobs[job_id] = {
+        "status": "downloading", "title": "Evil ROM", "detail": "",
+    }
+
+    class _FakeResp:
+        status_code = 200
+        headers = {
+            "Content-Disposition": 'attachment; filename="../../etc/cron.d/evil"',
+            "Content-Length": "4",
+        }
+        def raise_for_status(self): pass
+        def iter_content(self, chunk_size=None):
+            yield b"data"
+
+    monkeypatch.setattr(gamarr_app.requests, "get", lambda *a, **kw: _FakeResp())
+
+    result = gamarr_app.download_ddl("http://example.com/rom.zip", str(tmp_path), job_id)
+
+    # File must land inside dest_path, not escape it
+    assert result is not None
+    assert os.path.dirname(os.path.abspath(result)) == str(tmp_path)
+    # Basename must be sanitised — no directory separators
+    assert "/" not in os.path.basename(result)
+    assert ".." not in result
+
+
+def test_download_ddl_path_traversal_from_url(monkeypatch, tmp_path):
+    """URL path components must not escape dest_path even without Content-Disposition."""
+    import app as gamarr_app
+
+    job_id = "sec-ddl-url-job"
+    gamarr_app.download_jobs[job_id] = {
+        "status": "downloading", "title": "Evil ROM", "detail": "",
+    }
+
+    class _FakeResp:
+        status_code = 200
+        headers = {"Content-Length": "4"}
+        def raise_for_status(self): pass
+        def iter_content(self, chunk_size=None):
+            yield b"data"
+
+    monkeypatch.setattr(gamarr_app.requests, "get", lambda *a, **kw: _FakeResp())
+
+    # URL whose last segment looks like a path traversal
+    result = gamarr_app.download_ddl(
+        "http://example.com/../../etc/passwd", str(tmp_path), job_id
+    )
+
+    assert result is not None
+    assert os.path.dirname(os.path.abspath(result)) == str(tmp_path)
+    assert ".." not in result
