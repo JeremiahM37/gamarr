@@ -154,3 +154,77 @@ def test_recover_orphaned_torrents_detects_switch_platform(client, monkeypatch):
     assert job["status"] == "completed_unorganized"
     assert job["platform_slug"] == "switch"
     assert job["is_pc"] is False
+
+
+def test_recover_orphaned_torrents_skips_already_tracked(client, monkeypatch):
+    """Calling recover twice (simulating restart) must not create duplicate jobs."""
+    import app as gamarr_app
+
+    class FakeQB:
+        def login(self):
+            return True
+
+        def get_torrents(self, category=None):
+            return [{
+                "name": "Zelda Breath of the Wild [NSP]",
+                "hash": "aabbccdd",
+                "progress": 1.0,
+            }]
+
+    for jid, _ in list(gamarr_app.download_jobs.items()):
+        del gamarr_app.download_jobs[jid]
+
+    monkeypatch.setattr(gamarr_app, "qb", FakeQB())
+
+    # First recovery — should create one job
+    gamarr_app.recover_orphaned_torrents()
+    assert len(list(gamarr_app.download_jobs.items())) == 1
+
+    # Second recovery (simulates restart) — must NOT create a duplicate
+    gamarr_app.recover_orphaned_torrents()
+    assert len(list(gamarr_app.download_jobs.items())) == 1, "Duplicate job created on second recovery"
+
+
+def test_organize_game_sets_completed_at(client, monkeypatch, tmp_path):
+    """organize_game() must write completed_at so stats/recent list sorts correctly."""
+    import app as gamarr_app
+    import time as _time
+
+    # Arrange: pre-create a job
+    job_id = "testjob1"
+    gamarr_app.download_jobs[job_id] = {
+        "status": "organizing",
+        "title": "Test Game",
+        "platform": "Switch",
+        "platform_slug": "switch",
+        "is_pc": False,
+        "error": None,
+        "detail": "",
+    }
+
+    # Create a fake file and destination
+    src = tmp_path / "game.nsp"
+    src.write_bytes(b"rom")
+    roms_dir = tmp_path / "roms"
+    roms_dir.mkdir()
+
+    monkeypatch.setattr(gamarr_app.config, "GAMES_ROMS_PATH", str(roms_dir))
+    monkeypatch.setattr(gamarr_app.config, "QB_SAVE_PATH", str(tmp_path))
+    monkeypatch.setattr(gamarr_app, "scan_with_clamav", lambda path: (True, []))
+
+    fake_torrent = {
+        "name": "Test Game",
+        "hash": "abcd1234",
+        "content_path": str(src),
+        "save_path": str(tmp_path),
+        "progress": 1.0,
+    }
+
+    before = _time.time()
+    gamarr_app.organize_game(job_id, fake_torrent, "Switch", "switch", False)
+    after = _time.time()
+
+    job = gamarr_app.download_jobs[job_id]
+    assert job["status"] == "completed"
+    assert "completed_at" in job, "completed_at was not set by organize_game"
+    assert before <= job["completed_at"] <= after

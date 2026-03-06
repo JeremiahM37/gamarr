@@ -890,6 +890,7 @@ def organize_game(job_id, torrent, platform, platform_slug, is_pc):
             else:
                 shutil.move(content_path, dest)
             download_jobs[job_id]["status"] = "completed"
+            download_jobs[job_id]["completed_at"] = time.time()
             download_jobs[job_id]["detail"] = "Moved to GameVault"
             write_metadata_sidecar(dest, torrent_name, platform, platform_slug, is_pc, "torrent")
             logger.info(f"PC game organized: {torrent_name} -> {dest}")
@@ -904,6 +905,7 @@ def organize_game(job_id, torrent, platform, platform_slug, is_pc):
             else:
                 shutil.move(content_path, dest)
             download_jobs[job_id]["status"] = "completed"
+            download_jobs[job_id]["completed_at"] = time.time()
             download_jobs[job_id]["detail"] = f"Moved to RomM ({platform})"
             write_metadata_sidecar(dest, torrent_name, platform, platform_slug, is_pc, "torrent")
             logger.info(f"ROM organized: {torrent_name} -> {dest}")
@@ -1101,6 +1103,7 @@ def _organize_ddl_file(job_id, filepath, title, platform, platform_slug, is_pc):
             dest = os.path.join(config.GAMES_VAULT_PATH, filename)
             shutil.move(filepath, dest)
             download_jobs[job_id]["status"] = "completed"
+            download_jobs[job_id]["completed_at"] = time.time()
             download_jobs[job_id]["detail"] = "Moved to GameVault"
             write_metadata_sidecar(dest, title, platform, platform_slug, is_pc, "ddl")
             logger.info(f"DDL PC game: {filename} -> {dest}")
@@ -1110,6 +1113,7 @@ def _organize_ddl_file(job_id, filepath, title, platform, platform_slug, is_pc):
             dest = os.path.join(dest_dir, filename)
             shutil.move(filepath, dest)
             download_jobs[job_id]["status"] = "completed"
+            download_jobs[job_id]["completed_at"] = time.time()
             download_jobs[job_id]["detail"] = f"Moved to RomM ({platform})"
             write_metadata_sidecar(dest, title, platform, platform_slug, is_pc, "ddl")
             logger.info(f"DDL ROM: {filename} -> {dest}")
@@ -1375,6 +1379,16 @@ def recover_orphaned_torrents():
             t_name = t.get("name", "")
             t_hash = t.get("hash", "")
             progress = t.get("progress", 0)
+
+            # Skip torrents already tracked by a persistent job (avoids duplicates after restart)
+            already_tracked = any(
+                job.get("title", "").lower() in t_name.lower()
+                or t_name.lower() in job.get("title", "").lower()
+                for _, job in download_jobs.items()
+            )
+            if already_tracked:
+                logger.debug(f"Orphan recovery: skipping already-tracked torrent: {t_name}")
+                continue
 
             # Create a recovery job for any existing torrent
             job_id = str(uuid.uuid4())[:8]
