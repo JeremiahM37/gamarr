@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gamarr</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+      colors: { slate: { 850: '#172033', 950: '#0b1120' } }
+    }
+  }
+}
+</script>
+<style>
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  .tab-content { display: none; animation: fadeIn 0.2s ease-out; }
+  .tab-content.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  .game-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+  .game-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }
+  .skeleton { background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .toast-enter { animation: toastIn 0.3s ease-out; }
+  @keyframes toastIn { from { opacity: 0; transform: translateX(100%); } to { opacity: 1; transform: translateX(0); } }
+  .progress-bar { transition: width 0.5s ease; }
+  .nav-tab.active { border-color: #6366f1; color: #e0e7ff; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200 font-sans min-h-screen">
+
+<!-- Toast Container -->
+<div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm"></div>
+
+<!-- Main App -->
+<div class="min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/></svg>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold text-white leading-tight">Gamarr</h1>
+          <p class="text-xs text-slate-400 hidden sm:block">Game Search & Download</p>
+        </div>
+      </div>
+      <span id="header-stats" class="text-xs text-slate-500 hidden sm:block"></span>
+    </div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6">
+      <nav class="flex gap-1 -mb-px overflow-x-auto">
+        <button onclick="switchTab('search')" class="nav-tab active px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap" data-tab="search">
+          <svg class="w-4 h-4 inline mr-1.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>Search
+        </button>
+        <button onclick="switchTab('library')" class="nav-tab px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap" data-tab="library">
+          <svg class="w-4 h-4 inline mr-1.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/></svg>Library
+        </button>
+        <button onclick="switchTab('downloads')" class="nav-tab px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap relative" data-tab="downloads">
+          <svg class="w-4 h-4 inline mr-1.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>Downloads
+          <span id="dl-badge" class="hidden ml-1 px-1.5 py-0.5 text-xs bg-indigo-600 text-white rounded-full"></span>
+        </button>
+        <button onclick="switchTab('wishlist')" class="nav-tab px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap" data-tab="wishlist">
+          <svg class="w-4 h-4 inline mr-1.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>Wishlist
+        </button>
+        <button onclick="switchTab('settings')" class="nav-tab px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap" data-tab="settings">
+          <svg class="w-4 h-4 inline mr-1.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Settings
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6">
+
+    <!-- Search Tab -->
+    <div class="tab-content active" id="tab-search">
+      <div class="flex flex-col sm:flex-row gap-3 mb-6">
+        <input type="text" id="search-input" placeholder="Search for games..." class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500" onkeydown="if(event.key==='Enter')doSearch()">
+        <select id="platform-filter" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-slate-300 focus:outline-none focus:border-indigo-500"></select>
+        <button onclick="doSearch()" id="search-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-2.5 rounded-lg transition-colors whitespace-nowrap">Search</button>
+      </div>
+      <div id="search-info" class="text-sm text-slate-500 mb-4"></div>
+      <div id="results" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+    </div>
+
+    <!-- Library Tab -->
+    <div class="tab-content" id="tab-library">
+      <div class="flex flex-col sm:flex-row gap-3 mb-6">
+        <input type="text" id="lib-search" placeholder="Filter library..." class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500" onkeydown="if(event.key==='Enter')loadLibrary()">
+        <select id="lib-platform" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-slate-300" onchange="loadLibrary()"></select>
+        <div class="flex gap-2">
+          <a id="romm-link" target="_blank" class="bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/30 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap inline-flex items-center">RomM</a>
+          <a id="gamevault-link" target="_blank" class="bg-orange-600/20 text-orange-400 border border-orange-600/30 hover:bg-orange-600/30 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap inline-flex items-center">GameVault</a>
+        </div>
+      </div>
+      <div id="lib-stats" class="text-sm text-slate-500 mb-4"></div>
+      <div id="library-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+      <div id="lib-pagination" class="flex justify-center gap-2 mt-6"></div>
+    </div>
+
+    <!-- Downloads Tab -->
+    <div class="tab-content" id="tab-downloads">
+      <div class="flex gap-3 mb-4">
+        <button onclick="clearFinished()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 px-4 py-2 rounded-lg text-sm transition-colors">Clear Finished</button>
+      </div>
+      <div id="downloads" class="space-y-3"></div>
+    </div>
+
+    <!-- Wishlist Tab -->
+    <div class="tab-content" id="tab-wishlist">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
+        <h3 class="text-sm font-semibold text-slate-300 mb-3">Add to Wishlist</h3>
+        <div class="flex flex-col sm:flex-row gap-3">
+          <input type="text" id="wish-title" placeholder="Game title" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+          <select id="wish-platform" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-300"></select>
+          <button onclick="addWishlist()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg transition-colors whitespace-nowrap">Add</button>
+        </div>
+      </div>
+      <div id="wishlist" class="space-y-2"></div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-content" id="tab-settings">
+      <div class="space-y-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Connection Tests</h3>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <button onclick="testConn('prowlarr')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-3 text-left transition-colors">
+              <div class="text-sm font-medium text-white">Prowlarr</div>
+              <div class="text-xs text-slate-500 mt-1" id="test-prowlarr-status">Not tested</div>
+            </button>
+            <button onclick="testConn('qbittorrent')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-3 text-left transition-colors">
+              <div class="text-sm font-medium text-white">qBittorrent</div>
+              <div class="text-xs text-slate-500 mt-1" id="test-qbittorrent-status">Not tested</div>
+            </button>
+            <button onclick="testConn('sabnzbd')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-3 text-left transition-colors">
+              <div class="text-sm font-medium text-white">SABnzbd</div>
+              <div class="text-xs text-slate-500 mt-1" id="test-sabnzbd-status">Not tested</div>
+            </button>
+          </div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Search Sources</h3>
+          <div id="settings-sources" class="space-y-2"></div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Collection Stats</h3>
+          <div id="settings-stats"></div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Options</h3>
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" id="setting-extract" onchange="saveSetting('extract_archives', this.checked)" class="accent-indigo-500 w-4 h-4">
+            <div><div class="text-sm text-white">Extract archives after download</div><div class="text-xs text-slate-500">Auto-extract RAR/ZIP/7z in ROM downloads</div></div>
+          </label>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">AI Monitor</h3>
+            <button onclick="triggerAnalysis()" class="bg-indigo-600/20 text-indigo-400 border border-indigo-600/30 hover:bg-indigo-600/30 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">Analyze Now</button>
+          </div>
+          <div id="monitor-info" class="space-y-3"></div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Recent Activity</h3>
+          <div id="activity-log" class="space-y-1 max-h-64 overflow-y-auto"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const HOST = location.hostname;
+let searchResults = [], allPlatforms = [], currentTab = 'search', dlPollTimer = null, libPage = 1;
+
+document.addEventListener('DOMContentLoaded', () => { loadPlatforms(); loadConfig(); startBgPoll(); });
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.nav-tab').forEach(b => { b.classList.remove('active'); b.style.borderColor = 'transparent'; });
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  const btn = document.querySelector(`[data-tab="${tab}"]`);
+  if (btn) { btn.classList.add('active'); btn.style.borderColor = '#6366f1'; }
+  document.getElementById('tab-' + tab).classList.add('active');
+  if (tab === 'downloads') { pollDownloads(); dlPollTimer = setInterval(pollDownloads, 5000); }
+  else if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTimer = null; }
+  if (tab === 'library') loadLibrary();
+  if (tab === 'wishlist') loadWishlist();
+  if (tab === 'settings') { loadSettings(); loadSources(); loadStats(); loadActivity(); loadMonitor(); }
+}
+
+function startBgPoll() { setInterval(updateBadge, 15000); }
+
+async function loadConfig() {
+  try {
+    const d = await (await fetch('/api/config')).json();
+    document.getElementById('romm-link').href = d.romm_url || `http://${HOST}:8086`;
+    document.getElementById('gamevault-link').href = d.gamevault_url || `http://${HOST}:8087`;
+  } catch(e) {}
+}
+
+async function loadPlatforms() {
+  try {
+    const d = await (await fetch('/api/platforms')).json();
+    allPlatforms = d.platforms;
+    const opts = allPlatforms.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    document.getElementById('platform-filter').innerHTML = opts;
+    document.getElementById('lib-platform').innerHTML = opts;
+    document.getElementById('wish-platform').innerHTML = allPlatforms.filter(p=>p.id!=='all').map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  } catch(e) {}
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const platform = document.getElementById('platform-filter').value;
+  const btn = document.getElementById('search-btn');
+  btn.disabled = true; btn.textContent = 'Searching...';
+  document.getElementById('results').innerHTML = Array(6).fill('<div class="skeleton rounded-xl h-32"></div>').join('');
+  document.getElementById('search-info').textContent = '';
+  try {
+    const d = await (await fetch(`/api/search?q=${encodeURIComponent(q)}&platform=${platform}`)).json();
+    searchResults = d.results || [];
+    document.getElementById('search-info').textContent = `${searchResults.length} results in ${d.search_time_ms}ms`;
+    renderResults();
+  } catch(e) { document.getElementById('search-info').textContent = 'Search failed'; toast('Search failed', 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Search'; }
+}
+
+function renderResults() {
+  const c = document.getElementById('results');
+  if (!searchResults.length) { c.innerHTML = '<div class="col-span-full text-center py-16 text-slate-500"><div class="text-4xl mb-3">&#128270;</div>No results found</div>'; return; }
+  c.innerHTML = searchResults.map((r, i) => {
+    const score = r.safety_score || 50;
+    const safetyClass = score >= 70 ? 'text-emerald-400 bg-emerald-400/10' : score >= 40 ? 'text-yellow-400 bg-yellow-400/10' : 'text-red-400 bg-red-400/10';
+    const safetyLabel = score >= 70 ? 'Safe' : score >= 40 ? 'Caution' : 'Risky';
+    const isDDL = r.source_type === 'ddl';
+    const srcBadge = isDDL ? '<span class="px-1.5 py-0.5 text-xs rounded bg-purple-500/20 text-purple-400">DDL</span>' : '<span class="px-1.5 py-0.5 text-xs rounded bg-blue-500/20 text-blue-400">Torrent</span>';
+    const platColor = r.is_pc ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400';
+    const warnings = (r.safety_warnings||[]).map(esc).join(' &middot; ');
+    return `<div class="game-card bg-slate-900 border border-slate-800 rounded-xl p-4 ${score < 40 ? 'opacity-60' : ''}">
+      <div class="flex items-start gap-3">
+        <div class="flex flex-col items-center gap-1.5 pt-0.5 min-w-[60px]">
+          <span class="px-2 py-0.5 text-xs font-bold rounded ${platColor}">${esc(r.platform)}</span>
+          ${srcBadge}
+          <span class="px-1.5 py-0.5 text-xs font-bold rounded ${safetyClass}">${safetyLabel}</span>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-white break-words leading-snug">${esc(r.title)}</div>
+          <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs text-slate-400">
+            <span>${esc(r.indexer)}</span>
+            ${!isDDL ? `<span class="text-emerald-400">${r.seeders} seeds</span><span>${r.leechers} leech</span>` : '<span class="text-purple-400">Direct</span>'}
+            <span>${r.size_human||'?'}</span>
+          </div>
+          ${warnings ? `<div class="text-xs text-red-400/70 mt-1">${warnings}</div>` : ''}
+        </div>
+        <button onclick="dlGame(${i})" id="dl-btn-${i}" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors whitespace-nowrap flex-shrink-0">DL</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function dlGame(idx) {
+  const r = searchResults[idx]; const btn = document.getElementById('dl-btn-' + idx);
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const d = await (await fetch('/api/download', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(r) })).json();
+    if (d.success) { toast(`Downloading: ${r.title}`, 'success'); btn.textContent = 'Sent'; updateBadge(); }
+    else { toast(d.error || 'Failed', 'error'); btn.disabled = false; btn.textContent = 'DL'; }
+  } catch(e) { toast('Failed', 'error'); btn.disabled = false; btn.textContent = 'DL'; }
+}
+
+async function loadLibrary(page) {
+  if (page) libPage = page;
+  const q = document.getElementById('lib-search').value.trim();
+  const plat = document.getElementById('lib-platform').value;
+  try {
+    const d = await (await fetch(`/api/library?page=${libPage}&q=${encodeURIComponent(q)}&platform=${plat}`)).json();
+    document.getElementById('lib-stats').textContent = `${d.total} items (page ${d.page} of ${d.total_pages || 1})`;
+    const grid = document.getElementById('library-grid');
+    if (!d.items || !d.items.length) {
+      grid.innerHTML = '<div class="col-span-full text-center py-16 text-slate-500"><div class="text-4xl mb-3">&#127918;</div>No games in library</div>';
+    } else {
+      const gradients = ['from-indigo-600 to-purple-600','from-emerald-600 to-teal-600','from-orange-600 to-red-600','from-pink-600 to-rose-600','from-cyan-600 to-blue-600','from-violet-600 to-fuchsia-600'];
+      grid.innerHTML = d.items.map((item, i) => {
+        const grad = gradients[i % gradients.length];
+        const platColor = item.is_pc ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400';
+        const size = item.file_size > 0 ? formatSize(item.file_size) : '';
+        return `<div class="game-card bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="h-24 bg-gradient-to-br ${grad} flex items-center justify-center">
+            <span class="text-3xl font-bold text-white/30">${esc((item.platform_slug || item.platform || '?')).toUpperCase().slice(0,4)}</span>
+          </div>
+          <div class="p-3">
+            <div class="text-sm font-medium text-white truncate" title="${esc(item.title)}">${esc(item.title)}</div>
+            <div class="flex items-center gap-2 mt-1.5">
+              <span class="px-1.5 py-0.5 text-xs font-bold rounded ${platColor}">${esc(item.platform)}</span>
+              ${size ? `<span class="text-xs text-slate-500">${size}</span>` : ''}
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    const pg = document.getElementById('lib-pagination');
+    if (d.total_pages > 1) {
+      let btns = '';
+      if (d.page > 1) btns += `<button onclick="loadLibrary(${d.page-1})" class="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-sm hover:bg-slate-700">Prev</button>`;
+      for (let p = Math.max(1,d.page-3); p <= Math.min(d.total_pages,d.page+3); p++)
+        btns += `<button onclick="loadLibrary(${p})" class="px-3 py-1 ${p===d.page ? 'bg-indigo-600 text-white' : 'bg-slate-800 border border-slate-700 hover:bg-slate-700'} rounded text-sm">${p}</button>`;
+      if (d.page < d.total_pages) btns += `<button onclick="loadLibrary(${d.page+1})" class="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-sm hover:bg-slate-700">Next</button>`;
+      pg.innerHTML = btns;
+    } else pg.innerHTML = '';
+  } catch(e) {}
+}
+
+async function pollDownloads() {
+  try { const d = await (await fetch('/api/downloads')).json(); renderDownloads(d.downloads || []); } catch(e) {}
+}
+async function updateBadge() {
+  try {
+    const d = await (await fetch('/api/downloads')).json();
+    const active = (d.downloads || []).filter(x => ['downloading','stalled','metadata','organizing','scanning','queued'].includes(x.status)).length;
+    const badge = document.getElementById('dl-badge');
+    if (active > 0) { badge.classList.remove('hidden'); badge.textContent = active; } else badge.classList.add('hidden');
+  } catch(e) {}
+}
+function renderDownloads(downloads) {
+  const c = document.getElementById('downloads');
+  if (!downloads.length) { c.innerHTML = '<div class="text-center py-16 text-slate-500"><div class="text-4xl mb-3">&#128229;</div>No active downloads</div>'; return; }
+  c.innerHTML = downloads.map(d => {
+    const sc = {downloading:'bg-blue-500/20 text-blue-400',completed:'bg-emerald-500/20 text-emerald-400',error:'bg-red-500/20 text-red-400',organizing:'bg-yellow-500/20 text-yellow-400',scanning:'bg-purple-500/20 text-purple-400',dead_letter:'bg-red-500/20 text-red-300',interrupted:'bg-orange-500/20 text-orange-400'}[d.status] || 'bg-slate-700 text-slate-400';
+    const hasProg = d.progress != null;
+    const pctClass = d.progress >= 100 ? 'bg-emerald-500' : d.status === 'error' ? 'bg-red-500' : 'bg-indigo-500';
+    const eta = d.eta > 0 && d.eta < 864000 ? (d.eta > 3600 ? `${Math.floor(d.eta/3600)}h ${Math.floor((d.eta%3600)/60)}m` : `${Math.floor(d.eta/60)}m`) : '';
+    let actions = '';
+    if (d.status === 'completed_unorganized' && d.hash) actions = `<button onclick="organizeTorrent('${d.hash}','${d.job_id||''}')" class="text-xs bg-indigo-600/20 text-indigo-400 px-2 py-1 rounded hover:bg-indigo-600/30">Organize</button>`;
+    if (['error','interrupted','dead_letter'].includes(d.status) && d.job_id) actions += `<button onclick="retryJob('${d.job_id}')" class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded hover:bg-yellow-600/30">Retry</button>`;
+    if (d.hash) actions += `<button onclick="removeTorrent('${d.hash}');${d.job_id?`removeJob('${d.job_id}')`:''}" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Remove</button>`;
+    else if (d.job_id) actions += `<button onclick="removeJob('${d.job_id}')" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Dismiss</button>`;
+    return `<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-3 mb-2"><span class="text-sm font-medium text-white break-words flex-1">${esc(d.title)}</span><div class="flex gap-1.5 flex-shrink-0">${actions}</div></div>
+      <div class="flex flex-wrap gap-2 text-xs mb-2">
+        <span class="px-2 py-0.5 rounded font-semibold ${sc}">${d.status}</span>
+        ${d.platform ? `<span class="text-slate-500">${esc(d.platform)}</span>` : ''}
+        ${d.size && d.size !== '?' ? `<span class="text-slate-500">${d.size}</span>` : ''}
+        ${d.speed && !d.speed.startsWith('0') ? `<span class="text-slate-500">${d.speed}</span>` : ''}
+        ${eta ? `<span class="text-slate-500">ETA: ${eta}</span>` : ''}
+        ${hasProg ? `<span class="text-slate-400">${d.progress}%</span>` : ''}
+      </div>
+      ${hasProg ? `<div class="bg-slate-800 rounded-full h-1.5 overflow-hidden"><div class="progress-bar ${pctClass} h-full rounded-full" style="width:${d.progress}%"></div></div>` : ''}
+      ${d.detail ? `<div class="text-xs text-slate-500 mt-1.5">${esc(d.detail)}</div>` : ''}
+      ${d.error ? `<div class="text-xs text-red-400 mt-1">${esc(d.error)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+async function retryJob(id) { await fetch(`/api/downloads/${id}/retry`, {method:'POST'}); pollDownloads(); toast('Retrying...', 'success'); }
+async function removeTorrent(h) { await fetch(`/api/downloads/torrent/${h}`, {method:'DELETE'}); pollDownloads(); }
+async function removeJob(id) { await fetch(`/api/downloads/${id}`, {method:'DELETE'}); pollDownloads(); }
+async function clearFinished() { await fetch('/api/downloads/clear', {method:'POST'}); pollDownloads(); toast('Cleared', 'success'); }
+async function organizeTorrent(hash, jobId) {
+  const plat = prompt('Platform? (pc, switch, ps2, ps3, psp, nds, 3ds, wii, ngc, dc, psx, gba, n64, snes, nes, gb, genesis, saturn, xbox, xbox360)', 'pc');
+  if (!plat) return;
+  const isPC = plat === 'pc';
+  try {
+    const d = await (await fetch(`/api/downloads/organize/${hash}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({platform: isPC ? 'PC' : plat.toUpperCase(), platform_slug: isPC ? '' : plat, is_pc: isPC})})).json();
+    if (d.success) { if (jobId) removeJob(jobId); toast('Organizing...', 'success'); } else toast(d.error || 'Failed', 'error');
+  } catch(e) { toast('Failed', 'error'); }
+  pollDownloads();
+}
+
+async function loadWishlist() {
+  try {
+    const d = await (await fetch('/api/wishlist')).json();
+    const items = d.items || [];
+    const c = document.getElementById('wishlist');
+    if (!items.length) { c.innerHTML = '<div class="text-center py-16 text-slate-500"><div class="text-4xl mb-3">&#10084;&#65039;</div>Wishlist is empty</div>'; return; }
+    c.innerHTML = items.map(w => `<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-center gap-3">
+      <div class="flex-1"><div class="text-sm font-medium text-white">${esc(w.title)}</div><div class="text-xs text-slate-500 mt-0.5">${esc(w.platform||w.platform_slug||'')} &middot; ${(w.added_at||'').split('T')[0]||''}</div></div>
+      <button onclick="wishSearch('${esc(w.title).replace(/'/g,"\\'")}')" class="text-xs bg-indigo-600/20 text-indigo-400 px-3 py-1.5 rounded-lg hover:bg-indigo-600/30">Search</button>
+      <button onclick="deleteWishlist(${w.id})" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1.5 rounded-lg hover:bg-red-500/10">Delete</button>
+    </div>`).join('');
+  } catch(e) {}
+}
+async function addWishlist() {
+  const title = document.getElementById('wish-title').value.trim();
+  const sel = document.getElementById('wish-platform');
+  if (!title) { toast('Title required', 'error'); return; }
+  await fetch('/api/wishlist', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title, platform: sel.options[sel.selectedIndex].text, platform_slug: sel.value})});
+  document.getElementById('wish-title').value = '';
+  loadWishlist(); toast('Added to wishlist', 'success');
+}
+async function deleteWishlist(id) { await fetch(`/api/wishlist/${id}`, {method:'DELETE'}); loadWishlist(); }
+function wishSearch(title) { document.getElementById('search-input').value = title; switchTab('search'); doSearch(); }
+
+async function loadSettings() { try { const d = await (await fetch('/api/settings')).json(); document.getElementById('setting-extract').checked = !!d.extract_archives; } catch(e) {} }
+async function saveSetting(key, value) { await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({[key]: value})}); }
+async function loadSources() {
+  try {
+    const d = await (await fetch('/api/sources')).json();
+    document.getElementById('settings-sources').innerHTML = (d.sources||[]).map(s => {
+      const dot = s.enabled ? 'bg-emerald-500' : 'bg-slate-600';
+      const srcColor = s.source_type === 'torrent' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400';
+      return `<div class="flex items-center justify-between bg-slate-800 rounded-lg p-3"><div class="flex items-center gap-3"><span class="w-2 h-2 rounded-full ${dot}"></span><span class="text-sm text-white">${esc(s.label)}</span></div><span class="px-2 py-0.5 text-xs rounded ${srcColor}">${s.source_type}</span></div>`;
+    }).join('');
+  } catch(e) {}
+}
+async function loadStats() {
+  try {
+    const d = await (await fetch('/api/stats')).json();
+    const plats = d.platforms || {};
+    const maxVal = Math.max(1, ...Object.values(plats));
+    document.getElementById('header-stats').textContent = `${d.library_total || 0} games`;
+    const bars = Object.entries(plats).sort((a,b) => b[1]-a[1]).map(([slug, count]) => `<div class="mb-2"><div class="flex justify-between text-xs mb-0.5"><span class="text-slate-300">${esc(slug)}</span><span class="text-slate-500">${count}</span></div><div class="bg-slate-800 rounded-full h-1.5"><div class="bg-indigo-500 rounded-full h-1.5" style="width:${Math.round(count/maxVal*100)}%"></div></div></div>`).join('') || '<div class="text-sm text-slate-500">No library data yet</div>';
+    document.getElementById('settings-stats').innerHTML = `<div class="grid grid-cols-2 gap-3 mb-4">
+      <div class="bg-slate-800 rounded-lg p-3 text-center"><div class="text-2xl font-bold text-indigo-400">${d.library_total||0}</div><div class="text-xs text-slate-500 mt-1">Library Items</div></div>
+      <div class="bg-slate-800 rounded-lg p-3 text-center"><div class="text-2xl font-bold text-slate-300">${d.total_jobs||0}</div><div class="text-xs text-slate-500 mt-1">Total Jobs</div></div>
+    </div>` + bars;
+  } catch(e) {}
+}
+async function loadActivity() {
+  try {
+    const d = await (await fetch('/api/activity')).json();
+    const entries = d.entries || [];
+    const c = document.getElementById('activity-log');
+    if (!entries.length) { c.innerHTML = '<div class="text-sm text-slate-500">No activity yet</div>'; return; }
+    c.innerHTML = entries.slice(0, 20).map(e => {
+      const col = {download_started:'text-blue-400',download_completed:'text-emerald-400',download_failed:'text-red-400',import_completed:'text-purple-400',download_retried:'text-yellow-400'}[e.event_type] || 'text-slate-400';
+      return `<div class="flex gap-2 py-1.5 border-b border-slate-800/50 text-xs"><span class="text-slate-600 flex-shrink-0">${(e.timestamp||'').split('T')[1]?.slice(0,5)||''}</span><span class="${col} font-medium flex-shrink-0">${esc(e.event_type)}</span><span class="text-slate-400 truncate">${esc(e.title)}</span></div>`;
+    }).join('');
+  } catch(e) {}
+}
+async function loadMonitor() {
+  try {
+    const d = await (await fetch('/api/monitor/status')).json();
+    const c = document.getElementById('monitor-info');
+    const dotColor = d.enabled ? 'bg-emerald-500' : 'bg-slate-600';
+    const statusText = d.enabled ? `Active &middot; ${esc(d.provider)} (${esc(d.model)})` : 'Disabled';
+    c.innerHTML = `<div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full ${dotColor}"></span><span class="text-sm text-slate-300">${statusText}</span></div>
+      <div class="text-sm text-slate-400 bg-slate-800 rounded-lg p-3">${esc(d.diagnosis || '—')}</div>`;
+  } catch(e) {}
+}
+async function triggerAnalysis() { await fetch('/api/monitor/analyze', {method:'POST'}); setTimeout(loadMonitor, 500); toast('Analysis triggered', 'success'); }
+async function testConn(service) {
+  const el = document.getElementById(`test-${service}-status`);
+  el.textContent = 'Testing...'; el.className = 'text-xs text-yellow-400 mt-1';
+  try {
+    const d = await (await fetch(`/api/test/${service}`, {method:'POST'})).json();
+    if (d.success) { el.textContent = 'Connected'; el.className = 'text-xs text-emerald-400 mt-1'; }
+    else { el.textContent = d.error || 'Failed'; el.className = 'text-xs text-red-400 mt-1'; }
+  } catch(e) { el.textContent = 'Error'; el.className = 'text-xs text-red-400 mt-1'; }
+}
+
+function toast(msg, type) {
+  const c = document.getElementById('toast-container');
+  const colors = {success:'border-l-emerald-500', error:'border-l-red-500'};
+  const el = document.createElement('div');
+  el.className = `toast-enter bg-slate-900 border border-slate-700 border-l-4 ${colors[type]||'border-l-slate-500'} rounded-lg p-3 text-sm text-slate-200 shadow-xl`;
+  el.textContent = msg; c.appendChild(el); setTimeout(() => el.remove(), 4000);
+}
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function formatSize(bytes) { if (!bytes) return ''; const u = ['B','KB','MB','GB','TB']; let i = 0, s = bytes; while (s >= 1024 && i < u.length-1) { s /= 1024; i++; } return s.toFixed(1) + ' ' + u[i]; }
+</script>
+</body>
+</html>
