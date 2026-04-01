@@ -24,6 +24,9 @@ jobs:
     permissions: {packages: write}
     steps:
       - uses: actions/checkout@v4
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
       - uses: docker/login-action@v3
         with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
       - id: version
@@ -33,5 +36,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/jeremiahmm37/gamarr:${{ steps.version.outputs.tag }}
-            ghcr.io/jeremiahmm37/gamarr:latest
+            ghcr.io/${{ steps.owner.outputs.name }}/gamarr:${{ steps.version.outputs.tag }}
+            ghcr.io/${{ steps.owner.outputs.name }}/gamarr:latest

@@ -1,6 +1,10 @@
 # Gamarr
 
-Self-hosted game and ROM search and download manager.
+[![Build & Test](https://github.com/JeremiahM37/gamarr/actions/workflows/test.yml/badge.svg)](https://github.com/JeremiahM37/gamarr/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/JeremiahM37/gamarr?include_prereleases)](https://github.com/JeremiahM37/gamarr/releases)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
+**The missing *arr for games.** Self-hosted game and ROM search and download manager.
 
 Gamarr searches across Prowlarr torrent indexers, Myrient (verified ROM sets via direct download), and Vimm (fallback DDL) to find games for 24 platforms. It scores results for safety, manages downloads via qBittorrent or SABnzbd, and organizes files into your game vault and ROM library.
 
