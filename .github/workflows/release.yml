@@ -4,17 +4,34 @@ on:
     tags: ['v*']
 permissions:
   contents: write
+  packages: write
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
       - uses: actions/setup-go@v5
-        with: {go-version: '1.24'}
+        with: {go-version: '1.24', cache: false}
       - run: go test ./... -count=1
       - uses: goreleaser/goreleaser-action@v6
-        with: {version: latest, args: "release --clean"}
+        with: {version: '~> v2', args: "release --clean"}
         env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+  docker:
+    runs-on: ubuntu-latest
+    permissions: {packages: write}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/jeremiahmm37/gamarr:${{ steps.version.outputs.tag }}
+            ghcr.io/jeremiahmm37/gamarr:latest

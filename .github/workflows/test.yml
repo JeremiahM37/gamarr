@@ -1,21 +1,17 @@
-name: Tests
+name: Build & Test
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - name: Build
-        run: go build -o gamarr ./cmd/gamarr/
-      - name: Verify binary
-        run: ls -lh gamarr
-      - name: Run tests
-        run: go test ./... -v -count=1
+        with: {go-version: '1.24', cache: false}
+      - run: go build -o gamarr ./cmd/gamarr/
+      - run: go test ./... -v -count=1
