@@ -26,8 +26,31 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query().Get("q")
 	platformSlug := r.URL.Query().Get("platform")
+	tagFilter := r.URL.Query().Get("tag")
 
 	result := s.mgr.Jobs().GetLibraryPage(page, pageSize, query, platformSlug)
+
+	// Filter by tag if specified
+	if tagFilter != "" {
+		taggedIDs := s.mgr.Jobs().GetLibraryItemIDsByTag(tagFilter)
+		idSet := make(map[int64]bool, len(taggedIDs))
+		for _, id := range taggedIDs {
+			idSet[id] = true
+		}
+		var filtered []db.LibraryItem
+		for _, item := range result.Items {
+			if idSet[item.ID] {
+				filtered = append(filtered, item)
+			}
+		}
+		if filtered == nil {
+			filtered = []db.LibraryItem{}
+		}
+		result.Items = filtered
+		result.Total = len(filtered)
+		result.TotalPages = 1
+	}
+
 	writeJSON(w, 200, result)
 }
 

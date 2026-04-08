@@ -172,6 +172,46 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	// Duplicate detection
 	r.Get("/api/library/check", s.handleCheckLibrary)
 
+	// Quality Profiles
+	r.Get("/api/quality-profiles", s.handleGetQualityProfiles)
+	r.Post("/api/quality-profiles", s.handleCreateQualityProfile)
+	r.Put("/api/quality-profiles/{id}", s.handleUpdateQualityProfile)
+	r.Delete("/api/quality-profiles/{id}", s.handleDeleteQualityProfile)
+
+	// Blocklist
+	r.Get("/api/blocklist", s.handleGetBlocklist)
+	r.Post("/api/blocklist", s.handleAddBlocklistEntry)
+	r.Delete("/api/blocklist/clear", s.handleClearBlocklist)
+	r.Delete("/api/blocklist/{id}", s.handleDeleteBlocklistEntry)
+
+	// Release Profiles
+	r.Get("/api/release-profiles", s.handleGetReleaseProfiles)
+	r.Post("/api/release-profiles", s.handleCreateReleaseProfile)
+	r.Put("/api/release-profiles/{id}", s.handleUpdateReleaseProfile)
+	r.Delete("/api/release-profiles/{id}", s.handleDeleteReleaseProfile)
+
+	// Manual Import (scan + import files)
+	r.Post("/api/import/scan", s.handleScanImport)
+	r.Post("/api/import/files", s.handleImportFiles)
+
+	// Tags
+	r.Get("/api/tags", s.handleGetTags)
+	r.Post("/api/tags", s.handleCreateTag)
+	r.Delete("/api/tags/{id}", s.handleDeleteTag)
+	r.Post("/api/library/{id}/tags", s.handleAddItemTag)
+	r.Delete("/api/library/{id}/tags/{tagID}", s.handleRemoveItemTag)
+	r.Get("/api/library/{id}/tags", s.handleGetItemTags)
+
+	// Backup / Restore
+	r.Get("/api/backup", requireAdmin(s.handleBackupDownload))
+	r.Post("/api/backup/create", requireAdmin(s.handleBackupCreate))
+	r.Get("/api/backup/list", requireAdmin(s.handleBackupList))
+	r.Post("/api/restore", requireAdmin(s.handleRestore))
+
+	// Release Calendar
+	r.Get("/api/calendar", s.handleCalendar)
+	r.Get("/api/calendar/recent", s.handleCalendarRecent)
+
 	// Metadata & enrichment
 	s.RegisterMetadataRoutes(r)
 
@@ -302,8 +342,41 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		results = []*models.SearchResult{}
 	}
 
+	// Filter blocklisted results
+	var nonBlocked []*models.SearchResult
+	for _, r := range results {
+		if !s.mgr.Jobs().IsBlocklisted(r.DownloadURL, r.InfoHash) {
+			nonBlocked = append(nonBlocked, r)
+		}
+	}
+	results = nonBlocked
+	if results == nil {
+		results = []*models.SearchResult{}
+	}
+
+	// Apply release profile scoring and filtering
+	var profileFiltered []*models.SearchResult
+	for _, r := range results {
+		adjustment, exclude := s.mgr.Jobs().ApplyReleaseProfiles(r.Title)
+		if exclude {
+			continue
+		}
+		r.Score += adjustment
+		profileFiltered = append(profileFiltered, r)
+	}
+	results = profileFiltered
+	if results == nil {
+		results = []*models.SearchResult{}
+	}
+
 	// Apply search scoring
 	results = search.ScoreResults(results, query, platformFilter)
+
+	// Apply quality profile source ranking boost
+	for _, r := range results {
+		boost := s.mgr.Jobs().SourceRankScore(r.Indexer)
+		r.Score += boost
+	}
 
 	// Sort by score descending
 	sort.SliceStable(results, func(i, j int) bool {

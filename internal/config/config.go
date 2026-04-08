@@ -88,6 +88,13 @@ type Config struct {
 
 	// Prowlarr game indexer IDs
 	ProwlarrGameIndexers []int
+
+	// Rename on import
+	RenameEnabled bool
+	RenamePattern string
+
+	// Auto-upgrade
+	AutoUpgradeEnabled bool
 }
 
 func Load() *Config {
@@ -155,6 +162,11 @@ func Load() *Config {
 		MetricsEnabled: envBool("METRICS_ENABLED", true),
 
 		ProwlarrGameIndexers: envIntSlice("PROWLARR_GAME_INDEXERS", []int{7, 5, 15, 9, 8, 3, 4}),
+
+		RenameEnabled: envBool("RENAME_ENABLED", false),
+		RenamePattern: envStr("RENAME_PATTERN", "{title} ({platform}).{ext}"),
+
+		AutoUpgradeEnabled: envBool("AUTO_UPGRADE_ENABLED", false),
 	}
 }
 
