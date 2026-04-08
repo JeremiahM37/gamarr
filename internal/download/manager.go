@@ -22,16 +22,35 @@ import (
 	"gamarr/internal/search"
 )
 
+// NotifyCallback is called when a download completes or fails.
+// Parameters: userID, notifType, title, message.
+type NotifyCallback func(userID, notifType, title, message string)
+
 // Manager handles download orchestration.
 type Manager struct {
-	cfg  *config.Config
-	jobs *db.JobStore
-	qb   *qbit.Client
+	cfg          *config.Config
+	jobs         *db.JobStore
+	qb           *qbit.Client
+	transmission *TransmissionClient
+	deluge       *DelugeClient
+	NotifyFunc   NotifyCallback
 }
 
 // New creates a new download Manager.
 func New(cfg *config.Config, jobs *db.JobStore, qb *qbit.Client) *Manager {
-	return &Manager{cfg: cfg, jobs: jobs, qb: qb}
+	mgr := &Manager{cfg: cfg, jobs: jobs, qb: qb}
+
+	// Initialize optional download clients.
+	if cfg.HasTransmission() {
+		mgr.transmission = NewTransmissionClient(cfg)
+		slog.Info("Transmission client initialized", "url", cfg.TransmissionURL)
+	}
+	if cfg.HasDeluge() {
+		mgr.deluge = NewDelugeClient(cfg)
+		slog.Info("Deluge client initialized", "url", cfg.DelugeURL)
+	}
+
+	return mgr
 }
 
 // Jobs returns the job store.
@@ -39,6 +58,12 @@ func (m *Manager) Jobs() *db.JobStore { return m.jobs }
 
 // QB returns the qBittorrent client.
 func (m *Manager) QB() *qbit.Client { return m.qb }
+
+// Transmission returns the Transmission client (may be nil).
+func (m *Manager) Transmission() *TransmissionClient { return m.transmission }
+
+// Deluge returns the Deluge client (may be nil).
+func (m *Manager) Deluge() *DelugeClient { return m.deluge }
 
 // newJobID generates an 8-char job ID.
 func newJobID() string {
@@ -48,6 +73,7 @@ func newJobID() string {
 }
 
 // DownloadTorrent starts a torrent download.
+// Tries clients in order: qBittorrent -> Transmission -> Deluge (first available).
 func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool) (string, error) {
 	if url == "" {
 		return "", fmt.Errorf("no download URL")
@@ -60,18 +86,61 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 		"platform_slug": platSlug,
 		"is_pc":         isPC,
 		"error":         nil,
-		"detail":        "Sending to qBittorrent...",
+		"detail":        "Sending to download client...",
 	})
 
-	ok := m.qb.AddTorrent(url, title, m.cfg.QBSavePath, m.cfg.QBCategory)
-	if !ok {
+	added := false
+	clientUsed := ""
+
+	// Try qBittorrent first.
+	if m.cfg.HasQBittorrent() {
+		m.jobs.Update(jobID, "detail", "Sending to qBittorrent...")
+		ok := m.qb.AddTorrent(url, title, m.cfg.QBSavePath, m.cfg.QBCategory)
+		if ok {
+			added = true
+			clientUsed = "qBittorrent"
+		} else {
+			slog.Warn("qBittorrent add failed, trying fallback clients", "title", title)
+		}
+	}
+
+	// Try Transmission.
+	if !added && m.transmission != nil {
+		m.jobs.Update(jobID, "detail", "Sending to Transmission...")
+		_, err := m.transmission.AddTorrent(url, m.cfg.QBSavePath)
+		if err == nil {
+			added = true
+			clientUsed = "Transmission"
+		} else {
+			slog.Warn("Transmission add failed", "title", title, "error", err)
+		}
+	}
+
+	// Try Deluge.
+	if !added && m.deluge != nil {
+		m.jobs.Update(jobID, "detail", "Sending to Deluge...")
+		opts := map[string]interface{}{
+			"download_location": m.cfg.QBSavePath,
+		}
+		_, err := m.deluge.AddTorrent(url, opts)
+		if err == nil {
+			added = true
+			clientUsed = "Deluge"
+		} else {
+			slog.Warn("Deluge add failed", "title", title, "error", err)
+		}
+	}
+
+	if !added {
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "error",
-			"error":  "Failed to add torrent to qBittorrent",
+			"error":  "Failed to add torrent to any download client",
 		})
 		return jobID, nil
 	}
-	m.jobs.Update(jobID, "detail", "Downloading...")
+
+	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloading via %s...", clientUsed))
+	slog.Info("torrent added", "client", clientUsed, "title", title)
 
 	go m.watchGameTorrent(jobID, title, platf, platSlug, isPC)
 	return jobID, nil

@@ -35,6 +35,10 @@ var vimmGameRe = regexp.MustCompile(`<a\s+href=\s*"/vault/(\d+)"[^>]*>([^<]+)</a
 
 // SearchVimm searches Vimm's Lair for ROMs.
 func SearchVimm(query string, platformSlug string) []*models.SearchResult {
+	if IsCircuitOpen("vimm") {
+		slog.Warn("vimm circuit open, skipping search")
+		return nil
+	}
 	params := url.Values{"p": {"list"}, "q": {query}}
 	if platformSlug != "" {
 		if sys, ok := vimmSystemMap[platformSlug]; ok {
@@ -55,10 +59,12 @@ func SearchVimm(query string, platformSlug string) []*models.SearchResult {
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Warn("Vimm search error", "error", err)
+		RecordSearchFail("vimm", err.Error())
 		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
+		RecordSearchFail("vimm", fmt.Sprintf("HTTP %d", resp.StatusCode))
 		return nil
 	}
 
@@ -118,5 +124,7 @@ func SearchVimm(query string, platformSlug string) []*models.SearchResult {
 	if len(results) > 20 {
 		results = results[:20]
 	}
+
+	RecordSearchSuccess("vimm")
 	return results
 }

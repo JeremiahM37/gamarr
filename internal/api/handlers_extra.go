@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"gamarr/internal/db"
+	"gamarr/internal/search"
 )
 
 // ── Library ────────────────────────────────────────────────────────────────────
@@ -141,6 +142,23 @@ func (s *Server) handleTestSABnzbd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{"success": true})
 }
 
+// ── Source Health ─────────────────────────────────────────────────────────────
+
+func (s *Server) handleSourcesHealth(w http.ResponseWriter, r *http.Request) {
+	healthData := search.GetAllSourceHealth()
+	writeJSON(w, 200, map[string]interface{}{"sources": healthData})
+}
+
+func (s *Server) handleSourceReset(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	ok := search.ResetCircuit(name)
+	if !ok {
+		writeJSON(w, 200, map[string]interface{}{"success": false, "error": "Source not found"})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"success": true})
+}
+
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +174,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"sabnzbd": map[string]interface{}{
 			"configured": s.cfg.HasSABnzbd(),
 			"url":        s.cfg.SABnzbdURL,
+		},
+		"transmission": map[string]interface{}{
+			"configured": s.cfg.HasTransmission(),
+			"url":        s.cfg.TransmissionURL,
+		},
+		"deluge": map[string]interface{}{
+			"configured": s.cfg.HasDeluge(),
+			"url":        s.cfg.DelugeURL,
+		},
+		"rawg": map[string]interface{}{
+			"configured": s.cfg.HasRAWG(),
 		},
 		"gamevault_url": s.cfg.GameVaultURL,
 		"romm_url":      s.cfg.RomMURL,

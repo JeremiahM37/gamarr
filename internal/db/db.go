@@ -39,6 +39,7 @@ func New(dbPath string) (*JobStore, error) {
 		return nil, err
 	}
 	s.migrateExtra()
+	s.migrateUsers()
 	s.loadAll()
 	return s, nil
 }

@@ -28,21 +28,45 @@ var webFS embed.FS
 
 // Server holds all API dependencies.
 type Server struct {
-	cfg *config.Config
-	mgr *download.Manager
-	mon *monitor.GamarrMonitor
-	sab *sabnzbd.Client
+	cfg      *config.Config
+	mgr      *download.Manager
+	mon      *monitor.GamarrMonitor
+	sab      *sabnzbd.Client
+	sessions *SessionStore
 }
 
 // NewRouter creates a new chi router with all routes.
 func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMonitor, sab *sabnzbd.Client) http.Handler {
-	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab}
+	sessions := NewSessionStore()
+	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab, sessions: sessions}
+
+	// Rate limiter: 60-second window.
+	rl := NewRateLimiter(60, map[string]int{
+		"login":    5,
+		"search":   30,
+		"download": 10,
+		"api":      60,
+		"default":  120,
+	})
+
 	r := chi.NewRouter()
-	r.Use(corsMiddleware)
+
+	// Outermost middleware (applied first).
 	r.Use(logMiddleware)
+	r.Use(func(next http.Handler) http.Handler { return requestSizeLimitMiddleware(next) })
+	r.Use(func(next http.Handler) http.Handler { return securityHeadersMiddleware(next) })
+	r.Use(corsMiddleware)
+	r.Use(func(next http.Handler) http.Handler { return rateLimitMiddleware(rl, next) })
+	r.Use(func(next http.Handler) http.Handler { return authMiddleware(cfg, mgr.Jobs(), sessions, next) })
 
 	// UI
 	r.Get("/", s.handleIndex)
+
+	// Auth routes (exempt from auth middleware).
+	r.Post("/api/login", handleLogin(cfg, mgr.Jobs(), sessions))
+	r.Post("/api/logout", handleLogout(sessions, mgr.Jobs()))
+	r.Post("/api/register", handleRegister(mgr.Jobs(), sessions))
+	r.Get("/api/auth/status", handleAuthStatus(mgr.Jobs(), sessions))
 
 	// Search & browse
 	r.Get("/api/search", s.handleSearch)
@@ -75,23 +99,51 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Post("/api/ddl-sources", s.handleAddDDLSource)
 	r.Delete("/api/ddl-sources/{idx}", s.handleDeleteDDLSource)
 
-	// Settings & config
-	r.Get("/api/settings", s.handleGetSettings)
-	r.Put("/api/settings", s.handleUpdateSettings)
+	// Settings & config (admin only)
+	r.Get("/api/settings", requireAdmin(s.handleGetSettings))
+	r.Put("/api/settings", requireAdmin(s.handleUpdateSettings))
 	r.Get("/api/config", s.handleConfig)
 	r.Get("/api/stats", s.handleStats)
 	r.Get("/api/health", s.handleHealth)
 
-	// Connection tests
-	r.Post("/api/test/prowlarr", s.handleTestProwlarr)
-	r.Post("/api/test/qbittorrent", s.handleTestQBittorrent)
-	r.Post("/api/test/sabnzbd", s.handleTestSABnzbd)
+	// Connection tests (admin only)
+	r.Post("/api/test/prowlarr", requireAdmin(s.handleTestProwlarr))
+	r.Post("/api/test/qbittorrent", requireAdmin(s.handleTestQBittorrent))
+	r.Post("/api/test/sabnzbd", requireAdmin(s.handleTestSABnzbd))
+
+	// Source health
+	r.Get("/api/sources/health", s.handleSourcesHealth)
+	r.Post("/api/sources/{name}/reset", s.handleSourceReset)
 
 	// Monitoring
 	r.Get("/api/monitor/status", s.handleMonitorStatus)
 	r.Post("/api/monitor/analyze", s.handleMonitorAnalyze)
 	r.Post("/api/monitor/actions/{actionID}/approve", s.handleMonitorApprove)
 	r.Post("/api/monitor/actions/{actionID}/dismiss", s.handleMonitorDismiss)
+
+	// Admin dashboard & user management
+	r.Get("/api/admin/dashboard", requireAdmin(s.handleAdminDashboard))
+	r.Get("/api/users", requireAdmin(handleListUsers(mgr.Jobs())))
+	r.Patch("/api/users/{id}", requireAdmin(handleUpdateUser(mgr.Jobs())))
+	r.Delete("/api/users/{id}", requireAdmin(handleDeleteUser(mgr.Jobs())))
+
+	// Requests
+	r.Post("/api/requests", s.handleCreateRequest)
+	r.Get("/api/requests", s.handleListRequests)
+	r.Get("/api/requests/{id}", s.handleGetRequest)
+	r.Patch("/api/requests/{id}", s.handleUpdateRequest)
+	r.Delete("/api/requests/{id}", requireAdmin(s.handleDeleteRequest))
+	r.Post("/api/requests/{id}/search", s.handleSearchRequest)
+	r.Post("/api/requests/{id}/download", s.handleDownloadForRequest)
+
+	// Notifications
+	r.Get("/api/notifications", s.handleGetNotifications)
+	r.Get("/api/notifications/unread", s.handleUnreadCount)
+	r.Post("/api/notifications/{id}/read", s.handleMarkRead)
+	r.Post("/api/notifications/read-all", s.handleMarkAllRead)
+
+	// Metadata & enrichment
+	s.RegisterMetadataRoutes(r)
 
 	// Metrics
 	r.Get("/metrics", s.handleMetrics)
@@ -220,17 +272,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		results = []*models.SearchResult{}
 	}
 
-	// Sort: torrents by seeders desc, DDL fixed score
+	// Apply search scoring
+	results = search.ScoreResults(results, query, platformFilter)
+
+	// Sort by score descending
 	sort.SliceStable(results, func(i, j int) bool {
-		iScore := results[i].Seeders * 10
-		if results[i].SourceType == "ddl" {
-			iScore = 5
-		}
-		jScore := results[j].Seeders * 10
-		if results[j].SourceType == "ddl" {
-			jScore = 5
-		}
-		return iScore > jScore
+		return results[i].Score > results[j].Score
 	})
 
 	elapsed := int(time.Since(start).Milliseconds())
@@ -282,10 +329,18 @@ func (s *Server) handlePlatforms(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
+	healthData := search.GetAllSourceHealth()
 	sourceMeta := []map[string]interface{}{
 		{"name": "prowlarr", "label": "Prowlarr", "color": "#f97316", "source_type": "torrent", "enabled": s.cfg.HasProwlarr()},
 		{"name": "myrient", "label": "Myrient", "color": "#10b981", "source_type": "ddl", "enabled": true},
 		{"name": "vimm", "label": "Vimm's Lair", "color": "#6366f1", "source_type": "ddl", "enabled": true},
+	}
+	// Attach health data to each source
+	for _, src := range sourceMeta {
+		name, _ := src["name"].(string)
+		if h, ok := healthData[name]; ok {
+			src["health"] = h
+		}
 	}
 	writeJSON(w, 200, map[string]interface{}{"sources": sourceMeta})
 }

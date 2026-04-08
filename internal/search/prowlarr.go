@@ -25,6 +25,11 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 		return nil
 	}
 
+	if IsCircuitOpen("prowlarr") {
+		slog.Warn("prowlarr circuit open, skipping search")
+		return nil
+	}
+
 	var filterCategories map[int]bool
 	if platformSlug != "" && platformSlug != "all" {
 		cats := platform.GetCategoriesForPlatform(platformSlug)
@@ -36,6 +41,7 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	var allItems []map[string]interface{}
+	hadError := false
 
 	for _, indexerID := range cfg.ProwlarrGameIndexers {
 		url := fmt.Sprintf("%s/api/v1/search?query=%s&indexerIds=%d&type=search&limit=50",
@@ -46,16 +52,24 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 		resp, err := client.Do(req)
 		if err != nil {
 			slog.Warn("indexer error", "indexer", indexerID, "error", err)
+			hadError = true
 			continue
 		}
 		if resp.StatusCode != 200 {
 			resp.Body.Close()
+			hadError = true
 			continue
 		}
 		var items []map[string]interface{}
 		json.NewDecoder(resp.Body).Decode(&items)
 		resp.Body.Close()
 		allItems = append(allItems, items...)
+	}
+
+	if len(allItems) == 0 && hadError {
+		RecordSearchFail("prowlarr", "all indexers failed")
+	} else {
+		RecordSearchSuccess("prowlarr")
 	}
 
 	var results []*models.SearchResult

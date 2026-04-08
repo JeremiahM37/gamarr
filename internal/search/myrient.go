@@ -1,6 +1,7 @@
 package search
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -97,11 +98,13 @@ func getMyrientListing(slug string) []dirEntry {
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Warn("Myrient listing error", "slug", slug, "error", err)
+		RecordSearchFail("myrient", err.Error())
 		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		slog.Warn("Myrient listing failed", "slug", slug, "status", resp.StatusCode)
+		RecordSearchFail("myrient", fmt.Sprintf("HTTP %d", resp.StatusCode))
 		return nil
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -135,6 +138,11 @@ func getMyrientListing(slug string) []dirEntry {
 
 // SearchMyrient searches Myrient ROM archives.
 func SearchMyrient(query string, platformSlug string) []*models.SearchResult {
+	if IsCircuitOpen("myrient") {
+		slog.Warn("myrient circuit open, skipping search")
+		return nil
+	}
+
 	qWords := extractWords(query)
 	if len(qWords) == 0 {
 		return nil
@@ -205,6 +213,12 @@ func SearchMyrient(query string, platformSlug string) []*models.SearchResult {
 	if len(results) > 20 {
 		results = results[:20]
 	}
+
+	if len(results) > 0 {
+		RecordSearchSuccess("myrient")
+	}
+	// Note: empty results for Myrient are normal (no match), not a failure.
+	// Failures are tracked inside getMyrientListing when HTTP errors occur.
 	return results
 }
 

@@ -20,6 +20,21 @@ type SearchResult struct {
 	SafetyScore    int      `json:"safety_score"`
 	SafetyWarnings []string `json:"safety_warnings"`
 	VimmID         string   `json:"vimm_id,omitempty"`
+
+	// Scoring fields (populated by scorer).
+	Score          int             `json:"score"`
+	ScoreBreakdown *ScoreBreakdown `json:"score_breakdown,omitempty"`
+}
+
+// ScoreBreakdown provides a detailed breakdown of a search result's confidence score.
+type ScoreBreakdown struct {
+	TitleMatch    int    `json:"title_match"`    // 0-40
+	PlatformMatch int    `json:"platform_match"` // 0-15
+	SeederScore   int    `json:"seeder_score"`   // 0-15
+	SizeScore     int    `json:"size_score"`     // 0-15
+	SafetyScore   int    `json:"safety_score"`   // 0-15
+	Total         int    `json:"total"`           // 0-100
+	Confidence    string `json:"confidence"`     // "high", "medium", "low"
 }
 
 // Job represents a download job.

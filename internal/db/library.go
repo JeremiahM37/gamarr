@@ -54,6 +54,9 @@ type LibraryPage struct {
 }
 
 func (s *JobStore) migrateExtra() {
+	s.migrateRequests()
+	s.migrateNotifications()
+
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS library_items (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,6 +169,30 @@ func (s *JobStore) GetLibraryPage(page, pageSize int, query, platformSlug string
 		PageSize:   pageSize,
 		TotalPages: totalPages,
 	}
+}
+
+// GetLibraryItem returns a single library item by ID.
+func (s *JobStore) GetLibraryItem(id int64) (*LibraryItem, error) {
+	row := s.db.QueryRow(
+		"SELECT id, title, platform, platform_slug, is_pc, file_path, file_size, source, source_type, source_id, metadata, added_at FROM library_items WHERE id = ?",
+		id,
+	)
+	var item LibraryItem
+	var isPC int
+	err := row.Scan(&item.ID, &item.Title, &item.Platform, &item.PlatformSlug,
+		&isPC, &item.FilePath, &item.FileSize, &item.Source, &item.SourceType,
+		&item.SourceID, &item.Metadata, &item.AddedAt)
+	if err != nil {
+		return nil, err
+	}
+	item.IsPC = isPC != 0
+	return &item, nil
+}
+
+// UpdateLibraryItemMetadata updates the metadata JSON blob for a library item.
+func (s *JobStore) UpdateLibraryItemMetadata(id int64, metadata string) error {
+	_, err := s.db.Exec("UPDATE library_items SET metadata = ? WHERE id = ?", metadata, id)
+	return err
 }
 
 // DeleteLibraryItem deletes a library item by ID.

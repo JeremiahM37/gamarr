@@ -47,6 +47,18 @@ type Config struct {
 	SABnzbdAPIKey   string
 	SABnzbdCategory string
 
+	// Deluge
+	DelugeURL  string
+	DelugePass string
+
+	// Transmission
+	TransmissionURL  string
+	TransmissionUser string
+	TransmissionPass string
+
+	// RAWG.io metadata
+	RAWGAPIKey string
+
 	// External services
 	GameVaultURL string
 	RomMURL      string
@@ -54,6 +66,11 @@ type Config struct {
 	// Retry
 	MaxRetries          int
 	RetryBackoffSeconds int
+
+	// Auth
+	AuthUsername string
+	AuthPassword string
+	APIKey       string
 
 	// Server
 	Port           int
@@ -97,8 +114,21 @@ func Load() *Config {
 		SABnzbdAPIKey:   envStr("SABNZBD_API_KEY", ""),
 		SABnzbdCategory: envStr("SABNZBD_CATEGORY", "games"),
 
+		DelugeURL:  envStr("DELUGE_URL", ""),
+		DelugePass: envStr("DELUGE_PASS", ""),
+
+		TransmissionURL:  envStr("TRANSMISSION_URL", ""),
+		TransmissionUser: envStr("TRANSMISSION_USER", ""),
+		TransmissionPass: envStr("TRANSMISSION_PASS", ""),
+
+		RAWGAPIKey: envStr("RAWG_API_KEY", ""),
+
 		GameVaultURL: envStr("GAMEVAULT_URL", ""),
 		RomMURL:      envStr("ROMM_URL", ""),
+
+		AuthUsername: envStr("AUTH_USERNAME", ""),
+		AuthPassword: envStr("AUTH_PASSWORD", ""),
+		APIKey:       envStr("API_KEY", ""),
 
 		MaxRetries:          envInt("MAX_RETRIES", 2),
 		RetryBackoffSeconds: envInt("RETRY_BACKOFF_SECONDS", 60),
@@ -108,6 +138,14 @@ func Load() *Config {
 
 		ProwlarrGameIndexers: envIntSlice("PROWLARR_GAME_INDEXERS", []int{7, 5, 15, 9, 8, 3, 4}),
 	}
+}
+
+func (c *Config) HasAuth() bool {
+	return c.AuthUsername != "" && c.AuthPassword != ""
+}
+
+func (c *Config) HasAPIKey() bool {
+	return c.APIKey != ""
 }
 
 func (c *Config) HasProwlarr() bool {
@@ -120,6 +158,18 @@ func (c *Config) HasQBittorrent() bool {
 
 func (c *Config) HasSABnzbd() bool {
 	return c.SABnzbdURL != "" && c.SABnzbdAPIKey != ""
+}
+
+func (c *Config) HasTransmission() bool {
+	return c.TransmissionURL != ""
+}
+
+func (c *Config) HasDeluge() bool {
+	return c.DelugeURL != ""
+}
+
+func (c *Config) HasRAWG() bool {
+	return c.RAWGAPIKey != ""
 }
 
 func (c *Config) HasClamAV() bool {
