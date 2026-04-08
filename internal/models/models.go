@@ -21,6 +21,9 @@ type SearchResult struct {
 	SafetyWarnings []string `json:"safety_warnings"`
 	VimmID         string   `json:"vimm_id,omitempty"`
 
+	// Library duplicate detection
+	InLibrary bool `json:"in_library"`
+
 	// Scoring fields (populated by scorer).
 	Score          int             `json:"score"`
 	ScoreBreakdown *ScoreBreakdown `json:"score_breakdown,omitempty"`

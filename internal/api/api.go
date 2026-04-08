@@ -20,6 +20,7 @@ import (
 	"gamarr/internal/monitor"
 	"gamarr/internal/platform"
 	"gamarr/internal/sabnzbd"
+	"gamarr/internal/scheduler"
 	"gamarr/internal/search"
 )
 
@@ -28,17 +29,18 @@ var webFS embed.FS
 
 // Server holds all API dependencies.
 type Server struct {
-	cfg      *config.Config
-	mgr      *download.Manager
-	mon      *monitor.GamarrMonitor
-	sab      *sabnzbd.Client
-	sessions *SessionStore
+	cfg       *config.Config
+	mgr       *download.Manager
+	mon       *monitor.GamarrMonitor
+	sab       *sabnzbd.Client
+	sessions  *SessionStore
+	scheduler *scheduler.Scheduler
 }
 
 // NewRouter creates a new chi router with all routes.
-func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMonitor, sab *sabnzbd.Client) http.Handler {
+func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMonitor, sab *sabnzbd.Client, sched *scheduler.Scheduler) http.Handler {
 	sessions := NewSessionStore()
-	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab, sessions: sessions}
+	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab, sessions: sessions, scheduler: sched}
 
 	// Rate limiter: 60-second window.
 	rl := NewRateLimiter(60, map[string]int{
@@ -141,6 +143,34 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Get("/api/notifications/unread", s.handleUnreadCount)
 	r.Post("/api/notifications/{id}/read", s.handleMarkRead)
 	r.Post("/api/notifications/read-all", s.handleMarkAllRead)
+
+	// Webhooks
+	r.Get("/api/webhooks", s.handleGetWebhooks)
+	r.Post("/api/webhooks", s.handleAddWebhook)
+	r.Delete("/api/webhooks/{id}", s.handleDeleteWebhook)
+	r.Post("/api/webhooks/test", s.handleTestWebhook)
+
+	// Import/Export
+	r.Get("/api/export/library", s.handleExportLibrary)
+	r.Get("/api/export/wishlist", s.handleExportWishlist)
+	r.Get("/api/export/requests", s.handleExportRequests)
+	r.Post("/api/import/library", s.handleImportLibrary)
+	r.Post("/api/import/wishlist", s.handleImportWishlist)
+	r.Post("/api/import/csv", s.handleImportCSV)
+
+	// Scheduler
+	r.Get("/api/scheduler/status", s.handleSchedulerStatus)
+	r.Post("/api/scheduler/run", s.handleSchedulerRun)
+
+	// Play History
+	r.Post("/api/history", s.handleAddHistory)
+	r.Get("/api/history", s.handleGetHistory)
+	r.Get("/api/history/stats", s.handleHistoryStats)
+	r.Patch("/api/history/{id}", s.handleUpdateHistory)
+	r.Delete("/api/history/{id}", s.handleDeleteHistory)
+
+	// Duplicate detection
+	r.Get("/api/library/check", s.handleCheckLibrary)
 
 	// Metadata & enrichment
 	s.RegisterMetadataRoutes(r)
@@ -280,6 +310,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return results[i].Score > results[j].Score
 	})
 
+	// Cross-reference with library for duplicate detection
+	libraryMap := s.mgr.Jobs().GetAllLibraryTitles()
+	if libraryMap != nil {
+		for _, r := range results {
+			key := strings.ToLower(strings.TrimSpace(r.Title)) + "|" + r.PlatformSlug
+			if _, found := libraryMap[key]; found {
+				r.InLibrary = true
+			}
+		}
+	}
+
 	elapsed := int(time.Since(start).Milliseconds())
 
 	// Source metadata
@@ -352,13 +393,23 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for duplicate in library (warn but don't block)
+	var duplicateWarning string
+	if existing := s.mgr.Jobs().FindLibraryByTitle(req.Title, req.PlatformSlug); existing != nil {
+		duplicateWarning = fmt.Sprintf("Game already exists in library: %s (%s)", existing.Title, existing.Platform)
+	}
+
 	if req.SourceType == "ddl" {
 		if req.DownloadURL == "" && req.VimmID == "" {
 			writeError(w, 400, "No download URL")
 			return
 		}
 		jobID := s.mgr.DownloadDDL(req.DownloadURL, req.VimmID, req.Title, req.Platform, req.PlatformSlug, req.IsPC)
-		writeJSON(w, 200, map[string]interface{}{"success": true, "job_id": jobID})
+		resp := map[string]interface{}{"success": true, "job_id": jobID}
+		if duplicateWarning != "" {
+			resp["warning"] = duplicateWarning
+		}
+		writeJSON(w, 200, resp)
 		return
 	}
 
@@ -374,7 +425,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]interface{}{"success": true, "job_id": jobID})
+		resp := map[string]interface{}{"success": true, "job_id": jobID}
+		if duplicateWarning != "" {
+			resp["warning"] = duplicateWarning
+		}
+		writeJSON(w, 200, resp)
 		return
 	}
 
@@ -392,7 +447,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]interface{}{"success": true, "job_id": jobID})
+	resp := map[string]interface{}{"success": true, "job_id": jobID}
+	if duplicateWarning != "" {
+		resp["warning"] = duplicateWarning
+	}
+	writeJSON(w, 200, resp)
 }
 
 func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {

@@ -56,6 +56,8 @@ type LibraryPage struct {
 func (s *JobStore) migrateExtra() {
 	s.migrateRequests()
 	s.migrateNotifications()
+	s.migrateWebhooks()
+	s.migrateHistory()
 
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS library_items (
@@ -354,6 +356,69 @@ func (s *JobStore) ClearScanEntries() {
 	if n, _ := result.RowsAffected(); n > 0 {
 		slog.Info("cleared scan entries for rescan", "count", n)
 	}
+}
+
+// FindLibraryByTitle checks if a game with a matching title+platform exists in the library.
+// Uses case-insensitive LIKE matching. Returns nil if not found.
+func (s *JobStore) FindLibraryByTitle(title, platformSlug string) *LibraryItem {
+	if title == "" {
+		return nil
+	}
+
+	var query string
+	var args []interface{}
+
+	normalizedTitle := strings.ToLower(strings.TrimSpace(title))
+
+	if platformSlug != "" && platformSlug != "all" {
+		if platformSlug == "pc" {
+			query = "SELECT id, title, platform, platform_slug, is_pc, file_path, file_size, source, source_type, source_id, metadata, added_at FROM library_items WHERE LOWER(title) = ? AND is_pc = 1 LIMIT 1"
+			args = []interface{}{normalizedTitle}
+		} else {
+			query = "SELECT id, title, platform, platform_slug, is_pc, file_path, file_size, source, source_type, source_id, metadata, added_at FROM library_items WHERE LOWER(title) = ? AND platform_slug = ? LIMIT 1"
+			args = []interface{}{normalizedTitle, platformSlug}
+		}
+	} else {
+		query = "SELECT id, title, platform, platform_slug, is_pc, file_path, file_size, source, source_type, source_id, metadata, added_at FROM library_items WHERE LOWER(title) = ? LIMIT 1"
+		args = []interface{}{normalizedTitle}
+	}
+
+	row := s.db.QueryRow(query, args...)
+	var item LibraryItem
+	var isPC int
+	err := row.Scan(&item.ID, &item.Title, &item.Platform, &item.PlatformSlug,
+		&isPC, &item.FilePath, &item.FileSize, &item.Source, &item.SourceType,
+		&item.SourceID, &item.Metadata, &item.AddedAt)
+	if err != nil {
+		return nil
+	}
+	item.IsPC = isPC != 0
+	return &item
+}
+
+// GetAllLibraryTitles returns a map of normalized "title|platform_slug" to LibraryItem for bulk lookups.
+func (s *JobStore) GetAllLibraryTitles() map[string]*LibraryItem {
+	rows, err := s.db.Query("SELECT id, title, platform, platform_slug, is_pc, file_path, file_size, source, source_type, source_id, metadata, added_at FROM library_items")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	result := make(map[string]*LibraryItem)
+	for rows.Next() {
+		var item LibraryItem
+		var isPC int
+		if err := rows.Scan(&item.ID, &item.Title, &item.Platform, &item.PlatformSlug,
+			&isPC, &item.FilePath, &item.FileSize, &item.Source, &item.SourceType,
+			&item.SourceID, &item.Metadata, &item.AddedAt); err != nil {
+			continue
+		}
+		item.IsPC = isPC != 0
+		key := strings.ToLower(strings.TrimSpace(item.Title)) + "|" + item.PlatformSlug
+		cp := item
+		result[key] = &cp
+	}
+	return result
 }
 
 func boolToInt(b bool) int {

@@ -63,6 +63,16 @@ type Config struct {
 	GameVaultURL string
 	RomMURL      string
 
+	// Webhooks (default from env, additional via DB)
+	WebhookURL  string
+	WebhookType string // "discord" or "generic"
+
+	// Scheduler
+	SchedulerEnabled       bool
+	SchedulerIntervalHours int
+	SchedulerAutoDownload  bool
+	SchedulerMinScore      int
+
 	// Retry
 	MaxRetries          int
 	RetryBackoffSeconds int
@@ -125,6 +135,14 @@ func Load() *Config {
 
 		GameVaultURL: envStr("GAMEVAULT_URL", ""),
 		RomMURL:      envStr("ROMM_URL", ""),
+
+		WebhookURL:  envStr("WEBHOOK_URL", ""),
+		WebhookType: envStr("WEBHOOK_TYPE", "generic"),
+
+		SchedulerEnabled:       envBool("SCHEDULER_ENABLED", false),
+		SchedulerIntervalHours: envInt("SCHEDULER_INTERVAL_HOURS", 24),
+		SchedulerAutoDownload:  envBool("SCHEDULER_AUTO_DOWNLOAD", true),
+		SchedulerMinScore:      envInt("SCHEDULER_MIN_SCORE", 70),
 
 		AuthUsername: envStr("AUTH_USERNAME", ""),
 		AuthPassword: envStr("AUTH_PASSWORD", ""),

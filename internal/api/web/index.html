@@ -35,6 +35,50 @@ tailwind.config = {
   @keyframes toastIn { from { opacity: 0; transform: translateX(100%); } to { opacity: 1; transform: translateX(0); } }
   .progress-bar { transition: width 0.5s ease; }
   .nav-tab.active { border-color: #6366f1; color: #e0e7ff; }
+
+  /* Mobile hamburger menu */
+  .hamburger { display: none; }
+  .nav-overlay { display: none; }
+
+  @media (max-width: 640px) {
+    .hamburger { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; cursor: pointer; }
+    .hamburger span { display: block; width: 20px; height: 2px; background: #94a3b8; position: relative; transition: background 0.2s; }
+    .hamburger span::before, .hamburger span::after { content: ''; position: absolute; width: 20px; height: 2px; background: #94a3b8; transition: transform 0.2s; }
+    .hamburger span::before { top: -6px; }
+    .hamburger span::after { top: 6px; }
+    .hamburger.active span { background: transparent; }
+    .hamburger.active span::before { transform: translateY(6px) rotate(45deg); }
+    .hamburger.active span::after { transform: translateY(-6px) rotate(-45deg); }
+
+    nav.mobile-nav { display: none !important; }
+    nav.mobile-nav.open { display: flex !important; flex-direction: column; position: absolute; top: 100%; left: 0; right: 0; background: #0f172a; border-bottom: 1px solid #1e293b; z-index: 50; padding: 0.5rem; }
+    nav.mobile-nav.open .nav-tab { width: 100%; text-align: left; padding: 0.75rem 1rem; border-bottom: none; border-left: 3px solid transparent; }
+    nav.mobile-nav.open .nav-tab.active { border-left-color: #6366f1; border-bottom: none; }
+
+    .nav-overlay.open { display: block; position: fixed; inset: 0; z-index: 29; background: rgba(0,0,0,0.3); }
+
+    /* Search - full width, stacked */
+    #tab-search .flex.flex-col.sm\\:flex-row { flex-direction: column !important; }
+    #tab-search .flex.flex-col.sm\\:flex-row > * { width: 100% !important; }
+    #search-btn { width: 100% !important; }
+
+    /* Results cards - stack vertically, full width */
+    #results { grid-template-columns: 1fr !important; }
+
+    /* Library grid - single column */
+    #library-grid { grid-template-columns: 1fr !important; }
+
+    /* Larger touch targets */
+    button, select, input { min-height: 44px; }
+
+    /* Settings grid */
+    .grid.grid-cols-1.sm\\:grid-cols-3 { grid-template-columns: 1fr !important; }
+  }
+
+  @media (max-width: 768px) {
+    #results { grid-template-columns: 1fr !important; }
+    #library-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  }
 </style>
 </head>
 <body class="bg-slate-950 text-slate-200 font-sans min-h-screen">
@@ -58,9 +102,11 @@ tailwind.config = {
         </div>
       </div>
       <span id="header-stats" class="text-xs text-slate-500 hidden sm:block"></span>
+      <div class="hamburger sm:hidden" id="hamburger-btn" onclick="toggleMobileNav()"><span></span></div>
     </div>
-    <div class="max-w-7xl mx-auto px-4 sm:px-6">
-      <nav class="flex gap-1 -mb-px overflow-x-auto">
+    <div class="nav-overlay" id="nav-overlay" onclick="toggleMobileNav()"></div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 relative">
+      <nav class="flex gap-1 -mb-px overflow-x-auto mobile-nav" id="main-nav">
         <button onclick="switchTab('search')" class="nav-tab active px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap" data-tab="search">
           <svg class="w-4 h-4 inline mr-1.5 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>Search
         </button>
@@ -468,6 +514,25 @@ function toast(msg, type) {
   el.className = `toast-enter bg-slate-900 border border-slate-700 border-l-4 ${colors[type]||'border-l-slate-500'} rounded-lg p-3 text-sm text-slate-200 shadow-xl`;
   el.textContent = msg; c.appendChild(el); setTimeout(() => el.remove(), 4000);
 }
+function toggleMobileNav() {
+  const nav = document.getElementById('main-nav');
+  const btn = document.getElementById('hamburger-btn');
+  const overlay = document.getElementById('nav-overlay');
+  nav.classList.toggle('open');
+  btn.classList.toggle('active');
+  overlay.classList.toggle('open');
+}
+function closeMobileNav() {
+  const nav = document.getElementById('main-nav');
+  const btn = document.getElementById('hamburger-btn');
+  const overlay = document.getElementById('nav-overlay');
+  nav.classList.remove('open');
+  btn.classList.remove('active');
+  overlay.classList.remove('open');
+}
+// Override switchTab to close mobile nav
+const origSwitchTab = switchTab;
+switchTab = function(tab) { closeMobileNav(); origSwitchTab(tab); };
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function formatSize(bytes) { if (!bytes) return ''; const u = ['B','KB','MB','GB','TB']; let i = 0, s = bytes; while (s >= 1024 && i < u.length-1) { s /= 1024; i++; } return s.toFixed(1) + ' ' + u[i]; }
 </script>
