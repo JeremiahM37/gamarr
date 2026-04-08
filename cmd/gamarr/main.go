@@ -204,6 +204,23 @@ func main() {
 	go mgr.RecoverOrphanedTorrents()
 	go mgr.ScanLibraryDirs()
 
+	// Periodic cleanup: remove stale downloading jobs (>24h) and old finished jobs (>7d)
+	go func() {
+		// Initial cleanup on startup
+		database.CleanupStaleDownloads(24)
+		database.Cleanup(7)
+
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			stale := database.CleanupStaleDownloads(24)
+			old := database.Cleanup(7)
+			if stale > 0 || old > 0 {
+				slog.Info("periodic cleanup", "stale_downloads", stale, "old_jobs", old)
+			}
+		}
+	}()
+
 	// Create HTTP router
 	router := api.NewRouter(cfg, mgr, mon, sab, sched)
 

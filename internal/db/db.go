@@ -178,6 +178,35 @@ func (s *JobStore) Values() []map[string]interface{} {
 	return vals
 }
 
+// CleanupStaleDownloads removes "downloading" jobs that haven't been updated in the given hours.
+// These are phantom entries where the actual download was lost (container restart, qBit cleared, etc).
+func (s *JobStore) CleanupStaleDownloads(hours int) int {
+	cutoff := float64(time.Now().Unix()) - float64(hours*3600)
+	result, err := s.db.Exec(
+		`DELETE FROM jobs WHERE updated_at < ? AND json_extract(data, '$.status') = 'downloading'`,
+		cutoff,
+	)
+	if err != nil {
+		return 0
+	}
+	deleted, _ := result.RowsAffected()
+	if deleted > 0 {
+		// Sync cache
+		s.mu.Lock()
+		for id, data := range s.cache {
+			status, _ := data["status"].(string)
+			if status == "downloading" {
+				if updated, ok := data["updated_at"].(float64); ok && updated < cutoff {
+					delete(s.cache, id)
+				}
+			}
+		}
+		s.mu.Unlock()
+		slog.Info("cleaned up stale downloading jobs", "count", deleted, "hours", hours)
+	}
+	return int(deleted)
+}
+
 // Cleanup removes finished jobs older than the given number of days.
 func (s *JobStore) Cleanup(days int) int {
 	cutoff := float64(time.Now().Unix()) - float64(days*86400)
