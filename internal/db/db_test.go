@@ -219,6 +219,88 @@ func TestJobStore_Cleanup(t *testing.T) {
 	}
 }
 
+func TestJobStore_CleanupStaleDownloads_RemovesOld(t *testing.T) {
+	store := newTestStore(t)
+
+	// Add a downloading job with updated_at in both DB and cache
+	store.Set("stale1", map[string]interface{}{
+		"status":     "downloading",
+		"title":      "Stale Game",
+		"updated_at": float64(0), // epoch 0 is definitely > 24h ago
+	})
+	store.db.Exec("UPDATE jobs SET updated_at = ? WHERE job_id = 'stale1'",
+		float64(0))
+
+	deleted := store.CleanupStaleDownloads(24)
+	if deleted != 1 {
+		t.Errorf("expected 1 stale job deleted, got %d", deleted)
+	}
+	if store.Contains("stale1") {
+		t.Error("stale downloading job should be removed from cache")
+	}
+}
+
+func TestJobStore_CleanupStaleDownloads_KeepsRecent(t *testing.T) {
+	store := newTestStore(t)
+
+	// Add a recent downloading job (default updated_at is now)
+	store.Set("recent1", map[string]interface{}{"status": "downloading", "title": "Recent Game"})
+
+	deleted := store.CleanupStaleDownloads(24)
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted (recent job), got %d", deleted)
+	}
+	if !store.Contains("recent1") {
+		t.Error("recent downloading job should be kept")
+	}
+}
+
+func TestJobStore_CleanupStaleDownloads_IgnoresNonDownloading(t *testing.T) {
+	store := newTestStore(t)
+
+	// Add completed and error jobs with old timestamps
+	store.Set("completed1", map[string]interface{}{"status": "completed", "title": "Done"})
+	store.Set("error1", map[string]interface{}{"status": "error", "title": "Failed"})
+	store.db.Exec("UPDATE jobs SET updated_at = 0 WHERE job_id IN ('completed1', 'error1')")
+
+	deleted := store.CleanupStaleDownloads(24)
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted (non-downloading), got %d", deleted)
+	}
+	if !store.Contains("completed1") {
+		t.Error("completed job should not be affected")
+	}
+	if !store.Contains("error1") {
+		t.Error("error job should not be affected")
+	}
+}
+
+func TestJobStore_CleanupStaleDownloads_Mixed(t *testing.T) {
+	store := newTestStore(t)
+
+	// Mix of stale downloading, recent downloading, and old non-downloading
+	// Include updated_at in cache data so cache sync works
+	store.Set("stale-dl", map[string]interface{}{"status": "downloading", "updated_at": float64(0)})
+	store.Set("recent-dl", map[string]interface{}{"status": "downloading"})
+	store.Set("old-completed", map[string]interface{}{"status": "completed"})
+
+	store.db.Exec("UPDATE jobs SET updated_at = 0 WHERE job_id IN ('stale-dl', 'old-completed')")
+
+	deleted := store.CleanupStaleDownloads(24)
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted (only stale downloading), got %d", deleted)
+	}
+	if store.Contains("stale-dl") {
+		t.Error("stale downloading should be removed")
+	}
+	if !store.Contains("recent-dl") {
+		t.Error("recent downloading should be kept")
+	}
+	if !store.Contains("old-completed") {
+		t.Error("old completed should be kept")
+	}
+}
+
 func TestJobStore_DBDir(t *testing.T) {
 	dir := t.TempDir()
 	subdir := filepath.Join(dir, "nested", "path")
