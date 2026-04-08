@@ -4,28 +4,78 @@
 [![Release](https://img.shields.io/github/v/release/JeremiahM37/gamarr?include_prereleases)](https://github.com/JeremiahM37/gamarr/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**The missing *arr for games.** Self-hosted game and ROM search and download manager.
+**The missing *arr for games.** Self-hosted game and ROM search, download, and library manager.
 
-Gamarr searches across Prowlarr torrent indexers, Myrient (verified ROM sets via direct download), and Vimm (fallback DDL) to find games for 24 platforms. It scores results for safety, manages downloads via qBittorrent or SABnzbd, and organizes files into your game vault and ROM library.
+Gamarr searches across Prowlarr torrent indexers, Myrient (verified ROM sets), and Vimm's Lair to find games for 24 platforms. Results are scored for safety and quality, downloads are managed through your choice of torrent or Usenet client, and files are automatically organized into your game vault and ROM library.
 
 ## Features
 
-- **24 gaming platforms** -- PC, Switch, PS1-PS4, PSP, PS Vita, Xbox, Xbox 360, Wii, Wii U, NES, SNES, N64, Game Boy, Game Boy Advance, Sega Genesis, Sega Saturn, DS, 3DS, and more
-- **3 search sources** -- Prowlarr (torrent indexers), Myrient (direct download, verified No-Intro/Redump sets), Vimm (fallback DDL)
-- **Safety scoring** -- analyzes file names, sizes, and sources to detect malware, crack-only uploads, and suspicious downloads
-- **Library management** -- SQLite-backed game library with platform tagging and deduplication
-- **Wishlist** -- save wanted games, track availability
+### Search and Discovery
+
+- **3 search sources** -- Prowlarr (torrent indexers), Myrient (direct download, verified No-Intro/Redump sets), Vimm's Lair (fallback DDL)
+- **24 gaming platforms** -- PC, Switch, PS1-PS5, PSP, PS Vita, Xbox, Xbox 360, Wii, Wii U, NES, SNES, N64, GameCube, Game Boy, GBA, DS, 3DS, Genesis, Saturn, Dreamcast, Atari 2600
+- **Search scoring** -- composite 0-100 score based on title match, platform relevance, seeder count, file size, and safety analysis
+- **Safety scoring** -- analyzes file names, sizes, and scene group trust to detect malware, crack-only uploads, and suspicious downloads
+- **Duplicate detection** -- search results show an `in_library` flag when a game already exists in your library
+- **Release calendar** -- browse upcoming and recently released games via RAWG.io API integration
+
+### Quality Control
+
+- **Quality profiles** -- rank sources by preference, enable auto-upgrade when a better release appears
+- **Release profiles** -- preferred and excluded words to filter and boost search results
+- **Blocklist** -- failed or unwanted releases are auto-added, filtered from future results
+
+### Downloads
+
+- **4 download clients** -- qBittorrent, Transmission, Deluge (torrents), SABnzbd (Usenet/NZB)
 - **Download monitoring** -- real-time progress tracking with auto-organize on completion
-- **DDL source management** -- add and manage custom direct download sources
-- **Dual download clients** -- qBittorrent (torrents) and SABnzbd (Usenet/NZB)
-- **AI monitor** (optional) -- LLM-powered download analysis and auto-fix suggestions
-- **ClamAV integration** (optional) -- scan downloaded files for malware
-- **Archive extraction** -- auto-extract 7z, zip, and rar archives
+- **Retry and recovery** -- configurable retry attempts with backoff, orphan torrent recovery on startup
+- **Archive extraction** -- auto-extract 7z, zip, and rar archives after download
+
+### Library Management
+
+- **SQLite-backed library** with platform tagging, search, and pagination
+- **Tags** -- create and assign tags for custom organization
+- **Rename on import** -- configurable pattern (e.g., `{title} ({platform}).{ext}`), scene tag cleanup
+- **File organization** -- auto-sort ROMs by platform directory, PC games to vault
+- **Manual import** -- scan directories and import existing files
+- **Import/export** -- JSON and CSV for library, wishlist, and requests
+- **Backup and restore** -- full database backup with admin-only access
+
+### Requests and Wishlist
+
+- **Request workflow** -- pending, approved, searching, downloading, completed states
+- **Wishlist** -- save wanted games, track availability
+- **Scheduled searches** -- automatic wishlist searches with configurable interval, auto-download best match
+
+### Notifications
+
+- **In-app notifications** -- unread count, mark read, per-event tracking
+- **Webhooks** -- Discord and generic webhook support with per-event filtering
+- **Event types** -- download complete, request approved/completed/failed
+
+### Integrations
+
+- **RAWG.io metadata** -- cover art, descriptions, ratings, release dates
+- **GameVault** -- link library items to your GameVault server
+- **RomM** -- link library items to your RomM instance
+- **ClamAV** (optional) -- scan downloaded files for malware
+
+### Administration
+
+- **Multi-user auth** -- session-based login with API key support (`X-Api-Key` header)
+- **Admin dashboard** -- system overview, user management, connection tests
+- **Rate limiting** -- per-category limits (login, search, download, general API)
+- **Security headers** -- request size limits, CORS, standard hardening
 - **Prometheus metrics** at `/metrics`
-- **Modern dark UI** -- Tailwind CSS, responsive, platform filters
-- **43 automated end-to-end tests**
-- **Single static binary** -- ~15 MB, zero CGO, pure-Go SQLite (`modernc.org/sqlite`)
+- **AI monitor** (optional) -- Ollama/OpenAI-powered download analysis and auto-fix suggestions
+
+### Technical
+
+- **Single static binary** -- ~17 MB, zero CGO, pure-Go SQLite (`modernc.org/sqlite`)
 - **Docker-ready** -- minimal Alpine image with p7zip, runs as non-root user
+- **Mobile-responsive UI** -- Tailwind CSS, dark theme, platform filters
+- **43 automated end-to-end tests**
 
 ## Supported Platforms
 
@@ -55,10 +105,6 @@ Gamarr searches across Prowlarr torrent indexers, Myrient (verified ROM sets via
 | Dreamcast | `dreamcast` | Yes | Yes |
 | GameCube | `gamecube` | Yes | Yes |
 | Atari 2600 | `atari2600` | Yes | Yes |
-
-## Screenshots
-
-<!-- Add screenshots of the search, library, and download views here -->
 
 ## Quick Start
 
@@ -116,66 +162,53 @@ All configuration is via environment variables.
 | `GAMARR_PORT` | `5001` | HTTP listen port |
 | `DATA_DIR` | `/data/gamarr` | Data directory (SQLite DB, settings) |
 | `METRICS_ENABLED` | `true` | Enable Prometheus metrics endpoint |
+| `AUTH_USERNAME` | | Admin username (enables auth when set) |
+| `AUTH_PASSWORD` | | Admin password |
 
-### Prowlarr
+### Search Sources
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PROWLARR_URL` | `http://prowlarr:9696` | Prowlarr URL |
 | `PROWLARR_API_KEY` | | Prowlarr API key |
-| `PROWLARR_GAME_INDEXERS` | `7,5,15,9,8,3,4` | Comma-separated Prowlarr indexer IDs to search |
+| `PROWLARR_GAME_INDEXERS` | `7,5,15,9,8,3,4` | Comma-separated indexer IDs to search |
+| `RAWG_API_KEY` | | RAWG.io API key (enables metadata, calendar) |
 
-### qBittorrent
+### Download Clients
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QB_URL` | `http://qbittorrent:8080` | qBittorrent Web UI URL |
 | `QB_USER` | `admin` | qBittorrent username |
 | `QB_PASS` | | qBittorrent password |
-| `QB_SAVE_PATH` | `/data/incoming/` | Download save path (inside qBit container) |
+| `QB_SAVE_PATH` | `/data/incoming/` | Download save path |
 | `QB_CATEGORY` | `games` | Torrent category |
-
-### SABnzbd (Usenet)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
+| `TRANSMISSION_URL` | | Transmission RPC URL |
+| `TRANSMISSION_USER` | | Transmission username |
+| `TRANSMISSION_PASS` | | Transmission password |
+| `DELUGE_URL` | | Deluge Web UI URL |
+| `DELUGE_PASS` | | Deluge password |
 | `SABNZBD_URL` | | SABnzbd URL |
 | `SABNZBD_API_KEY` | | SABnzbd API key |
 | `SABNZBD_CATEGORY` | `games` | NZB download category |
 
-### Library Paths
+### Library and Organization
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GAMES_VAULT_PATH` | `/data/vault` | PC game storage directory |
 | `GAMES_ROMS_PATH` | `/data/roms` | ROM storage directory |
+| `RENAME_ENABLED` | `false` | Rename files on import |
+| `RENAME_PATTERN` | `{title} ({platform}).{ext}` | Rename pattern |
+| `GAMEVAULT_URL` | | GameVault server URL |
+| `ROMM_URL` | | RomM server URL |
 
-### External Services
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GAMEVAULT_URL` | | GameVault server URL (for library links) |
-| `ROMM_URL` | | RomM server URL (for library links) |
-
-### ClamAV (optional)
+### Notifications
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLAMAV_CONTAINER` | `clamav` | ClamAV Docker container name |
-| `CLAMAV_SOCKET` | `/run/clamav/clamd.sock` | ClamAV socket path |
-| `DOCKER_SOCKET` | `/var/run/docker.sock` | Docker socket (for ClamAV container access) |
-
-### AI Monitor (optional)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AI_MONITOR_ENABLED` | `false` | Enable AI-powered download monitoring |
-| `AI_PROVIDER` | `ollama` | AI provider (`ollama`, `openai`) |
-| `AI_API_URL` | `http://localhost:11434/v1` | AI API endpoint |
-| `AI_API_KEY` | | API key (if required by provider) |
-| `AI_MODEL` | `llama3.2` | Model name |
-| `AI_MONITOR_INTERVAL` | `300` | Analysis interval in seconds |
-| `AI_AUTO_FIX` | `true` | Automatically apply AI suggestions |
+| `WEBHOOK_URL` | | Default webhook URL |
+| `WEBHOOK_TYPE` | `generic` | Webhook type (`discord`, `generic`) |
 
 ### Downloads
 
@@ -185,84 +218,23 @@ All configuration is via environment variables.
 | `MAX_RETRIES` | `2` | Download retry attempts |
 | `RETRY_BACKOFF_SECONDS` | `60` | Seconds between retries |
 
-## API Endpoints
+### AI Monitor (optional)
 
-### Search
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_MONITOR_ENABLED` | `false` | Enable AI-powered download monitoring |
+| `AI_PROVIDER` | `ollama` | AI provider (`ollama`, `openai`) |
+| `AI_API_URL` | `http://localhost:11434/v1` | AI API endpoint |
+| `AI_MODEL` | `llama3.2` | Model name |
+| `AI_MONITOR_INTERVAL` | `300` | Analysis interval in seconds |
+| `AI_AUTO_FIX` | `true` | Automatically apply AI suggestions |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/search?q=&platform=` | Search games (optional platform filter) |
-| GET | `/api/platforms` | List supported platforms |
-| GET | `/api/sources` | List search sources and status |
+### ClamAV (optional)
 
-### Downloads
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/download` | Start a download |
-| GET | `/api/downloads` | List active/completed downloads |
-| DELETE | `/api/downloads/torrent/{hash}` | Remove a torrent download |
-| DELETE | `/api/downloads/{jobID}` | Remove a download job |
-| POST | `/api/downloads/clear` | Clear finished downloads |
-| POST | `/api/downloads/organize/{hash}` | Manually organize a completed torrent |
-| POST | `/api/downloads/{jobID}/retry` | Retry a failed download |
-
-### Library
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/library?q=&platform=` | Browse library (filterable, paginated) |
-| DELETE | `/api/library/{id}` | Remove item from library |
-
-### Wishlist
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/wishlist` | List wishlist items |
-| POST | `/api/wishlist` | Add game to wishlist |
-| DELETE | `/api/wishlist/{id}` | Remove from wishlist |
-
-### DDL Sources
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/ddl-sources` | List custom DDL sources |
-| POST | `/api/ddl-sources` | Add a DDL source |
-| DELETE | `/api/ddl-sources/{idx}` | Remove a DDL source |
-
-### Configuration
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/settings` | Get persistent settings |
-| PUT | `/api/settings` | Update persistent settings |
-| GET | `/api/config` | Current configuration summary |
-| GET | `/api/stats` | Library and download statistics |
-| GET | `/api/activity` | Recent activity log |
-
-### Connection Tests
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/test/prowlarr` | Test Prowlarr connection |
-| POST | `/api/test/qbittorrent` | Test qBittorrent connection |
-| POST | `/api/test/sabnzbd` | Test SABnzbd connection |
-
-### AI Monitor
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/monitor/status` | Monitor status and pending actions |
-| POST | `/api/monitor/analyze` | Trigger manual analysis |
-| POST | `/api/monitor/actions/{actionID}/approve` | Approve a suggested action |
-| POST | `/api/monitor/actions/{actionID}/dismiss` | Dismiss a suggested action |
-
-### System
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/health` | Health check |
-| GET | `/metrics` | Prometheus metrics |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAMAV_CONTAINER` | `clamav` | ClamAV Docker container name |
+| `CLAMAV_SOCKET` | `/run/clamav/clamd.sock` | ClamAV socket path |
 
 ## Architecture
 
@@ -271,20 +243,22 @@ Single static binary, zero CGO dependencies, pure-Go SQLite via `modernc.org/sql
 ```
 cmd/gamarr/main.go              Entry point
 internal/
-  config/config.go               Env var configuration
+  config/                        Environment variable configuration
   db/                            SQLite persistence + migrations
-  models/                        Core types (games, downloads, wishlist)
-  api/                           HTTP handlers + chi router
-    api.go                       Route registration + handlers
-    handlers_extra.go            Library/wishlist pagination
+  models/                        Core types (games, downloads, requests, notifications)
+  api/                           HTTP handlers + chi router + auth + rate limiting
     web/                         Embedded web UI assets
-  search/                        Search source implementations (Prowlarr, Myrient, Vimm)
-  download/                      Download manager (qBit + SABnzbd + DDL)
+  search/                        Search sources (Prowlarr, Myrient, Vimm)
+  download/                      Download manager (qBit, Transmission, Deluge, DDL)
+  sabnzbd/                       SABnzbd client
+  safety/                        Safety scoring engine
+  scheduler/                     Scheduled wishlist searches
   monitor/                       AI-powered download monitoring
+  metadata/                      RAWG.io API client
+  organize/                      File organization and rename
   platform/                      Platform definitions, detection, category mapping
   qbit/                          qBittorrent API client
-  sabnzbd/                       SABnzbd API client
-  safety/                        Safety scoring engine
+  webhook/                       Discord + generic webhook delivery
 web/
   index.html                     Single-page web UI (Tailwind CSS)
 tests/
@@ -293,8 +267,6 @@ Dockerfile                       Multi-stage Alpine build
 ```
 
 ## Testing
-
-Gamarr includes 43 automated end-to-end tests covering search, downloads, library management, and platform detection.
 
 ```bash
 # Run tests (requires a running Gamarr instance)

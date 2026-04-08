@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.Version=2.0.0" \
+    -ldflags="-s -w -X main.Version=1.0.0" \
     -o /gamarr ./cmd/gamarr/
 
 FROM alpine:3.21

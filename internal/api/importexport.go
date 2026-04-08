@@ -11,7 +11,7 @@ import (
 	"gamarr/internal/db"
 )
 
-const gamarrVersion = "2.0.0"
+const gamarrVersion = "1.0.0"
 
 // ── Export Types ──────────────────────────────────────────────────────────────
 

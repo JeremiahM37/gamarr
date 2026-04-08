@@ -24,7 +24,7 @@ import (
 	"gamarr/internal/webhook"
 )
 
-var Version = "2.0.0"
+var Version = "1.0.0"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{

@@ -781,7 +781,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]interface{}{"status": "ok", "version": "2.0.0"})
+	writeJSON(w, 200, map[string]interface{}{"status": "ok", "version": "1.0.0"})
 }
 
 func (s *Server) handleMonitorStatus(w http.ResponseWriter, r *http.Request) {

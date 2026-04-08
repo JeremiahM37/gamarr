@@ -44,7 +44,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, _ *http.Request) {
 		"sources_health":   sourcesHealth,
 		"total_users":      userCount,
 		"system": map[string]string{
-			"version":    "2.0.0",
+			"version":    "1.0.0",
 			"uptime":     uptimeStr,
 			"go_version": runtime.Version(),
 		},

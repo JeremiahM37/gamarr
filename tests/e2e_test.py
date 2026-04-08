@@ -56,14 +56,14 @@ print("=== 1. HEALTH & CONFIG ===")
 
 def t_health():
     d = get("/api/health")
-    assert d["status"] == "ok" and d["version"] == "2.0.0"
+    assert d["status"] == "ok" and d["version"] == "1.0.0"
 test("GET /api/health", t_health)
 
 def t_config():
     d = get("/api/config")
     assert d["prowlarr"]["configured"] == True
     assert d["qbittorrent"]["configured"] == True
-    assert d["version"] == "2.0.0"
+    assert d["version"] == "1.0.0"
 test("GET /api/config", t_config)
 
 # ═══════════════════════════════════════════════════════════════════════════════
