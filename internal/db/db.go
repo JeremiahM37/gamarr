@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -255,11 +256,21 @@ func (s *JobStore) persist(jobID string, data map[string]interface{}) {
 		slog.Error("failed to marshal job", "error", err)
 		return
 	}
-	_, err = s.db.Exec(
-		"INSERT OR REPLACE INTO jobs (job_id, data, updated_at) VALUES (?, ?, strftime('%s','now'))",
-		jobID, string(jsonData),
-	)
-	if err != nil {
-		slog.Error("failed to persist job", "error", err)
+	// Retry on SQLITE_BUSY (lock contention)
+	for attempt := 0; attempt < 5; attempt++ {
+		_, err = s.db.Exec(
+			"INSERT OR REPLACE INTO jobs (job_id, data, updated_at) VALUES (?, ?, strftime('%s','now'))",
+			jobID, string(jsonData),
+		)
+		if err == nil {
+			return
+		}
+		// Only retry on busy/locked errors
+		errStr := err.Error()
+		if !strings.Contains(errStr, "locked") && !strings.Contains(errStr, "busy") {
+			break
+		}
+		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
 	}
+	slog.Error("failed to persist job", "error", err)
 }
