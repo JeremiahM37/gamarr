@@ -200,9 +200,16 @@ func main() {
 	sched := scheduler.New(cfg, database, searchFn, downloadFn, webhookFn)
 	sched.Start()
 
+	// Configure circuit breaker
+	search.InitHealthConfig(cfg.CircuitBreakerThreshold, cfg.CircuitBreakerTimeoutS)
+
 	// Recover orphaned torrents and scan library in background
 	go mgr.RecoverOrphanedTorrents()
 	go mgr.ScanLibraryDirs()
+
+	// Start torrent completion watcher
+	watcher := download.NewWatcher(cfg, mgr)
+	watcher.Start()
 
 	// Periodic cleanup: remove stale downloading jobs (>24h) and old finished jobs (>7d)
 	go func() {
@@ -251,6 +258,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	watcher.Stop()
 	sched.Stop()
 	mon.Stop()
 	if err := server.Shutdown(shutdownCtx); err != nil {

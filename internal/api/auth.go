@@ -18,6 +18,7 @@ import (
 	"gamarr/internal/config"
 	"gamarr/internal/db"
 
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -42,12 +43,14 @@ type SessionData struct {
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*SessionData
+	pending  map[string]*SessionData // TOTP-pending sessions (5-minute expiry)
 }
 
 // NewSessionStore creates a new session store with periodic cleanup.
 func NewSessionStore() *SessionStore {
 	s := &SessionStore{
 		sessions: make(map[string]*SessionData),
+		pending:  make(map[string]*SessionData),
 	}
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
@@ -57,6 +60,11 @@ func NewSessionStore() *SessionStore {
 			for token, data := range s.sessions {
 				if now.After(data.Expiry) {
 					delete(s.sessions, token)
+				}
+			}
+			for token, data := range s.pending {
+				if now.After(data.Expiry) {
+					delete(s.pending, token)
 				}
 			}
 			s.mu.Unlock()
@@ -113,14 +121,51 @@ func (s *SessionStore) Delete(token string) {
 	s.mu.Unlock()
 }
 
+// CreatePending creates a TOTP-pending session token (5-minute expiry).
+func (s *SessionStore) CreatePending(userID int64, username, role string) string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+
+	s.mu.Lock()
+	s.pending[token] = &SessionData{
+		UserID:   userID,
+		Username: username,
+		Role:     role,
+		Expiry:   time.Now().Add(5 * time.Minute),
+	}
+	s.mu.Unlock()
+	return token
+}
+
+// GetPending retrieves and consumes a pending TOTP session.
+func (s *SessionStore) GetPending(token string) (*SessionData, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.pending[token]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(data.Expiry) {
+		delete(s.pending, token)
+		return nil, false
+	}
+	delete(s.pending, token)
+	return data, true
+}
+
 // exemptPaths are paths that do not require authentication.
 var exemptPaths = map[string]bool{
-	"/":                true,
-	"/health":          true,
-	"/api/health":      true,
-	"/api/login":       true,
-	"/api/register":    true,
-	"/api/auth/status": true,
+	"/":                    true,
+	"/health":              true,
+	"/api/health":          true,
+	"/api/login":           true,
+	"/api/login/totp":      true,
+	"/api/register":        true,
+	"/api/auth/status":     true,
+	"/api/oidc/login":      true,
+	"/api/oidc/callback":   true,
+	"/api/oidc/status":     true,
 }
 
 // isExempt returns true if the path does not require auth.
@@ -271,6 +316,17 @@ func handleLogin(cfg *config.Config, database *db.JobStore, sessions *SessionSto
 				return
 			}
 
+			// If TOTP is enabled, return a pending token instead of a full session.
+			if user.TOTPEnabled {
+				pendingToken := sessions.CreatePending(user.ID, user.Username, user.Role)
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"success":         true,
+					"needs_totp":      true,
+					"session_pending": pendingToken,
+				})
+				return
+			}
+
 			database.UpdateLastLogin(user.ID)
 			token := sessions.Create(user.ID, user.Username, user.Role)
 			http.SetCookie(w, &http.Cookie{
@@ -332,11 +388,13 @@ func handleLogin(cfg *config.Config, database *db.JobStore, sessions *SessionSto
 }
 
 // handleRegister handles POST /api/register. First user becomes admin.
+// Supports invite codes: non-admin users can register with a valid invite code.
 func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
+			Username   string `json:"username"`
+			Password   string `json:"password"`
+			InviteCode string `json:"invite_code"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -364,21 +422,36 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 		userCount, _ := database.CountUsers()
 		isFirstUser := userCount == 0
 
-		// After first user, only admins can register new users.
+		var inviteRole string
 		if !isFirstUser {
-			role, _ := r.Context().Value(ctxUserRole).(string)
-			if role != "admin" {
-				writeJSON(w, http.StatusForbidden, map[string]interface{}{
-					"success": false,
-					"error":   "Only admins can create new users",
-				})
-				return
+			// Check if user is admin OR has a valid invite code.
+			callerRole, _ := r.Context().Value(ctxUserRole).(string)
+			if callerRole != "admin" {
+				if req.InviteCode == "" {
+					writeJSON(w, http.StatusForbidden, map[string]interface{}{
+						"success": false,
+						"error":   "Admin access or invite code required",
+					})
+					return
+				}
+				var err error
+				inviteRole, err = database.ValidateInviteCode(req.InviteCode)
+				if err != nil {
+					writeJSON(w, http.StatusForbidden, map[string]interface{}{
+						"success": false,
+						"error":   err.Error(),
+					})
+					return
+				}
 			}
 		}
 
 		role := "user"
 		if isFirstUser {
 			role = "admin"
+		}
+		if inviteRole != "" {
+			role = inviteRole
 		}
 
 		hash, err := hashPassword(req.Password)
@@ -404,6 +477,11 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 				"error":   "Failed to create user",
 			})
 			return
+		}
+
+		// Mark invite code as used.
+		if req.InviteCode != "" {
+			database.UseInviteCode(req.InviteCode)
 		}
 
 		slog.Info("user registered", "id", id, "username", req.Username, "role", role)
@@ -441,13 +519,15 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 }
 
 // handleAuthStatus returns the current auth state.
-func handleAuthStatus(database *db.JobStore, sessions *SessionStore) http.HandlerFunc {
+func handleAuthStatus(database *db.JobStore, sessions *SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userCount, _ := database.CountUsers()
 
 		resp := map[string]interface{}{
 			"has_users":     userCount > 0,
 			"authenticated": false,
+			"oidc_enabled":  cfg.HasOIDC(),
+			"oidc_provider": cfg.OIDCProviderName,
 		}
 
 		cookie, err := r.Cookie("gamarr_session")
@@ -457,6 +537,9 @@ func handleAuthStatus(database *db.JobStore, sessions *SessionStore) http.Handle
 				resp["username"] = data.Username
 				resp["role"] = data.Role
 				resp["user_id"] = data.UserID
+				if user, err := database.GetUser(data.UserID); err == nil {
+					resp["totp_enabled"] = user.TOTPEnabled
+				}
 			}
 		}
 
@@ -482,6 +565,83 @@ func handleLogout(sessions *SessionStore, database *db.JobStore) http.HandlerFun
 			SameSite: http.SameSiteLaxMode,
 		})
 		writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+	}
+}
+
+// handleLoginTOTP handles POST /api/login/totp — validates TOTP code or backup code for pending sessions.
+func handleLoginTOTP(database *db.JobStore, sessions *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PendingToken string `json:"session_pending"`
+			Code         string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+
+		pending, ok := sessions.GetPending(req.PendingToken)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]interface{}{
+				"success": false,
+				"error":   "Invalid or expired pending session",
+			})
+			return
+		}
+
+		user, err := database.GetUser(pending.UserID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "User not found")
+			return
+		}
+
+		// Try TOTP code first, then backup code.
+		valid := false
+		usedBackup := false
+
+		if totp.Validate(req.Code, user.TOTPSecret) {
+			valid = true
+		} else {
+			// Try as backup code.
+			codeHash := hashBackupCode(req.Code)
+			if database.UseBackupCode(user.ID, codeHash) {
+				valid = true
+				usedBackup = true
+			}
+		}
+
+		if !valid {
+			writeJSON(w, http.StatusUnauthorized, map[string]interface{}{
+				"success": false,
+				"error":   "Invalid TOTP or backup code",
+			})
+			return
+		}
+
+		database.UpdateLastLogin(user.ID)
+		token := sessions.Create(user.ID, user.Username, user.Role)
+		http.SetCookie(w, &http.Cookie{
+			Name:     "gamarr_session",
+			Value:    token,
+			Path:     "/",
+			MaxAge:   86400,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		detail := "TOTP login"
+		if usedBackup {
+			detail = "TOTP login (backup code)"
+		}
+		database.LogAuthActivity(user.Username, "login", user.Username, detail)
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success":      true,
+			"token":        token,
+			"username":     user.Username,
+			"role":         user.Role,
+			"used_backup":  usedBackup,
+		})
 	}
 }
 

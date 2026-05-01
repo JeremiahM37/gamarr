@@ -307,6 +307,13 @@ func (s *JobStore) DeleteWishlistItem(id int64) error {
 // ── Activity Log ───────────────────────────────────────────────────────────────
 
 // LogActivity writes an activity log entry.
+// ActivityCount returns the total number of activity log entries.
+func (s *JobStore) ActivityCount() int {
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM activity_log").Scan(&count)
+	return count
+}
+
 func (s *JobStore) LogActivity(eventType, title, detail, jobID string, libraryItemID *int64) {
 	_, err := s.db.Exec(
 		"INSERT INTO activity_log (event_type, title, detail, library_item_id, job_id) VALUES (?, ?, ?, ?, ?)",

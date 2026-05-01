@@ -250,4 +250,39 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	for plat, count := range libStats {
 		fmt.Fprintf(w, "gamarr_library_by_platform{platform=%q} %d\n", plat, count)
 	}
+
+	// Activity event count
+	activityCount := s.mgr.Jobs().ActivityCount()
+	fmt.Fprintf(w, "# HELP gamarr_activity_events_total Total activity log events\n")
+	fmt.Fprintf(w, "# TYPE gamarr_activity_events_total gauge\n")
+	fmt.Fprintf(w, "gamarr_activity_events_total %d\n", activityCount)
+
+	// Source health metrics
+	healthData := search.GetAllSourceHealth()
+	fmt.Fprintf(w, "# HELP gamarr_source_health_score Source health score (0-100)\n")
+	fmt.Fprintf(w, "# TYPE gamarr_source_health_score gauge\n")
+	for name, h := range healthData {
+		fmt.Fprintf(w, "gamarr_source_health_score{source=%q} %d\n", name, h.Score)
+	}
+	fmt.Fprintf(w, "# HELP gamarr_source_circuit_open Whether source circuit breaker is open (1=open)\n")
+	fmt.Fprintf(w, "# TYPE gamarr_source_circuit_open gauge\n")
+	for name, h := range healthData {
+		val := 0
+		if h.CircuitOpen {
+			val = 1
+		}
+		fmt.Fprintf(w, "gamarr_source_circuit_open{source=%q} %d\n", name, val)
+	}
+	fmt.Fprintf(w, "# HELP gamarr_source_search_total Source search counts\n")
+	fmt.Fprintf(w, "# TYPE gamarr_source_search_total counter\n")
+	for name, h := range healthData {
+		fmt.Fprintf(w, "gamarr_source_search_total{source=%q,result=\"ok\"} %d\n", name, h.SearchOK)
+		fmt.Fprintf(w, "gamarr_source_search_total{source=%q,result=\"fail\"} %d\n", name, h.SearchFail)
+	}
+	fmt.Fprintf(w, "# HELP gamarr_source_download_total Source download counts\n")
+	fmt.Fprintf(w, "# TYPE gamarr_source_download_total counter\n")
+	for name, h := range healthData {
+		fmt.Fprintf(w, "gamarr_source_download_total{source=%q,result=\"ok\"} %d\n", name, h.DownloadOK)
+		fmt.Fprintf(w, "gamarr_source_download_total{source=%q,result=\"fail\"} %d\n", name, h.DownloadFail)
+	}
 }

@@ -35,20 +35,22 @@ type Server struct {
 	sab       *sabnzbd.Client
 	sessions  *SessionStore
 	scheduler *scheduler.Scheduler
+	oidc      *OIDCHandler
 }
 
 // NewRouter creates a new chi router with all routes.
 func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMonitor, sab *sabnzbd.Client, sched *scheduler.Scheduler) http.Handler {
 	sessions := NewSessionStore()
-	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab, sessions: sessions, scheduler: sched}
+	oidcHandler := NewOIDCHandler(cfg, mgr.Jobs(), sessions)
+	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab, sessions: sessions, scheduler: sched, oidc: oidcHandler}
 
 	// Rate limiter: 60-second window.
 	rl := NewRateLimiter(60, map[string]int{
-		"login":    5,
-		"search":   30,
-		"download": 10,
-		"api":      60,
-		"default":  120,
+		"login":    20,
+		"search":   120,
+		"download": 60,
+		"api":      300,
+		"default":  600,
 	})
 
 	r := chi.NewRouter()
@@ -66,9 +68,15 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 
 	// Auth routes (exempt from auth middleware).
 	r.Post("/api/login", handleLogin(cfg, mgr.Jobs(), sessions))
+	r.Post("/api/login/totp", handleLoginTOTP(mgr.Jobs(), sessions))
 	r.Post("/api/logout", handleLogout(sessions, mgr.Jobs()))
 	r.Post("/api/register", handleRegister(mgr.Jobs(), sessions))
-	r.Get("/api/auth/status", handleAuthStatus(mgr.Jobs(), sessions))
+	r.Get("/api/auth/status", handleAuthStatus(mgr.Jobs(), sessions, cfg))
+
+	// OIDC/SSO routes (exempt from auth middleware).
+	r.Get("/api/oidc/login", s.handleOIDCLogin)
+	r.Get("/api/oidc/callback", s.handleOIDCCallback)
+	r.Get("/api/oidc/status", s.handleOIDCStatus)
 
 	// Search & browse
 	r.Get("/api/search", s.handleSearch)
@@ -128,6 +136,17 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Get("/api/users", requireAdmin(handleListUsers(mgr.Jobs())))
 	r.Patch("/api/users/{id}", requireAdmin(handleUpdateUser(mgr.Jobs())))
 	r.Delete("/api/users/{id}", requireAdmin(handleDeleteUser(mgr.Jobs())))
+
+	// TOTP / 2FA
+	r.Post("/api/totp/setup", handleTOTPSetup(mgr.Jobs()))
+	r.Post("/api/totp/verify", handleTOTPVerify(mgr.Jobs()))
+	r.Post("/api/totp/disable", handleTOTPDisable(mgr.Jobs()))
+	r.Get("/api/totp/status", handleTOTPStatus(mgr.Jobs()))
+
+	// Invite codes (admin only)
+	r.Get("/api/invites", requireAdmin(handleListInvites(mgr.Jobs())))
+	r.Post("/api/invites", requireAdmin(handleCreateInvite(mgr.Jobs())))
+	r.Delete("/api/invites/{id}", requireAdmin(handleDeleteInvite(mgr.Jobs())))
 
 	// Requests
 	r.Post("/api/requests", s.handleCreateRequest)
@@ -221,6 +240,29 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	return r
 }
 
+func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		writeError(w, http.StatusNotFound, "OIDC not configured")
+		return
+	}
+	s.oidc.HandleLogin(w, r)
+}
+
+func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		writeError(w, http.StatusNotFound, "OIDC not configured")
+		return
+	}
+	s.oidc.HandleCallback(w, r)
+}
+
+func (s *Server) handleOIDCStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled":  s.cfg.HasOIDC(),
+		"provider": s.cfg.OIDCProviderName,
+	})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -233,9 +275,24 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		origin := r.Header.Get("Origin")
+		host := r.Host
+
+		// Reflect origin only if it matches the Host header (same-origin protection).
+		if origin != "" && strings.Contains(origin, host) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
+		// For API-key-only requests, allow any origin (external clients / PWA).
+		if origin != "" && (r.Header.Get("X-Api-Key") != "" || r.URL.Query().Get("apikey") != "") {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key")
+		w.Header().Set("Vary", "Origin")
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

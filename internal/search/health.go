@@ -8,29 +8,45 @@ import (
 
 // SourceHealth tracks health metrics for a search source.
 type SourceHealth struct {
-	Name             string  `json:"name"`
-	SearchOK         int     `json:"search_ok"`
-	SearchFail       int     `json:"search_fail"`
-	DownloadOK       int     `json:"download_ok"`
-	DownloadFail     int     `json:"download_fail"`
-	LastError        string  `json:"last_error"`
-	LastSuccessAt    float64 `json:"last_success_at"`
-	Score            int     `json:"score"`
-	CircuitOpen      bool    `json:"circuit_open"`
-	CircuitRetryInSec int    `json:"circuit_retry_in_sec"`
+	Name              string  `json:"name"`
+	SearchOK          int     `json:"search_ok"`
+	SearchFail        int     `json:"search_fail"`
+	DownloadOK        int     `json:"download_ok"`
+	DownloadFail      int     `json:"download_fail"`
+	LastError         string  `json:"last_error"`
+	LastErrorKind     string  `json:"last_error_kind,omitempty"`
+	LastErrorAt       float64 `json:"last_error_at,omitempty"`
+	LastSuccessAt     float64 `json:"last_success_at"`
+	Score             int     `json:"score"`
+	CircuitOpen       bool    `json:"circuit_open"`
+	CircuitRetryInSec int     `json:"circuit_retry_in_sec"`
 
 	// internal
-	searchFailStreak int
-	circuitOpenUntil float64
+	searchFailStreak   int
+	downloadFailStreak int
+	circuitOpenUntil   float64
 }
 
 var (
 	healthMu    sync.RWMutex
 	healthStore = make(map[string]*SourceHealth)
 
-	circuitThreshold  = 3  // consecutive failures to open circuit
-	circuitRetrySec   = 60 // seconds before retry after circuit opens
+	circuitThreshold = 3   // consecutive failures to open circuit (configurable via InitHealthConfig)
+	circuitRetrySec  = 300 // seconds before retry after circuit opens (configurable via InitHealthConfig)
 )
+
+// InitHealthConfig sets configurable circuit breaker parameters.
+func InitHealthConfig(threshold, timeoutSec int) {
+	healthMu.Lock()
+	defer healthMu.Unlock()
+	if threshold > 0 {
+		circuitThreshold = threshold
+	}
+	if timeoutSec > 0 {
+		circuitRetrySec = timeoutSec
+	}
+	slog.Info("circuit breaker configured", "threshold", circuitThreshold, "timeout_sec", circuitRetrySec)
+}
 
 func getOrCreateHealth(name string) *SourceHealth {
 	h, ok := healthStore[name]
@@ -72,10 +88,13 @@ func RecordSearchFail(name string, errMsg string) {
 	h := getOrCreateHealth(name)
 	h.SearchFail++
 	h.searchFailStreak++
+	now := float64(time.Now().Unix())
 	h.LastError = errMsg
 	if len(h.LastError) > 400 {
 		h.LastError = h.LastError[:400]
 	}
+	h.LastErrorKind = "search"
+	h.LastErrorAt = now
 
 	// Adjust score: -10 per failure, clamped 0-100
 	h.Score -= 10
@@ -85,9 +104,8 @@ func RecordSearchFail(name string, errMsg string) {
 
 	// Open circuit after threshold consecutive failures
 	if h.searchFailStreak >= circuitThreshold {
-		now := float64(time.Now().Unix())
 		h.circuitOpenUntil = now + float64(circuitRetrySec)
-		slog.Warn("source circuit opened", "source", name, "streak", h.searchFailStreak)
+		slog.Warn("source circuit opened", "source", name, "streak", h.searchFailStreak, "retry_sec", circuitRetrySec)
 	}
 }
 
@@ -97,6 +115,7 @@ func RecordDownloadSuccess(name string) {
 	defer healthMu.Unlock()
 	h := getOrCreateHealth(name)
 	h.DownloadOK++
+	h.downloadFailStreak = 0
 	h.LastSuccessAt = float64(time.Now().Unix())
 	h.Score += 5
 	if h.Score > 100 {
@@ -110,10 +129,14 @@ func RecordDownloadFail(name string, errMsg string) {
 	defer healthMu.Unlock()
 	h := getOrCreateHealth(name)
 	h.DownloadFail++
+	h.downloadFailStreak++
+	now := float64(time.Now().Unix())
 	h.LastError = errMsg
 	if len(h.LastError) > 400 {
 		h.LastError = h.LastError[:400]
 	}
+	h.LastErrorKind = "download"
+	h.LastErrorAt = now
 	h.Score -= 10
 	if h.Score < 0 {
 		h.Score = 0
@@ -182,6 +205,8 @@ func snapshotHealth(h *SourceHealth) *SourceHealth {
 		DownloadOK:        h.DownloadOK,
 		DownloadFail:      h.DownloadFail,
 		LastError:         h.LastError,
+		LastErrorKind:     h.LastErrorKind,
+		LastErrorAt:       h.LastErrorAt,
 		LastSuccessAt:     h.LastSuccessAt,
 		Score:             h.Score,
 		CircuitOpen:       circuitOpen,

@@ -82,6 +82,25 @@ type Config struct {
 	AuthPassword string
 	APIKey       string
 
+	// OIDC / SSO
+	OIDCEnabled         bool
+	OIDCProviderName    string
+	OIDCIssuer          string
+	OIDCClientID        string
+	OIDCClientSecret    string
+	OIDCRedirectURI     string
+	OIDCAutoCreateUsers bool
+	OIDCDefaultRole     string
+
+	// Circuit breaker
+	CircuitBreakerThreshold int
+	CircuitBreakerTimeoutS  int
+
+	// Torrent completion watcher
+	WatcherEnabled    bool
+	WatcherIntervalS  int
+	RemoveAfterImport bool
+
 	// Server
 	Port           int
 	MetricsEnabled bool
@@ -155,6 +174,22 @@ func Load() *Config {
 		AuthPassword: envStr("AUTH_PASSWORD", ""),
 		APIKey:       envStr("API_KEY", ""),
 
+		OIDCEnabled:         envBool("OIDC_ENABLED", false),
+		OIDCProviderName:    envStr("OIDC_PROVIDER_NAME", "SSO"),
+		OIDCIssuer:          envStr("OIDC_ISSUER", ""),
+		OIDCClientID:        envStr("OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:    envStr("OIDC_CLIENT_SECRET", ""),
+		OIDCRedirectURI:     envStr("OIDC_REDIRECT_URI", ""),
+		OIDCAutoCreateUsers: envBool("OIDC_AUTO_CREATE_USERS", true),
+		OIDCDefaultRole:     envStr("OIDC_DEFAULT_ROLE", "user"),
+
+		CircuitBreakerThreshold: envInt("CIRCUIT_BREAKER_THRESHOLD", 3),
+		CircuitBreakerTimeoutS:  envInt("CIRCUIT_BREAKER_TIMEOUT", 300),
+
+		WatcherEnabled:    envBool("WATCHER_ENABLED", true),
+		WatcherIntervalS:  envInt("WATCHER_INTERVAL", 30),
+		RemoveAfterImport: envBool("REMOVE_TORRENT_AFTER_IMPORT", false),
+
 		MaxRetries:          envInt("MAX_RETRIES", 2),
 		RetryBackoffSeconds: envInt("RETRY_BACKOFF_SECONDS", 60),
 
@@ -200,6 +235,10 @@ func (c *Config) HasDeluge() bool {
 
 func (c *Config) HasRAWG() bool {
 	return c.RAWGAPIKey != ""
+}
+
+func (c *Config) HasOIDC() bool {
+	return c.OIDCEnabled && c.OIDCIssuer != "" && c.OIDCClientID != ""
 }
 
 func (c *Config) HasClamAV() bool {
