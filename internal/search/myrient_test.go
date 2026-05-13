@@ -4,10 +4,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"gamarr/internal/sources"
 )
 
+// testRegistry returns the embedded default registry for tests.
+func testRegistry(t *testing.T) *sources.Registry {
+	t.Helper()
+	r, err := sources.Default()
+	if err != nil {
+		t.Fatalf("load default registry: %v", err)
+	}
+	return r
+}
+
 func TestMyrientPlatformSlugs(t *testing.T) {
-	slugs := MyrientPlatformSlugs()
+	reg := testRegistry(t)
+	slugs := MyrientPlatformSlugs(reg)
 	if len(slugs) == 0 {
 		t.Fatal("expected non-empty slug list")
 	}
@@ -24,22 +37,25 @@ func TestMyrientPlatformSlugs(t *testing.T) {
 }
 
 func TestSearchMyrient_RequiresPlatform(t *testing.T) {
+	reg := testRegistry(t)
 	// Without a platform, SearchMyrient returns nil
-	results := SearchMyrient("mario", "")
+	results := SearchMyrient(reg, "mario", "")
 	if results != nil {
 		t.Error("expected nil when no platform specified")
 	}
 }
 
 func TestSearchMyrient_UnknownPlatform(t *testing.T) {
-	results := SearchMyrient("mario", "atari2600")
+	reg := testRegistry(t)
+	results := SearchMyrient(reg, "mario", "atari2600")
 	if results != nil {
 		t.Error("expected nil for unknown platform")
 	}
 }
 
 func TestSearchMyrient_EmptyQuery(t *testing.T) {
-	results := SearchMyrient("", "nes")
+	reg := testRegistry(t)
+	results := SearchMyrient(reg, "", "nes")
 	if results != nil {
 		t.Error("expected nil for empty query")
 	}

@@ -7,7 +7,8 @@ import (
 )
 
 func TestVimmPlatformSlugs(t *testing.T) {
-	slugs := VimmPlatformSlugs()
+	reg := testRegistry(t)
+	slugs := VimmPlatformSlugs(reg)
 	if len(slugs) == 0 {
 		t.Fatal("expected non-empty slug list")
 	}
@@ -23,14 +24,15 @@ func TestVimmPlatformSlugs(t *testing.T) {
 }
 
 func TestVimmSystemMap(t *testing.T) {
-	// Verify key mappings
-	if vimmSystemMap["nes"] != "NES" {
+	reg := testRegistry(t)
+	// Verify key mappings via the registry
+	if reg.Vimm.PlatformSystems["nes"] != "NES" {
 		t.Error("nes should map to NES")
 	}
-	if vimmSystemMap["psx"] != "PS1" {
+	if reg.Vimm.PlatformSystems["psx"] != "PS1" {
 		t.Error("psx should map to PS1")
 	}
-	if vimmSystemMap["ngc"] != "GameCube" {
+	if reg.Vimm.PlatformSystems["ngc"] != "GameCube" {
 		t.Error("ngc should map to GameCube")
 	}
 }

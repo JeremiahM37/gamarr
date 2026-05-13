@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "myrient": {
+    "base_url": "https://myrient.erista.me/files/",
+    "platform_paths": {
+      "gba":     "No-Intro/Nintendo - Game Boy Advance/",
+      "gb":      "No-Intro/Nintendo - Game Boy/",
+      "gbc":     "No-Intro/Nintendo - Game Boy Color/",
+      "nes":     "No-Intro/Nintendo - Nintendo Entertainment System (Headered)/",
+      "snes":    "No-Intro/Nintendo - Super Nintendo Entertainment System/",
+      "n64":     "No-Intro/Nintendo - Nintendo 64 (BigEndian)/",
+      "nds":     "No-Intro/Nintendo - Nintendo DS (Decrypted)/",
+      "3ds":     "No-Intro/Nintendo - Nintendo 3DS (Decrypted)/",
+      "psx":     "Redump/Sony - PlayStation/",
+      "ps2":     "Redump/Sony - PlayStation 2/",
+      "ps3":     "Redump/Sony - PlayStation 3/",
+      "psp":     "Redump/Sony - PlayStation Portable/",
+      "dc":      "Redump/Sega - Dreamcast/",
+      "saturn":  "Redump/Sega - Saturn/",
+      "genesis": "No-Intro/Sega - Mega Drive - Genesis/",
+      "ngc":     "Redump/Nintendo - GameCube - NKit RVZ [zstd-19-128k]/",
+      "wii":     "Redump/Nintendo - Wii - NKit RVZ [zstd-19-128k]/",
+      "xbox":    "Redump/Microsoft - Xbox/",
+      "xbox360": "Redump/Microsoft - Xbox 360/"
+    }
+  },
+  "vimm": {
+    "base_url": "https://vimm.net/vault/",
+    "platform_systems": {
+      "nes":     "NES",
+      "snes":    "SNES",
+      "n64":     "N64",
+      "ngc":     "GameCube",
+      "wii":     "Wii",
+      "gb":      "GB",
+      "gbc":     "GBC",
+      "gba":     "GBA",
+      "nds":     "DS",
+      "genesis": "Genesis",
+      "saturn":  "Saturn",
+      "dc":      "Dreamcast",
+      "psx":     "PS1",
+      "ps2":     "PS2",
+      "ps3":     "PS3",
+      "psp":     "PSP",
+      "xbox":    "Xbox",
+      "xbox360": "Xbox360"
+    }
+  }
+}

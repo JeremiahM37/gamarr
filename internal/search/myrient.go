@@ -13,39 +13,16 @@ import (
 
 	"gamarr/internal/models"
 	"gamarr/internal/platform"
+	"gamarr/internal/sources"
 )
 
-const (
-	myrientBase    = "https://myrient.erista.me/files/"
-	dirCacheTTL    = time.Hour
-)
+const dirCacheTTL = time.Hour
 
-var myrientPlatforms = map[string]string{
-	"gba":     "No-Intro/Nintendo - Game Boy Advance/",
-	"gb":      "No-Intro/Nintendo - Game Boy/",
-	"gbc":     "No-Intro/Nintendo - Game Boy Color/",
-	"nes":     "No-Intro/Nintendo - Nintendo Entertainment System (Headered)/",
-	"snes":    "No-Intro/Nintendo - Super Nintendo Entertainment System/",
-	"n64":     "No-Intro/Nintendo - Nintendo 64 (BigEndian)/",
-	"nds":     "No-Intro/Nintendo - Nintendo DS (Decrypted)/",
-	"3ds":     "No-Intro/Nintendo - Nintendo 3DS (Decrypted)/",
-	"psx":     "Redump/Sony - PlayStation/",
-	"ps2":     "Redump/Sony - PlayStation 2/",
-	"ps3":     "Redump/Sony - PlayStation 3/",
-	"psp":     "Redump/Sony - PlayStation Portable/",
-	"dc":      "Redump/Sega - Dreamcast/",
-	"saturn":  "Redump/Sega - Saturn/",
-	"genesis": "No-Intro/Sega - Mega Drive - Genesis/",
-	"ngc":     "Redump/Nintendo - GameCube - NKit RVZ [zstd-19-128k]/",
-	"wii":     "Redump/Nintendo - Wii - NKit RVZ [zstd-19-128k]/",
-	"xbox":    "Redump/Microsoft - Xbox/",
-	"xbox360": "Redump/Microsoft - Xbox 360/",
-}
-
-// MyrientPlatformSlugs returns all slugs Myrient supports.
-func MyrientPlatformSlugs() []string {
-	slugs := make([]string, 0, len(myrientPlatforms))
-	for s := range myrientPlatforms {
+// MyrientPlatformSlugs returns all slugs Myrient supports per the runtime
+// sources registry.
+func MyrientPlatformSlugs(reg *sources.Registry) []string {
+	slugs := make([]string, 0, len(reg.Myrient.PlatformPaths))
+	for s := range reg.Myrient.PlatformPaths {
 		slugs = append(slugs, s)
 	}
 	return slugs
@@ -77,7 +54,7 @@ func ClearMyrientCache() {
 	slog.Info("Myrient directory cache cleared")
 }
 
-func getMyrientListing(slug string) []dirEntry {
+func getMyrientListing(reg *sources.Registry, slug string) []dirEntry {
 	dirCacheMu.RLock()
 	if entries, ok := dirCache[slug]; ok && time.Since(dirCacheTime[slug]) < dirCacheTTL {
 		dirCacheMu.RUnlock()
@@ -85,12 +62,12 @@ func getMyrientListing(slug string) []dirEntry {
 	}
 	dirCacheMu.RUnlock()
 
-	path, ok := myrientPlatforms[slug]
+	path, ok := reg.Myrient.PlatformPaths[slug]
 	if !ok {
 		return nil
 	}
 
-	listURL := myrientBase + path
+	listURL := reg.Myrient.BaseURL + path
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, _ := http.NewRequest("GET", listURL, nil)
 	req.Header.Set("User-Agent", "Gamarr/1.0")
@@ -137,7 +114,7 @@ func getMyrientListing(slug string) []dirEntry {
 }
 
 // SearchMyrient searches Myrient ROM archives.
-func SearchMyrient(query string, platformSlug string) []*models.SearchResult {
+func SearchMyrient(reg *sources.Registry, query string, platformSlug string) []*models.SearchResult {
 	if IsCircuitOpen("myrient") {
 		slog.Warn("myrient circuit open, skipping search")
 		return nil
@@ -149,7 +126,7 @@ func SearchMyrient(query string, platformSlug string) []*models.SearchResult {
 	}
 
 	if platformSlug != "" {
-		if _, ok := myrientPlatforms[platformSlug]; !ok {
+		if _, ok := reg.Myrient.PlatformPaths[platformSlug]; !ok {
 			return nil
 		}
 	}
@@ -164,7 +141,7 @@ func SearchMyrient(query string, platformSlug string) []*models.SearchResult {
 
 	var results []*models.SearchResult
 	for _, slug := range slugs {
-		files := getMyrientListing(slug)
+		files := getMyrientListing(reg, slug)
 		for _, f := range files {
 			fWords := extractWords(f.Name)
 			overlap := countOverlap(qWords, fWords)
