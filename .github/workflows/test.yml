@@ -12,6 +12,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version: '1.24', cache: false}
-      - run: go build -o gamarr ./cmd/gamarr/
-      - run: go test ./... -v -count=1
+        with: {go-version: '1.25.x', cache: false, check-latest: true}
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd. Run 'gofmt -w .' locally:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go build
+        run: go build -o gamarr ./cmd/gamarr/
+      - name: go test (race)
+        run: go test ./... -v -count=1 -race
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: smoke test — binary boots and responds
+        run: |
+          mkdir -p /tmp/smoke-data
+          GAMARR_PORT=15001 \
+          DATA_DIR=/tmp/smoke-data \
+            ./gamarr > /tmp/smoke.log 2>&1 &
+          SMOKE_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:15001/api/health; then
+              echo "binary up after ${i}*500ms"
+              break
+            fi
+            sleep 0.5
+          done
+          if ! curl -sf -o /dev/null http://127.0.0.1:15001/api/health; then
+            echo "::error::binary failed to respond within 15s"
+            cat /tmp/smoke.log
+            kill $SMOKE_PID 2>/dev/null
+            exit 1
+          fi
+          # Confirm the new Torznab + OpenAPI surfaces are reachable.
+          curl -sf http://127.0.0.1:15001/api/openapi.json > /dev/null \
+            || { echo "::error::/api/openapi.json failed"; cat /tmp/smoke.log; kill $SMOKE_PID 2>/dev/null; exit 1; }
+          curl -sf "http://127.0.0.1:15001/torznab/api?t=caps" > /dev/null \
+            || { echo "::error::/torznab/api?t=caps failed"; cat /tmp/smoke.log; kill $SMOKE_PID 2>/dev/null; exit 1; }
+          kill $SMOKE_PID 2>/dev/null
+          if grep -qiE "panic|fatal" /tmp/smoke.log; then
+            echo "::error::panic/fatal in boot log:"
+            cat /tmp/smoke.log
+            exit 1
+          fi
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -t gamarr:ci .

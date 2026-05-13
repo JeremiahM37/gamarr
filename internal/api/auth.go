@@ -28,7 +28,7 @@ type contextKey string
 const (
 	ctxUserID   contextKey = "userID"
 	ctxUserRole contextKey = "userRole"
-	ctxUsername  contextKey = "username"
+	ctxUsername contextKey = "username"
 )
 
 // SessionData holds session metadata.
@@ -156,16 +156,16 @@ func (s *SessionStore) GetPending(token string) (*SessionData, bool) {
 
 // exemptPaths are paths that do not require authentication.
 var exemptPaths = map[string]bool{
-	"/":                    true,
-	"/health":              true,
-	"/api/health":          true,
-	"/api/login":           true,
-	"/api/login/totp":      true,
-	"/api/register":        true,
-	"/api/auth/status":     true,
-	"/api/oidc/login":      true,
-	"/api/oidc/callback":   true,
-	"/api/oidc/status":     true,
+	"/":                  true,
+	"/health":            true,
+	"/api/health":        true,
+	"/api/login":         true,
+	"/api/login/totp":    true,
+	"/api/register":      true,
+	"/api/auth/status":   true,
+	"/api/oidc/login":    true,
+	"/api/oidc/callback": true,
+	"/api/oidc/status":   true,
 }
 
 // isExempt returns true if the path does not require auth.
@@ -636,11 +636,11 @@ func handleLoginTOTP(database *db.JobStore, sessions *SessionStore) http.Handler
 		database.LogAuthActivity(user.Username, "login", user.Username, detail)
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success":      true,
-			"token":        token,
-			"username":     user.Username,
-			"role":         user.Role,
-			"used_backup":  usedBackup,
+			"success":     true,
+			"token":       token,
+			"username":    user.Username,
+			"role":        user.Role,
+			"used_backup": usedBackup,
 		})
 	}
 }

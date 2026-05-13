@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.12.0
-	github.com/go-chi/chi/v5 v5.2.1
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/pquerna/otp v1.4.0
 	golang.org/x/crypto v0.31.0
 	golang.org/x/oauth2 v0.25.0

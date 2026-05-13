@@ -14,10 +14,10 @@ func TestDefault_EmbeddedRegistryIsComplete(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	checks := map[string]bool{
-		"Myrient.BaseURL":         r.Myrient.BaseURL == "",
-		"Myrient.PlatformPaths":   len(r.Myrient.PlatformPaths) == 0,
-		"Vimm.BaseURL":            r.Vimm.BaseURL == "",
-		"Vimm.PlatformSystems":    len(r.Vimm.PlatformSystems) == 0,
+		"Myrient.BaseURL":       r.Myrient.BaseURL == "",
+		"Myrient.PlatformPaths": len(r.Myrient.PlatformPaths) == 0,
+		"Vimm.BaseURL":          r.Vimm.BaseURL == "",
+		"Vimm.PlatformSystems":  len(r.Vimm.PlatformSystems) == 0,
 	}
 	for field, empty := range checks {
 		if empty {

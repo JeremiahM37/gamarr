@@ -50,9 +50,9 @@ func TestPlayHistory_CRUD(t *testing.T) {
 
 	// Update
 	err = store.UpdatePlayHistory(id, map[string]interface{}{
-		"rating":      10,
+		"rating":       10,
 		"hours_played": 60.0,
-		"notes":       "Masterpiece",
+		"notes":        "Masterpiece",
 	})
 	if err != nil {
 		t.Fatalf("UpdatePlayHistory: %v", err)

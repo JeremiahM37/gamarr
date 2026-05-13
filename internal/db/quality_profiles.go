@@ -9,7 +9,7 @@ import (
 type QualityProfile struct {
 	ID               int64    `json:"id"`
 	Name             string   `json:"name"`
-	SourceRanking    []string `json:"source_ranking"`    // ordered list: best first
+	SourceRanking    []string `json:"source_ranking"`     // ordered list: best first
 	PreferredSizeMin int64    `json:"preferred_size_min"` // bytes
 	PreferredSizeMax int64    `json:"preferred_size_max"` // bytes
 	UpgradeAllowed   bool     `json:"upgrade_allowed"`

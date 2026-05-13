@@ -36,7 +36,7 @@ type ScoreBreakdown struct {
 	SeederScore   int    `json:"seeder_score"`   // 0-15
 	SizeScore     int    `json:"size_score"`     // 0-15
 	SafetyScore   int    `json:"safety_score"`   // 0-15
-	Total         int    `json:"total"`           // 0-100
+	Total         int    `json:"total"`          // 0-100
 	Confidence    string `json:"confidence"`     // "high", "medium", "low"
 }
 

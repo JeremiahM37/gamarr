@@ -152,7 +152,7 @@ func TestScoreResults_SeederTiers(t *testing.T) {
 func TestScoreResults_SizeInRange(t *testing.T) {
 	// NES: 10KB - 5MB
 	results := []*models.SearchResult{
-		{Title: "Game", Seeders: 10, Size: 1_000_000, PlatformSlug: "nes"},  // 1MB in range
+		{Title: "Game", Seeders: 10, Size: 1_000_000, PlatformSlug: "nes"},   // 1MB in range
 		{Title: "Game", Seeders: 10, Size: 100_000_000, PlatformSlug: "nes"}, // 100MB way out of range
 		{Title: "Game", Seeders: 10, Size: 0, PlatformSlug: "nes"},           // unknown
 	}

@@ -184,7 +184,7 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		Email             string `json:"email"`
 		EmailVerified     bool   `json:"email_verified"`
 		Name              string `json:"name"`
-		PreferredUsername  string `json:"preferred_username"`
+		PreferredUsername string `json:"preferred_username"`
 		Subject           string `json:"sub"`
 	}
 	if err := idToken.Claims(&claims); err != nil {

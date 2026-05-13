@@ -28,10 +28,10 @@ func withChiURLParam(r *http.Request, key, value string) *http.Request {
 // path is covered by the existing handler tests.
 func TestAddWishlist_ContentTypeGating(t *testing.T) {
 	cases := []struct {
-		name   string
-		ct     string
-		body   string
-		want   int
+		name string
+		ct   string
+		body string
+		want int
 	}{
 		{"text/plain rejected", "text/plain", `{"title":"x"}`, 415},
 		{"application/xml rejected", "application/xml", `{"title":"x"}`, 415},
