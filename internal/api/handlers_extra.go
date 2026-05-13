@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -74,14 +75,35 @@ func (s *Server) handleWishlist(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddWishlist(w http.ResponseWriter, r *http.Request) {
+	// Reject obviously-wrong content types so a misbehaving client gets a
+	// proper 400 instead of having text/plain silently parsed as JSON.
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		base := ct
+		if idx := strings.Index(base, ";"); idx >= 0 {
+			base = base[:idx]
+		}
+		base = strings.TrimSpace(strings.ToLower(base))
+		if base != "application/json" {
+			writeError(w, 415, "Content-Type must be application/json")
+			return
+		}
+	}
 	var req struct {
 		Title        string `json:"title"`
 		Platform     string `json:"platform"`
 		PlatformSlug string `json:"platform_slug"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "Invalid request body")
+		return
+	}
 	if req.Title == "" {
 		writeError(w, 400, "Title required")
+		return
+	}
+	// Cap user-supplied strings so a misbehaving client can't bloat the DB.
+	if len(req.Title) > 500 || len(req.Platform) > 100 || len(req.PlatformSlug) > 50 {
+		writeError(w, 400, "Field exceeds maximum length")
 		return
 	}
 	id, err := s.mgr.Jobs().AddWishlistItem(req.Title, req.Platform, req.PlatformSlug)
@@ -93,7 +115,11 @@ func (s *Server) handleAddWishlist(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteWishlist(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, 400, "Invalid wishlist id")
+		return
+	}
 	s.mgr.Jobs().DeleteWishlistItem(id)
 	writeJSON(w, 200, map[string]interface{}{"success": true})
 }
