@@ -112,6 +112,11 @@ type Config struct {
 	Port           int
 	MetricsEnabled bool
 
+	// Torznab — when set, Gamarr exposes /torznab/api (and /api alias) as
+	// a Torznab indexer so Prowlarr / Sonarr / other *arr apps can query
+	// Gamarr for game results. Empty key disables the API-key check.
+	TorznabAPIKey string
+
 	// Prowlarr game indexer IDs
 	ProwlarrGameIndexers []int
 
@@ -209,6 +214,7 @@ func Load() *Config {
 
 		Port:           envInt("GAMARR_PORT", 5001),
 		MetricsEnabled: envBool("METRICS_ENABLED", true),
+		TorznabAPIKey:  envStr("TORZNAB_API_KEY", ""),
 
 		ProwlarrGameIndexers: envIntSlice("PROWLARR_GAME_INDEXERS", []int{7, 5, 15, 9, 8, 3, 4}),
 

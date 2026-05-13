@@ -22,6 +22,7 @@ import (
 	"gamarr/internal/sabnzbd"
 	"gamarr/internal/scheduler"
 	"gamarr/internal/search"
+	"gamarr/internal/torznab"
 )
 
 //go:embed web/index.html
@@ -82,6 +83,24 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Get("/api/search", s.handleSearch)
 	r.Get("/api/platforms", s.handlePlatforms)
 	r.Get("/api/sources", s.handleSources)
+
+	// Torznab indexer endpoint — lets Prowlarr / Sonarr / other *arr apps
+	// query Gamarr as if it were a Torznab indexer. /api alias is the path
+	// Prowlarr probes during indexer discovery.
+	tz := torznab.New(cfg.TorznabAPIKey, s.searchForTorznab)
+	r.Get("/torznab/api", tz.ServeHTTP)
+	r.Get("/api", tz.ServeHTTPAlias)
+
+	// Bulk operations — accept a list of ids, or operate on all jobs
+	// matching the natural filter (failed for retry, active for cancel).
+	r.Post("/api/admin/bulk/retry", s.handleBulkRetry)
+	r.Post("/api/admin/bulk/cancel", s.handleBulkCancel)
+	r.Post("/api/wishlist/bulk-delete", s.handleBulkDeleteWishlist)
+
+	// OpenAPI 3.1 spec — AI agents / tooling can introspect this to
+	// discover endpoints, request shapes, and response shapes without
+	// prior knowledge of the codebase.
+	r.Get("/api/openapi.json", s.handleOpenAPI)
 
 	// Downloads
 	r.Post("/api/download", s.handleDownload)
