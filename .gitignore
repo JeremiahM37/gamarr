@@ -14,3 +14,8 @@ gamarr
 
 # OS
 .DS_Store
+
+# Env files (only .env.example is committed; never commit real .env values).
+.env
+.env.local
+.env.*.local
