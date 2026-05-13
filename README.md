@@ -8,6 +8,10 @@
 
 Gamarr searches across all configured indexers (Torznab proxies, direct-download archive listings, web-scrape sources) in parallel for 24 platforms. Results are scored for safety and quality, downloads are managed through your choice of torrent or Usenet client, and files are automatically organized into your game vault and ROM library.
 
+Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real homelab[^1], typically 10-30× lower than other self-hosted game library / ROM tools. Comfortable on a Pi or any thermally-constrained mini-PC.
+
+[^1]: Measured on the current main in an LXC on Debian 12 (Mar 2026). Reference: ROMM ≈ 320MB, GameVault backend ≈ 157MB on the same host.
+
 ## Features
 
 ### Search and Discovery
@@ -72,7 +76,7 @@ Gamarr searches across all configured indexers (Torznab proxies, direct-download
 
 ### Technical
 
-- **Single static binary** -- ~17 MB, zero CGO, pure-Go SQLite (`modernc.org/sqlite`)
+- **Single static binary** -- ~17 MB on disk, ~9 MB RSS idle, zero CGO, pure-Go SQLite (`modernc.org/sqlite`)
 - **Docker-ready** -- minimal Alpine image with p7zip, runs as non-root user
 - **Mobile-responsive UI** -- Tailwind CSS, dark theme, platform filters
 - **43 automated end-to-end tests**
