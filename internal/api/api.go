@@ -364,7 +364,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if slug == "all" {
 			slug = ""
 		}
-		results := search.SearchMyrient(query, slug)
+		results := search.SearchMyrient(s.cfg.Sources, query, slug)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
@@ -375,7 +375,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if slug == "all" {
 			slug = ""
 		}
-		results := search.SearchVimm(query, slug)
+		results := search.SearchVimm(s.cfg.Sources, query, slug)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
@@ -746,10 +746,10 @@ func (s *Server) handleOrganizeTorrent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDDLSources(w http.ResponseWriter, r *http.Request) {
 	builtIn := []map[string]interface{}{
-		{"name": "Myrient", "url": "https://myrient.erista.me/files/", "type": "myrient", "builtin": true,
-			"platforms": search.MyrientPlatformSlugs()},
-		{"name": "Vimm's Lair", "url": "https://vimm.net/vault/", "type": "vimm", "builtin": true,
-			"platforms": search.VimmPlatformSlugs()},
+		{"name": "Myrient", "url": s.cfg.Sources.Myrient.BaseURL, "type": "myrient", "builtin": true,
+			"platforms": search.MyrientPlatformSlugs(s.cfg.Sources)},
+		{"name": "Vimm's Lair", "url": s.cfg.Sources.Vimm.BaseURL, "type": "vimm", "builtin": true,
+			"platforms": search.VimmPlatformSlugs(s.cfg.Sources)},
 	}
 	custom := s.mgr.LoadDDLSources()
 	all := builtIn

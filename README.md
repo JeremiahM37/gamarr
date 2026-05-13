@@ -6,13 +6,13 @@
 
 **The missing *arr for games.** Self-hosted game and ROM search, download, and library manager.
 
-Gamarr searches across Prowlarr torrent indexers, Myrient (verified ROM sets), and Vimm's Lair to find games for 24 platforms. Results are scored for safety and quality, downloads are managed through your choice of torrent or Usenet client, and files are automatically organized into your game vault and ROM library.
+Gamarr searches across all configured indexers (Torznab proxies, direct-download archive listings, web-scrape sources) in parallel for 24 platforms. Results are scored for safety and quality, downloads are managed through your choice of torrent or Usenet client, and files are automatically organized into your game vault and ROM library.
 
 ## Features
 
 ### Search and Discovery
 
-- **3 search sources** -- Prowlarr (torrent indexers), Myrient (direct download, verified No-Intro/Redump sets), Vimm's Lair (fallback DDL)
+- **Pluggable indexer registry** -- driver kinds (Torznab proxy, DDL archive listing, web-scrape) loaded at runtime from an embedded JSON registry; optionally overrideable via `GAMARR_SOURCES_URL` / `GAMARR_SOURCES_PATH`
 - **24 gaming platforms** -- PC, Switch, PS1-PS5, PSP, PS Vita, Xbox, Xbox 360, Wii, Wii U, NES, SNES, N64, GameCube, Game Boy, GBA, DS, 3DS, Genesis, Saturn, Dreamcast, Atari 2600
 - **Search scoring** -- composite 0-100 score based on title match, platform relevance, seeder count, file size, and safety analysis
 - **Safety scoring** -- analyzes file names, sizes, and scene group trust to detect malware, crack-only uploads, and suspicious downloads
@@ -79,8 +79,8 @@ Gamarr searches across Prowlarr torrent indexers, Myrient (verified ROM sets), a
 
 ## Supported Platforms
 
-| Platform | Slug | Myrient | Prowlarr |
-|----------|------|---------|----------|
+| Platform | Slug | DDL archive | Torznab |
+|----------|------|-------------|---------|
 | PC | `pc` | -- | Yes |
 | Nintendo Switch | `switch` | -- | Yes |
 | PS1 | `psx` | Yes | Yes |
@@ -165,6 +165,17 @@ All configuration is via environment variables.
 | `AUTH_USERNAME` | | Admin username (enables auth when set) |
 | `AUTH_PASSWORD` | | Admin password |
 
+### Sources Registry
+
+The active indexer list (base URLs, per-platform path mappings) is loaded at startup from, in order: `GAMARR_SOURCES_PATH`, `GAMARR_SOURCES_URL`, or an embedded fallback. Legacy per-source env vars below continue to take precedence over registry values.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GAMARR_SOURCES_URL` | | URL of a JSON sources registry; fetched at startup, falls back to embedded default if unreachable |
+| `GAMARR_SOURCES_PATH` | | Local path to a sources registry JSON file; takes precedence over URL |
+| `MYRIENT_URL` | | Override base URL of the DDL archive-listing source |
+| `VIMM_URL` | | Override base URL of the web-scrape source |
+
 ### Search Sources
 
 | Variable | Default | Description |
@@ -248,7 +259,8 @@ internal/
   models/                        Core types (games, downloads, requests, notifications)
   api/                           HTTP handlers + chi router + auth + rate limiting
     web/                         Embedded web UI assets
-  search/                        Search sources (Prowlarr, Myrient, Vimm)
+  search/                        Source drivers (Torznab, DDL archive, web-scrape)
+  sources/                       Runtime sources registry (embedded defaults + loader)
   download/                      Download manager (qBit, Transmission, Deluge, DDL)
   sabnzbd/                       SABnzbd client
   safety/                        Safety scoring engine
@@ -280,4 +292,4 @@ MIT
 
 ## Disclaimer
 
-This software is provided for **educational and personal use only**. Users are responsible for ensuring their use complies with all applicable laws and regulations in their jurisdiction. The developers do not condone or encourage copyright infringement or any illegal activity. This tool does not host, store, or distribute any copyrighted content.
+This software is provided for **educational and personal use only**. Users are responsible for ensuring their use complies with all applicable laws and regulations in their jurisdiction. The developers do not condone or encourage copyright infringement or any illegal activity. This tool does not host, store, or distribute any copyrighted content, and ships with no built-in catalog of indexers -- the list of endpoints to query comes from a user-overridable registry.

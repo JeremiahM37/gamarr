@@ -12,20 +12,14 @@ import (
 	"time"
 
 	"gamarr/internal/models"
+	"gamarr/internal/sources"
 )
 
-var vimmSystemMap = map[string]string{
-	"nes": "NES", "snes": "SNES", "n64": "N64", "ngc": "GameCube",
-	"wii": "Wii", "gb": "GB", "gbc": "GBC", "gba": "GBA", "nds": "DS",
-	"genesis": "Genesis", "saturn": "Saturn", "dc": "Dreamcast",
-	"psx": "PS1", "ps2": "PS2", "ps3": "PS3", "psp": "PSP",
-	"xbox": "Xbox", "xbox360": "Xbox360",
-}
-
-// VimmPlatformSlugs returns all platform slugs Vimm supports.
-func VimmPlatformSlugs() []string {
-	slugs := make([]string, 0, len(vimmSystemMap))
-	for s := range vimmSystemMap {
+// VimmPlatformSlugs returns all platform slugs Vimm supports per the runtime
+// sources registry.
+func VimmPlatformSlugs(reg *sources.Registry) []string {
+	slugs := make([]string, 0, len(reg.Vimm.PlatformSystems))
+	for s := range reg.Vimm.PlatformSystems {
 		slugs = append(slugs, s)
 	}
 	return slugs
@@ -34,18 +28,18 @@ func VimmPlatformSlugs() []string {
 var vimmGameRe = regexp.MustCompile(`<a\s+href=\s*"/vault/(\d+)"[^>]*>([^<]+)</a>`)
 
 // SearchVimm searches Vimm's Lair for ROMs.
-func SearchVimm(query string, platformSlug string) []*models.SearchResult {
+func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*models.SearchResult {
 	if IsCircuitOpen("vimm") {
 		slog.Warn("vimm circuit open, skipping search")
 		return nil
 	}
 	params := url.Values{"p": {"list"}, "q": {query}}
 	if platformSlug != "" {
-		if sys, ok := vimmSystemMap[platformSlug]; ok {
+		if sys, ok := reg.Vimm.PlatformSystems[platformSlug]; ok {
 			params.Set("system", sys)
 		}
 	}
-	systemFromFilter := vimmSystemMap[platformSlug]
+	systemFromFilter := reg.Vimm.PlatformSystems[platformSlug]
 
 	client := &http.Client{
 		Timeout: 15 * time.Second,
@@ -53,7 +47,7 @@ func SearchVimm(query string, platformSlug string) []*models.SearchResult {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
-	req, _ := http.NewRequest("GET", "https://vimm.net/vault/?"+params.Encode(), nil)
+	req, _ := http.NewRequest("GET", reg.Vimm.BaseURL+"?"+params.Encode(), nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
@@ -75,7 +69,7 @@ func SearchVimm(query string, platformSlug string) []*models.SearchResult {
 
 	// Build reverse map for platform detection
 	reverseMap := make(map[string]string)
-	for slug, sys := range vimmSystemMap {
+	for slug, sys := range reg.Vimm.PlatformSystems {
 		reverseMap[strings.ToLower(sys)] = slug
 	}
 
@@ -112,7 +106,7 @@ func SearchVimm(query string, platformSlug string) []*models.SearchResult {
 			Title:        displayTitle,
 			SizeHuman:    "?",
 			Indexer:      "Vimm's Lair",
-			GUID:         fmt.Sprintf("https://vimm.net/vault/%s", gameID),
+			GUID:         fmt.Sprintf("%s%s", reg.Vimm.BaseURL, gameID),
 			Platform:     systemClean,
 			PlatformSlug: slug,
 			SourceType:   "ddl",

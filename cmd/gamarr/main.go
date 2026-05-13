@@ -135,14 +135,14 @@ func main() {
 		}()
 		go func() {
 			defer wg.Done()
-			results := search.SearchMyrient(query, slug)
+			results := search.SearchMyrient(cfg.Sources, query, slug)
 			mu.Lock()
 			allResults = append(allResults, results...)
 			mu.Unlock()
 		}()
 		go func() {
 			defer wg.Done()
-			results := search.SearchVimm(query, slug)
+			results := search.SearchVimm(cfg.Sources, query, slug)
 			mu.Lock()
 			allResults = append(allResults, results...)
 			mu.Unlock()

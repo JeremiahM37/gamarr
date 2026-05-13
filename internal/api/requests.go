@@ -233,14 +233,14 @@ func (s *Server) handleSearchRequest(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wg.Done()
-		results := search.SearchMyrient(query, platformFilter)
+		results := search.SearchMyrient(s.cfg.Sources, query, platformFilter)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
 	}()
 	go func() {
 		defer wg.Done()
-		results := search.SearchVimm(query, platformFilter)
+		results := search.SearchVimm(s.cfg.Sources, query, platformFilter)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()

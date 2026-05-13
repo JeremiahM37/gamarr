@@ -4,9 +4,16 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"gamarr/internal/sources"
 )
 
 type Config struct {
+	// Sources is the runtime source-driver registry. Drivers read base URLs
+	// and per-platform mappings from here instead of from hardcoded constants.
+	// Always non-nil after Load() returns.
+	Sources *sources.Registry
+
 	// Prowlarr
 	ProwlarrURL    string
 	ProwlarrAPIKey string
@@ -117,7 +124,14 @@ type Config struct {
 }
 
 func Load() *Config {
+	registry := sources.Load(
+		envStr("GAMARR_SOURCES_PATH", ""),
+		envStr("GAMARR_SOURCES_URL", ""),
+	).ApplyEnvOverrides(os.Getenv)
+
 	return &Config{
+		Sources: registry,
+
 		ProwlarrURL:    envStr("PROWLARR_URL", "http://prowlarr:9696"),
 		ProwlarrAPIKey: envStr("PROWLARR_API_KEY", ""),
 
