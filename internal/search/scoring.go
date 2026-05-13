@@ -9,27 +9,27 @@ import (
 // platformSizeRange defines expected file size ranges (bytes) per platform slug.
 // min = suspiciously small, max = suspiciously large.
 var platformSizeRange = map[string][2]int64{
-	"nes":     {10e3, 5e6},        // 10KB - 5MB
-	"snes":    {100e3, 10e6},      // 100KB - 10MB
-	"gb":      {10e3, 5e6},        // 10KB - 5MB
-	"gbc":     {10e3, 10e6},       // 10KB - 10MB
-	"gba":     {100e3, 50e6},      // 100KB - 50MB
-	"n64":     {1e6, 100e6},       // 1MB - 100MB
-	"nds":     {1e6, 512e6},       // 1MB - 512MB
-	"3ds":     {10e6, 4e9},        // 10MB - 4GB
-	"psx":     {50e6, 1e9},        // 50MB - 1GB
-	"ps2":     {100e6, 8e9},       // 100MB - 8GB
-	"ps3":     {500e6, 50e9},      // 500MB - 50GB
-	"psp":     {50e6, 4e9},        // 50MB - 4GB
-	"genesis": {10e3, 10e6},       // 10KB - 10MB
-	"saturn":  {50e6, 1e9},        // 50MB - 1GB
-	"dc":      {50e6, 2e9},        // 50MB - 2GB
-	"ngc":     {100e6, 4e9},       // 100MB - 4GB
-	"wii":     {100e6, 8e9},       // 100MB - 8GB
-	"xbox":    {500e6, 8e9},       // 500MB - 8GB
-	"xbox360": {500e6, 16e9},      // 500MB - 16GB
-	"pc":      {50e6, 100e9},      // 50MB - 100GB
-	"switch":  {50e6, 32e9},       // 50MB - 32GB
+	"nes":     {10e3, 5e6},   // 10KB - 5MB
+	"snes":    {100e3, 10e6}, // 100KB - 10MB
+	"gb":      {10e3, 5e6},   // 10KB - 5MB
+	"gbc":     {10e3, 10e6},  // 10KB - 10MB
+	"gba":     {100e3, 50e6}, // 100KB - 50MB
+	"n64":     {1e6, 100e6},  // 1MB - 100MB
+	"nds":     {1e6, 512e6},  // 1MB - 512MB
+	"3ds":     {10e6, 4e9},   // 10MB - 4GB
+	"psx":     {50e6, 1e9},   // 50MB - 1GB
+	"ps2":     {100e6, 8e9},  // 100MB - 8GB
+	"ps3":     {500e6, 50e9}, // 500MB - 50GB
+	"psp":     {50e6, 4e9},   // 50MB - 4GB
+	"genesis": {10e3, 10e6},  // 10KB - 10MB
+	"saturn":  {50e6, 1e9},   // 50MB - 1GB
+	"dc":      {50e6, 2e9},   // 50MB - 2GB
+	"ngc":     {100e6, 4e9},  // 100MB - 4GB
+	"wii":     {100e6, 8e9},  // 100MB - 8GB
+	"xbox":    {500e6, 8e9},  // 500MB - 8GB
+	"xbox360": {500e6, 16e9}, // 500MB - 16GB
+	"pc":      {50e6, 100e9}, // 50MB - 100GB
+	"switch":  {50e6, 32e9},  // 50MB - 32GB
 }
 
 // ScoreResults applies scoring to all results and returns them (modifies in place).

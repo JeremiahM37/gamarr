@@ -157,9 +157,9 @@ func (m *Manager) addLibraryEntry(fp, name, platform, platformSlug string, isPC 
 		FilePath:     fp,
 		FileSize:     fileSize,
 		Source:       "scan",
-		SourceType:  "scan",
-		SourceID:    sourceID,
-		Metadata:    "{}",
+		SourceType:   "scan",
+		SourceID:     sourceID,
+		Metadata:     "{}",
 	})
 	if err == nil {
 		return 1
@@ -197,7 +197,7 @@ func (m *Manager) TrackInLibrary(title, platform, platformSlug string, isPC bool
 		IsPC:         isPC,
 		FilePath:     filePath,
 		FileSize:     fileSize,
-		Source:        source,
+		Source:       source,
 		SourceType:   sourceType,
 		SourceID:     sourceID,
 		Metadata:     "{}",

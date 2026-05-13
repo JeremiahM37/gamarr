@@ -151,12 +151,12 @@ func DetectPlatform(filename string) (platform, platformSlug string, isPC bool) 
 
 // CleanFilename removes scene tags and group names from filenames.
 var (
-	sceneGroupRe = regexp.MustCompile(`(?i)\b(SKIDROW|CODEX|PLAZA|CPY|EMPRESS|DODI|FitGirl|RUNE|RAZORDOX|TINYISO|ELAMIGOS|REPACK|GOG)\b`)
-	sceneTagsRe  = regexp.MustCompile(`(?i)\b(PROPER|REPACK|INTERNAL|RIP|MULTI\d+)\b`)
-	bracketRe    = regexp.MustCompile(`\[[^\]]*\]`)
-	dashGroupRe  = regexp.MustCompile(`\s*-\s*[A-Z]{3,}$`)
-	multiDotRe   = regexp.MustCompile(`\.{2,}`)
-	multiSpaceRe = regexp.MustCompile(`\s{2,}`)
+	sceneGroupRe  = regexp.MustCompile(`(?i)\b(SKIDROW|CODEX|PLAZA|CPY|EMPRESS|DODI|FitGirl|RUNE|RAZORDOX|TINYISO|ELAMIGOS|REPACK|GOG)\b`)
+	sceneTagsRe   = regexp.MustCompile(`(?i)\b(PROPER|REPACK|INTERNAL|RIP|MULTI\d+)\b`)
+	bracketRe     = regexp.MustCompile(`\[[^\]]*\]`)
+	dashGroupRe   = regexp.MustCompile(`\s*-\s*[A-Z]{3,}$`)
+	multiDotRe    = regexp.MustCompile(`\.{2,}`)
+	multiSpaceRe  = regexp.MustCompile(`\s{2,}`)
 	unsafeCharsRe = regexp.MustCompile(`[<>:"/\\|?*]`)
 )
 

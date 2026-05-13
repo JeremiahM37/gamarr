@@ -131,11 +131,11 @@ func TestRegistryFlow(t *testing.T) {
 // still take precedence over the registry value when set.
 func TestRegistryFlow_LegacyEnvOverride(t *testing.T) {
 	cases := []struct {
-		name     string
-		envKey   string
-		envVal   string
-		check    func(*sources.Registry) string
-		want     string
+		name   string
+		envKey string
+		envVal string
+		check  func(*sources.Registry) string
+		want   string
 	}{
 		{"MYRIENT_URL overrides Myrient.BaseURL", "MYRIENT_URL", "https://my-override.test/",
 			func(r *sources.Registry) string { return r.Myrient.BaseURL }, "https://my-override.test/"},

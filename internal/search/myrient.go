@@ -171,15 +171,15 @@ func SearchMyrient(reg *sources.Registry, query string, platformSlug string) []*
 			}
 
 			results = append(results, &models.SearchResult{
-				Title:        f.Name,
-				SizeHuman:    "?",
-				Indexer:      "Myrient",
-				DownloadURL:  f.URL,
-				GUID:         f.URL,
-				Platform:     platName,
-				PlatformSlug: slug,
-				IsPC:         isPC,
-				SourceType:   "ddl",
+				Title:          f.Name,
+				SizeHuman:      "?",
+				Indexer:        "Myrient",
+				DownloadURL:    f.URL,
+				GUID:           f.URL,
+				Platform:       platName,
+				PlatformSlug:   slug,
+				IsPC:           isPC,
+				SourceType:     "ddl",
 				SafetyScore:    95,
 				SafetyWarnings: []string{},
 			})

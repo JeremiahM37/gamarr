@@ -26,13 +26,13 @@ func init() {
 
 // calendarEntry represents a game release.
 type calendarEntry struct {
-	ID           int      `json:"id"`
-	Name         string   `json:"name"`
-	ReleaseDate  string   `json:"release_date"`
-	Platforms    []string `json:"platforms"`
-	BackgroundImage string `json:"background_image,omitempty"`
-	Rating       float64  `json:"rating"`
-	OnWishlist   bool     `json:"on_wishlist"`
+	ID              int      `json:"id"`
+	Name            string   `json:"name"`
+	ReleaseDate     string   `json:"release_date"`
+	Platforms       []string `json:"platforms"`
+	BackgroundImage string   `json:"background_image,omitempty"`
+	Rating          float64  `json:"rating"`
+	OnWishlist      bool     `json:"on_wishlist"`
 }
 
 // rawgGame represents a game from the RAWG API.

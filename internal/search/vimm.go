@@ -103,14 +103,14 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 		}
 
 		results = append(results, &models.SearchResult{
-			Title:        displayTitle,
-			SizeHuman:    "?",
-			Indexer:      "Vimm's Lair",
-			GUID:         fmt.Sprintf("%s%s", reg.Vimm.BaseURL, gameID),
-			Platform:     systemClean,
-			PlatformSlug: slug,
-			SourceType:   "ddl",
-			VimmID:       gameID,
+			Title:          displayTitle,
+			SizeHuman:      "?",
+			Indexer:        "Vimm's Lair",
+			GUID:           fmt.Sprintf("%s%s", reg.Vimm.BaseURL, gameID),
+			Platform:       systemClean,
+			PlatformSlug:   slug,
+			SourceType:     "ddl",
+			VimmID:         gameID,
 			SafetyScore:    90,
 			SafetyWarnings: []string{},
 		})

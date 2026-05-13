@@ -23,12 +23,12 @@ type PlayHistoryEntry struct {
 
 // PlayHistoryStats holds aggregate play history statistics.
 type PlayHistoryStats struct {
-	GamesThisMonth int                `json:"games_this_month"`
-	GamesThisYear  int                `json:"games_this_year"`
-	GamesTotal     int                `json:"games_total"`
-	AvgRating      float64            `json:"avg_rating"`
-	TotalHours     float64            `json:"total_hours"`
-	ByPlatform     map[string]int     `json:"by_platform"`
+	GamesThisMonth int            `json:"games_this_month"`
+	GamesThisYear  int            `json:"games_this_year"`
+	GamesTotal     int            `json:"games_total"`
+	AvgRating      float64        `json:"avg_rating"`
+	TotalHours     float64        `json:"total_hours"`
+	ByPlatform     map[string]int `json:"by_platform"`
 }
 
 // migrateHistory creates the play_history table.

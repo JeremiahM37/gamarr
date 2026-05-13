@@ -17,10 +17,10 @@ type LibraryItem struct {
 	IsPC         bool   `json:"is_pc"`
 	FilePath     string `json:"file_path"`
 	FileSize     int64  `json:"file_size"`
-	Source       string `json:"source"`       // "torrent", "ddl", "scan"
-	SourceType   string `json:"source_type"`  // "prowlarr", "myrient", "vimm", "manual"
-	SourceID     string `json:"source_id"`    // dedup key (hash, url, etc.)
-	Metadata     string `json:"metadata"`     // JSON blob
+	Source       string `json:"source"`      // "torrent", "ddl", "scan"
+	SourceType   string `json:"source_type"` // "prowlarr", "myrient", "vimm", "manual"
+	SourceID     string `json:"source_id"`   // dedup key (hash, url, etc.)
+	Metadata     string `json:"metadata"`    // JSON blob
 	AddedAt      string `json:"added_at"`
 }
 

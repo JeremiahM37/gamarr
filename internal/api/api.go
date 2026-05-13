@@ -615,7 +615,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 		"pausedUP": "completed", "queuedUP": "completed",
 		"checkingDL": "checking", "checkingUP": "checking",
 		"stoppedDL": "paused",
-		"error": "error", "missingFiles": "error",
+		"error":     "error", "missingFiles": "error",
 	}
 
 	matchedJobIDs := make(map[string]bool)
@@ -771,10 +771,7 @@ func (s *Server) handleDDLSources(w http.ResponseWriter, r *http.Request) {
 			"platforms": search.VimmPlatformSlugs(s.cfg.Sources)},
 	}
 	custom := s.mgr.LoadDDLSources()
-	all := builtIn
-	for _, c := range custom {
-		all = append(all, c)
-	}
+	all := append(builtIn, custom...)
 	writeJSON(w, 200, map[string]interface{}{"sources": all})
 }
 

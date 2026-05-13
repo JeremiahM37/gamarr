@@ -218,32 +218,32 @@ type rawgSearchResponse struct {
 }
 
 type rawgGameEntry struct {
-	ID              int              `json:"id"`
-	Name            string           `json:"name"`
-	Slug            string           `json:"slug"`
-	Released        string           `json:"released"`
-	Rating          float64          `json:"rating"`
-	Metacritic      int              `json:"metacritic"`
-	BackgroundImage string           `json:"background_image"`
-	Genres          []rawgNameEntry  `json:"genres"`
-	Platforms       []rawgPlatEntry  `json:"platforms"`
-	ESRBRating      *rawgNameEntry   `json:"esrb_rating"`
+	ID              int             `json:"id"`
+	Name            string          `json:"name"`
+	Slug            string          `json:"slug"`
+	Released        string          `json:"released"`
+	Rating          float64         `json:"rating"`
+	Metacritic      int             `json:"metacritic"`
+	BackgroundImage string          `json:"background_image"`
+	Genres          []rawgNameEntry `json:"genres"`
+	Platforms       []rawgPlatEntry `json:"platforms"`
+	ESRBRating      *rawgNameEntry  `json:"esrb_rating"`
 }
 
 type rawgGameDetail struct {
-	ID              int              `json:"id"`
-	Name            string           `json:"name"`
-	Slug            string           `json:"slug"`
-	Description     string           `json:"description_raw"`
-	Released        string           `json:"released"`
-	Rating          float64          `json:"rating"`
-	Metacritic      int              `json:"metacritic"`
-	BackgroundImage string           `json:"background_image"`
-	Genres          []rawgNameEntry  `json:"genres"`
-	Platforms       []rawgPlatEntry  `json:"platforms"`
-	Developers      []rawgNameEntry  `json:"developers"`
-	Publishers      []rawgNameEntry  `json:"publishers"`
-	ESRBRating      *rawgNameEntry   `json:"esrb_rating"`
+	ID              int             `json:"id"`
+	Name            string          `json:"name"`
+	Slug            string          `json:"slug"`
+	Description     string          `json:"description_raw"`
+	Released        string          `json:"released"`
+	Rating          float64         `json:"rating"`
+	Metacritic      int             `json:"metacritic"`
+	BackgroundImage string          `json:"background_image"`
+	Genres          []rawgNameEntry `json:"genres"`
+	Platforms       []rawgPlatEntry `json:"platforms"`
+	Developers      []rawgNameEntry `json:"developers"`
+	Publishers      []rawgNameEntry `json:"publishers"`
+	ESRBRating      *rawgNameEntry  `json:"esrb_rating"`
 }
 
 type rawgNameEntry struct {
@@ -366,37 +366,37 @@ func MapRAWGPlatformToSlug(name string) string {
 	}
 
 	m := map[string]string{
-		"pc":                    "pc",
-		"playstation 2":        "ps2",
-		"playstation 3":        "ps3",
-		"playstation 4":        "ps4",
-		"playstation 5":        "ps5",
-		"psp":                  "psp",
-		"playstation":          "psx",
-		"ps vita":              "vita",
-		"xbox":                 "xbox",
-		"xbox 360":             "xbox360",
-		"xbox one":             "xboxone",
-		"xbox series s/x":      "xboxone",
-		"nintendo switch":      "switch",
-		"wii":                  "wii",
-		"wii u":                "wiiu",
-		"nintendo 64":          "n64",
-		"gamecube":             "ngc",
-		"nes":                  "nes",
-		"snes":                 "snes",
-		"super nintendo":       "snes",
-		"game boy advance":     "gba",
-		"game boy":             "gb",
-		"game boy color":       "gbc",
-		"nintendo ds":          "nds",
-		"nintendo 3ds":         "3ds",
-		"sega genesis":         "genesis",
-		"sega mega drive":      "genesis",
-		"dreamcast":            "dc",
-		"sega saturn":          "saturn",
-		"sega master system":   "sms",
-		"game gear":            "gamegear",
+		"pc":                 "pc",
+		"playstation 2":      "ps2",
+		"playstation 3":      "ps3",
+		"playstation 4":      "ps4",
+		"playstation 5":      "ps5",
+		"psp":                "psp",
+		"playstation":        "psx",
+		"ps vita":            "vita",
+		"xbox":               "xbox",
+		"xbox 360":           "xbox360",
+		"xbox one":           "xboxone",
+		"xbox series s/x":    "xboxone",
+		"nintendo switch":    "switch",
+		"wii":                "wii",
+		"wii u":              "wiiu",
+		"nintendo 64":        "n64",
+		"gamecube":           "ngc",
+		"nes":                "nes",
+		"snes":               "snes",
+		"super nintendo":     "snes",
+		"game boy advance":   "gba",
+		"game boy":           "gb",
+		"game boy color":     "gbc",
+		"nintendo ds":        "nds",
+		"nintendo 3ds":       "3ds",
+		"sega genesis":       "genesis",
+		"sega mega drive":    "genesis",
+		"dreamcast":          "dc",
+		"sega saturn":        "saturn",
+		"sega master system": "sms",
+		"game gear":          "gamegear",
 	}
 
 	for key, slug := range m {

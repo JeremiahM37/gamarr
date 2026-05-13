@@ -19,10 +19,13 @@ import (
 
 // Callbacks for actions the monitor can take.
 type Callbacks struct {
-	GetJobs            func() []struct{ ID string; Data map[string]interface{} }
-	QBReauth           func() bool
-	ClearMyrientCache  func()
-	RunOrphanRecovery  func()
+	GetJobs func() []struct {
+		ID   string
+		Data map[string]interface{}
+	}
+	QBReauth          func() bool
+	ClearMyrientCache func()
+	RunOrphanRecovery func()
 }
 
 var allowedActions = map[string]struct {
@@ -31,7 +34,7 @@ var allowedActions = map[string]struct {
 }{
 	"retry_job":             {"safe", "Re-queue a failed download job"},
 	"clear_interrupted":     {"safe", "Mark interrupted/stuck jobs as cleared"},
-	"reauth_qbittorrent":   {"safe", "Force qBittorrent session re-authentication"},
+	"reauth_qbittorrent":    {"safe", "Force qBittorrent session re-authentication"},
 	"refresh_myrient_cache": {"safe", "Clear cached Myrient directory listings"},
 	"run_orphan_recovery":   {"safe", "Run orphan torrent recovery routine"},
 	"restart_qbittorrent":   {"approval", "Restart qBittorrent Docker container"},

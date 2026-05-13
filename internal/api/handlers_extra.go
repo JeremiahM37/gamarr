@@ -245,7 +245,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.MetricsEnabled {
-		http.Error(w, "Metrics disabled", 403)
+		http.Error(w, "Metrics disabled", http.StatusForbidden)
 		return
 	}
 

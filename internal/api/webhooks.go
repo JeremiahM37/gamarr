@@ -68,8 +68,8 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 // handleTestWebhook handles POST /api/webhooks/test.
 func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID  *int64 `json:"id"`
-		URL string `json:"url"`
+		ID   *int64 `json:"id"`
+		URL  string `json:"url"`
 		Type string `json:"type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -235,7 +235,7 @@ func TestFilterGameResults(t *testing.T) {
 
 	t.Run("empty results", func(t *testing.T) {
 		filtered := FilterGameResults(nil, "query")
-		if filtered != nil && len(filtered) != 0 {
+		if len(filtered) != 0 {
 			t.Errorf("expected nil/empty, got %d results", len(filtered))
 		}
 	})

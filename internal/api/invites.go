@@ -37,9 +37,9 @@ func handleCreateInvite(database *db.JobStore) http.HandlerFunc {
 		userID := getUserIDFromContext(r)
 
 		var req struct {
-			Role     string `json:"role"`
-			MaxUses  int    `json:"max_uses"`
-			ExpirySec int   `json:"expiry_seconds"`
+			Role      string `json:"role"`
+			MaxUses   int    `json:"max_uses"`
+			ExpirySec int    `json:"expiry_seconds"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "Invalid request body")
@@ -75,10 +75,10 @@ func handleCreateInvite(database *db.JobStore) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
-			"success": true,
-			"id":      id,
-			"code":    code,
-			"role":    req.Role,
+			"success":  true,
+			"id":       id,
+			"code":     code,
+			"role":     req.Role,
 			"max_uses": req.MaxUses,
 		})
 	}

@@ -42,10 +42,10 @@ type Attr struct {
 
 // Caps is the Torznab capabilities document.
 type Caps struct {
-	XMLName    xml.Name      `xml:"caps"`
-	Server     CapsServer    `xml:"server"`
-	Limits     CapsLimits    `xml:"limits"`
-	Searching  CapsSearching `xml:"searching"`
+	XMLName    xml.Name       `xml:"caps"`
+	Server     CapsServer     `xml:"server"`
+	Limits     CapsLimits     `xml:"limits"`
+	Searching  CapsSearching  `xml:"searching"`
 	Categories CapsCategories `xml:"categories"`
 }
 
@@ -57,9 +57,9 @@ type CapsLimits struct {
 	Default int `xml:"default,attr"`
 }
 type CapsSearching struct {
-	Search     CapsSearchOp `xml:"search"`
+	Search        CapsSearchOp `xml:"search"`
 	ConsoleSearch CapsSearchOp `xml:"console-search"`
-	PCSearch   CapsSearchOp `xml:"pc-search"`
+	PCSearch      CapsSearchOp `xml:"pc-search"`
 }
 type CapsSearchOp struct {
 	Available       string `xml:"available,attr"`
@@ -69,8 +69,8 @@ type CapsCategories struct {
 	Categories []CapsCategory `xml:"category"`
 }
 type CapsCategory struct {
-	ID   string         `xml:"id,attr"`
-	Name string         `xml:"name,attr"`
+	ID   string            `xml:"id,attr"`
+	Name string            `xml:"name,attr"`
 	Subs []CapsSubCategory `xml:"subcat,omitempty"`
 }
 type CapsSubCategory struct {
