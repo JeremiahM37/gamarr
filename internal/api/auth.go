@@ -166,6 +166,7 @@ var exemptPaths = map[string]bool{
 	"/api/oidc/login":    true,
 	"/api/oidc/callback": true,
 	"/api/oidc/status":   true,
+	"/api/openapi.json":  true, // public API schema for AI/tooling discovery
 }
 
 // isExempt returns true if the path does not require auth.
@@ -179,6 +180,15 @@ func isExempt(path string) bool {
 	}
 	// Prometheus metrics.
 	if path == "/metrics" {
+		return true
+	}
+	// Torznab indexer API has its own apikey auth inside the handler (gated
+	// by TORZNAB_API_KEY). Without exempting these paths here, Prowlarr —
+	// which sends ?apikey=<torznab-key> — would be rejected by the gamarr
+	// auth middleware (which checks ?apikey=<gamarr-api-key>) before ever
+	// reaching the Torznab handler. The /api alias is mounted on exact path
+	// /api only, so this does NOT match /api/search, /api/library, etc.
+	if path == "/api" || strings.HasPrefix(path, "/torznab/") {
 		return true
 	}
 	return false
