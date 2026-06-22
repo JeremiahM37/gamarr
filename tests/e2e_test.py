@@ -189,7 +189,7 @@ print("\n=== 6. DOWNLOAD PIPELINE (end-to-end) ===")
 
 def t_ddl_e2e():
     # Clean slate
-    LXC_SSH = os.environ.get("LXC_SSH", "root@153.90.84.207")
+    LXC_SSH = os.environ.get("LXC_SSH", "root@192.168.1.103")
     def lxc_run(cmd):
         return subprocess.run(
             ["ssh", LXC_SSH, f"pct exec 200 -- bash -c '{cmd}'"],
