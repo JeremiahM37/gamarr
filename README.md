@@ -12,6 +12,8 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 
 [^1]: Measured on the current main in an LXC on Debian 12 (Mar 2026). Reference: ROMM ≈ 320MB, GameVault backend ≈ 157MB on the same host.
 
+![Gamarr library view — game cards across PC, NES, SNES, GBA and Genesis with platform badges, file sizes, and RomM/GameVault links](docs/screenshot.png)
+
 ## Features
 
 ### Search and Discovery
