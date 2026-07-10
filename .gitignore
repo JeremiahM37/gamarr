@@ -19,3 +19,6 @@ gamarr
 .env
 .env.local
 .env.*.local
+e2e/.venv/
+__pycache__/
+.pytest_cache/
