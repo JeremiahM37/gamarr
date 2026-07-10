@@ -1,0 +1,74 @@
+/* Gamarr custom styles (everything Tailwind utilities don't cover). */
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Tab transitions */
+.tab-content { display: none; animation: fadeIn 0.2s ease-out; }
+.tab-content.active { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Card hover */
+.game-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.game-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }
+
+/* Skeleton shimmer */
+.skeleton { background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* Toast animation */
+.toast-enter { animation: toastIn 0.3s ease-out; }
+@keyframes toastIn { from { opacity: 0; transform: translateX(100%); } to { opacity: 1; transform: translateX(0); } }
+
+/* Progress bar */
+.progress-bar { transition: width 0.5s ease; }
+
+/* Active nav indicator */
+.nav-tab.active { border-color: #6366f1; color: #e0e7ff; }
+
+/* Mobile hamburger menu */
+.hamburger { display: none; }
+.nav-overlay { display: none; }
+
+@media (max-width: 640px) {
+  .hamburger { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; cursor: pointer; }
+  .hamburger span { display: block; width: 20px; height: 2px; background: #94a3b8; position: relative; transition: background 0.2s; }
+  .hamburger span::before, .hamburger span::after { content: ''; position: absolute; width: 20px; height: 2px; background: #94a3b8; transition: transform 0.2s; }
+  .hamburger span::before { top: -6px; }
+  .hamburger span::after { top: 6px; }
+  .hamburger.active span { background: transparent; }
+  .hamburger.active span::before { transform: translateY(6px) rotate(45deg); }
+  .hamburger.active span::after { transform: translateY(-6px) rotate(-45deg); }
+
+  nav.mobile-nav { display: none !important; }
+  nav.mobile-nav.open { display: flex !important; flex-direction: column; position: absolute; top: 100%; left: 0; right: 0; background: #0f172a; border-bottom: 1px solid #1e293b; z-index: 50; padding: 0.5rem; }
+  nav.mobile-nav.open .nav-tab { width: 100%; text-align: left; padding: 0.75rem 1rem; border-bottom: none; border-left: 3px solid transparent; }
+  nav.mobile-nav.open .nav-tab.active { border-left-color: #6366f1; border-bottom: none; }
+
+  .nav-overlay.open { display: block; position: fixed; inset: 0; z-index: 29; background: rgba(0,0,0,0.3); }
+
+  /* Search - full width, stacked */
+  #tab-search .flex.flex-col.sm\:flex-row { flex-direction: column !important; }
+  #tab-search .flex.flex-col.sm\:flex-row > * { width: 100% !important; }
+  #search-btn { width: 100% !important; }
+
+  /* Results cards - stack vertically, full width */
+  #results { grid-template-columns: 1fr !important; }
+
+  /* Library grid - single column */
+  #library-grid { grid-template-columns: 1fr !important; }
+
+  /* Larger touch targets */
+  button, select, input { min-height: 44px; }
+
+  /* Settings grid */
+  .grid.grid-cols-1.sm\:grid-cols-3 { grid-template-columns: 1fr !important; }
+}
+
+@media (max-width: 768px) {
+  #results { grid-template-columns: 1fr !important; }
+  #library-grid { grid-template-columns: repeat(2, 1fr) !important; }
+}

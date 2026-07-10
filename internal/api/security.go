@@ -12,6 +12,17 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		// Strict CSP: no inline scripts anywhere (the UI uses external files +
+		// event delegation, and the Tailwind runtime is vendored under /static/).
+		//   style-src 'unsafe-inline' — the Tailwind Play runtime injects a
+		//     <style> element at load; style injection, unlike script, is not
+		//     an XSS vector on its own.
+		//   img-src https: data: — game cover art may be hotlinked from
+		//     external metadata sources.
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data: https:; font-src 'self'; connect-src 'self'; "+
+				"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

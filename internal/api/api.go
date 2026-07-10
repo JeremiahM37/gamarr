@@ -1,9 +1,9 @@
 package api
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -23,10 +23,8 @@ import (
 	"gamarr/internal/scheduler"
 	"gamarr/internal/search"
 	"gamarr/internal/torznab"
+	"gamarr/web"
 )
-
-//go:embed web/index.html
-var webFS embed.FS
 
 // Server holds all API dependencies.
 type Server struct {
@@ -66,6 +64,7 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 
 	// UI
 	r.Get("/", s.handleIndex)
+	r.Handle("/static/*", staticHandler())
 
 	// Auth routes (exempt from auth middleware).
 	r.Post("/api/login", handleLogin(cfg, mgr.Jobs(), sessions))
@@ -342,13 +341,24 @@ func logMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data, err := webFS.ReadFile("web/index.html")
-	if err != nil {
-		http.Error(w, "index.html not found", 500)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
+	w.Write(web.IndexHTML)
+}
+
+// staticHandler serves the embedded frontend assets under /static/.
+func staticHandler() http.Handler {
+	sub, err := fs.Sub(web.StaticFS, "static")
+	if err != nil {
+		// Impossible with a well-formed embed; fail loudly at startup if not.
+		panic("web static assets missing from binary: " + err.Error())
+	}
+	fileServer := http.StripPrefix("/static/", http.FileServer(http.FS(sub)))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Assets aren't content-hashed, so keep the client cache short: an
+		// upgraded binary must be able to push new css/js within the hour.
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
