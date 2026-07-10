@@ -45,6 +45,21 @@ func TestLogin_Success(t *testing.T) {
 	}
 }
 
+func TestLogin_Success_NoContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if !c.Login() {
+		t.Error("expected login to succeed on 204 with empty body")
+	}
+}
+
 func TestLogin_Failure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Fails."))
