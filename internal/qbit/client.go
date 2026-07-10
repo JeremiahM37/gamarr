@@ -74,7 +74,10 @@ func (c *Client) login() bool {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	c.authenticated = string(body) == "Ok."
+	
+	c.authenticated = resp.StatusCode == http.StatusOK ||
+    	resp.StatusCode == http.StatusNoContent ||
+    	string(body) == "Ok."
 	return c.authenticated
 }
 
