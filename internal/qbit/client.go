@@ -74,7 +74,12 @@ func (c *Client) login() bool {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	c.authenticated = string(body) == "Ok."
+
+	// qBittorrent replies 200 with "Ok." on success and 200 with "Fails." on
+	// bad credentials, so a bare 2xx status is not proof of authentication.
+	// Some setups return 204 with an empty body on success; accept that too.
+	c.authenticated = string(body) == "Ok." ||
+		(resp.StatusCode == http.StatusNoContent && len(body) == 0)
 	return c.authenticated
 }
 
