@@ -178,6 +178,6 @@ func (s *Server) RegisterMetadataRoutes(r chi.Router) {
 	r.Get("/api/metadata/search", s.handleMetadataSearch)
 	r.Get("/api/metadata/{rawg_id}", s.handleMetadataGet)
 	r.Post("/api/library/{id}/enrich", s.handleEnrichLibraryItem)
-	r.Post("/api/test/transmission", s.handleTestTransmission)
-	r.Post("/api/test/deluge", s.handleTestDeluge)
+	r.Post("/api/test/transmission", requireAdmin(s.handleTestTransmission))
+	r.Post("/api/test/deluge", requireAdmin(s.handleTestDeluge))
 }

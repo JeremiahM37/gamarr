@@ -264,7 +264,6 @@ internal/
   db/                            SQLite persistence + migrations
   models/                        Core types (games, downloads, requests, notifications)
   api/                           HTTP handlers + chi router + auth + rate limiting
-    web/                         Embedded web UI assets
   search/                        Source drivers (Torznab, DDL archive, web-scrape)
   sources/                       Runtime sources registry (embedded defaults + loader)
   download/                      Download manager (qBit, Transmission, Deluge, DDL)
@@ -278,9 +277,16 @@ internal/
   qbit/                          qBittorrent API client
   webhook/                       Discord + generic webhook delivery
 web/
-  index.html                     Single-page web UI (Tailwind CSS)
+  embed.go                       go:embed of the UI into the binary
+  index.html                     Single-page web UI markup
+  static/js/app.js               UI logic (strict-CSP event delegation)
+  static/js/vendor/tailwind.js   Vendored Tailwind runtime (no CDN)
+  static/css/app.css             Custom styles
+e2e/
+  conftest.py                    Hermetic Playwright harness (stubbed services)
+  test_user_journey.py           Browser e2e: search, download, library, wishlist
 tests/
-  e2e_test.py                    43 end-to-end tests
+  e2e_test.py                    43 end-to-end API tests
 Dockerfile                       Multi-stage Alpine build
 ```
 

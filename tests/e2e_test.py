@@ -188,9 +188,13 @@ test("Library bad page defaults to 1", t_library_bad_page)
 print("\n=== 6. DOWNLOAD PIPELINE (end-to-end) ===")
 
 def t_ddl_e2e():
-    # Clean slate
-    LXC_SSH = os.environ.get("LXC_SSH", "root@153.90.84.207")
+    # Clean slate. Host-side file checks only run when LXC_SSH is set
+    # (e.g. LXC_SSH=root@<mediaserver-ip>); otherwise they are skipped so the
+    # suite works against any instance.
+    LXC_SSH = os.environ.get("LXC_SSH", "")
     def lxc_run(cmd):
+        if not LXC_SSH:
+            return None
         return subprocess.run(
             ["ssh", LXC_SSH, f"pct exec 200 -- bash -c '{cmd}'"],
             capture_output=True, timeout=15
@@ -224,7 +228,8 @@ def t_ddl_e2e():
     assert final == "completed", f"Got {final}"
 
     # File on disk (LXC 200 host path, filename may be URL-encoded with %20)
-    assert lxc_run("ls /mnt/storage/games/roms/gb/Tetris*").returncode == 0, "File not on disk"
+    if LXC_SSH:
+        assert lxc_run("ls /mnt/storage/games/roms/gb/Tetris*").returncode == 0, "File not on disk"
     # Library
     assert get("/api/library")["total"] > lib_before, "Library count didn't increase"
     lib = get("/api/library?q=Tetris")
@@ -365,11 +370,17 @@ print("\n=== 16. UI ===")
 
 def t_ui():
     s, body = raw_get("/")
-    assert s == 200 and len(body) > 10000
+    assert s == 200 and len(body) > 2000
     for tab in ["tab-search", "tab-library", "tab-downloads", "tab-wishlist", "tab-settings"]:
         assert tab in body, f"Missing {tab}"
-    assert "tailwindcss" in body and "Gamarr" in body
-test("UI with 5 tabs and Tailwind", t_ui)
+    # Frontend is externalized (librarr-style): vendored Tailwind + split JS,
+    # no CDN. Assert the static assets are wired in and actually served.
+    assert "Gamarr" in body and "/static/js/app.js" in body
+    assert "cdn.tailwindcss.com" not in body, "UI must not depend on a CDN"
+    for asset in ["/static/js/app.js", "/static/js/vendor/tailwind.js", "/static/css/app.css"]:
+        sa, _ = raw_get(asset)
+        assert sa == 200, f"{asset} not served"
+test("UI with 5 tabs, static assets, no CDN", t_ui)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 print("\n=== 17. EDGE CASES ===")
