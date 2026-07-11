@@ -56,6 +56,9 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 		return '_'
 	}, name)
 	name = filepath.Base(name)
+	if !filepath.IsLocal(name) {
+		name = "backup"
+	}
 
 	backupDir := filepath.Join(s.cfg.DataDir, "backups")
 	os.MkdirAll(backupDir, 0755)

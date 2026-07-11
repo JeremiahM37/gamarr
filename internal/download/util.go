@@ -15,25 +15,25 @@ func cryptoReader() io.Reader {
 // sanitizeFilename reduces an externally supplied name (Content-Disposition
 // header, URL segment, platform slug, …) to a single safe path component:
 // no separators, no traversal. Falls back to "download" if nothing is left.
+// The filepath.IsLocal gate is what makes the result safe to join onto a
+// trusted base directory.
 func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
-	name = filepath.Base(name)
-	name = strings.TrimSpace(name)
-	if name == "" || name == "." || name == ".." || name == "/" {
+	name = strings.TrimSpace(filepath.Base(name))
+	if name == "" || name == "." || !filepath.IsLocal(name) {
 		return "download"
 	}
 	return name
 }
 
 // safeChild joins name onto dir and guarantees the result stays inside dir,
-// defeating path traversal via crafted names.
+// defeating path traversal via crafted names. name may itself contain
+// separators (a relative subpath) as long as it stays local.
 func safeChild(dir, name string) (string, error) {
-	p := filepath.Join(dir, name)
-	cleanDir := filepath.Clean(dir)
-	if p != cleanDir && !strings.HasPrefix(p, cleanDir+string(filepath.Separator)) {
+	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("unsafe path %q escapes %q", name, dir)
 	}
-	return p, nil
+	return filepath.Join(dir, name), nil
 }
 
 // sanitizeLog strips newlines from externally supplied values before they

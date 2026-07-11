@@ -320,7 +320,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	}
 
 	if isPC {
-		dest := filepath.Join(m.cfg.GamesVaultPath, filepath.Base(contentPath))
+		dest := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(contentPath)))
 		if err := moveContent(contentPath, dest); err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
@@ -339,7 +339,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		// component so it cannot climb out of the ROM library root.
 		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
 		os.MkdirAll(destDir, 0755)
-		dest := filepath.Join(destDir, filepath.Base(contentPath))
+		dest := filepath.Join(destDir, sanitizeFilename(filepath.Base(contentPath)))
 		if err := moveContent(contentPath, dest); err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
