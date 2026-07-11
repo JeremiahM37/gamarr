@@ -56,14 +56,16 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 		return '_'
 	}, name)
 	name = filepath.Base(name)
-	if !filepath.IsLocal(name) {
-		name = "backup"
-	}
 
 	backupDir := filepath.Join(s.cfg.DataDir, "backups")
 	os.MkdirAll(backupDir, 0755)
 
-	zipPath := filepath.Join(backupDir, fmt.Sprintf("gamarr-backup-%s.zip", name))
+	zipName := fmt.Sprintf("gamarr-backup-%s.zip", name)
+	zipPath, err := safeJoin(backupDir, zipName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid backup name")
+		return
+	}
 
 	f, err := os.Create(zipPath)
 	if err != nil {

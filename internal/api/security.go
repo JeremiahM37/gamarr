@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 )
 
@@ -25,6 +27,15 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 				"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// safeJoin joins name onto dir only when name is a local path component
+// (no absolute path, no "..") so the result cannot escape dir.
+func safeJoin(dir, name string) (string, error) {
+	if !filepath.IsLocal(name) {
+		return "", fmt.Errorf("unsafe path component %q", name)
+	}
+	return filepath.Join(dir, name), nil
 }
 
 // sanitizeLog strips newlines from externally supplied values before they
