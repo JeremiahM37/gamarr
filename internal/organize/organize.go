@@ -61,7 +61,9 @@ func (p *Pipeline) organizePC(sourcePath string) (string, error) {
 	} else {
 		cleanName = CleanFilename(baseName)
 	}
-	dest := filepath.Join(destDir, cleanName)
+	// The name derives from an externally supplied path; keep it a single
+	// component so it cannot escape the vault dir.
+	dest := filepath.Join(destDir, filepath.Base(cleanName))
 
 	// Check duplicate.
 	if exists, _ := DuplicateCheck(dest); exists {

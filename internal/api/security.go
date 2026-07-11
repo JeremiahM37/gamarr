@@ -27,6 +27,13 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// sanitizeLog strips newlines from externally supplied values before they
+// reach the log, preventing forged log entries.
+func sanitizeLog(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\r", " ")
+}
+
 // maxBodySize caps non-multipart request bodies at 1MB.
 const maxBodySize = 1 << 20 // 1MB
 

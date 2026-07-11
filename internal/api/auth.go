@@ -505,7 +505,7 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 			database.UseInviteCode(req.InviteCode)
 		}
 
-		slog.Info("user registered", "id", id, "username", req.Username, "role", role)
+		slog.Info("user registered", "id", id, "username", sanitizeLog(req.Username), "role", role)
 
 		// If first user, auto-login.
 		if isFirstUser {

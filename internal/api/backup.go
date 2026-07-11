@@ -55,6 +55,7 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		return '_'
 	}, name)
+	name = filepath.Base(name)
 
 	backupDir := filepath.Join(s.cfg.DataDir, "backups")
 	os.MkdirAll(backupDir, 0755)
@@ -192,7 +193,9 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		destPath := filepath.Join(dataDir, f.Name)
+		// Zip-slip guard: entry names come from the uploaded archive and must
+		// stay a single component inside the data dir.
+		destPath := filepath.Join(dataDir, filepath.Base(f.Name))
 
 		// Backup current file before overwriting
 		if _, err := os.Stat(destPath); err == nil {
