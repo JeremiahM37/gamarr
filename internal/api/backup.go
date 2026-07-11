@@ -2,7 +2,6 @@ package api
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -41,7 +40,9 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
 
 	name := req.Name
 	if name == "" {

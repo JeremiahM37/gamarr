@@ -196,7 +196,6 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 
 func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bool) {
 	slog.Info("watching game torrent", "title", title, "platform", platf)
-	titleLower := strings.ToLower(title)
 	maxWait := 7 * 24 * time.Hour
 	start := time.Now()
 	fileScanDone := false
@@ -205,10 +204,7 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 		torrents := m.qb.GetTorrents(m.cfg.QBCategory)
 		for _, t := range torrents {
 			tName := t.Name
-			isMatch := tName == title ||
-				strings.Contains(strings.ToLower(tName), titleLower) ||
-				strings.Contains(titleLower, strings.ToLower(tName))
-			if !isMatch {
+			if !titlesMatch(title, tName) {
 				continue
 			}
 
@@ -407,15 +403,22 @@ func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, p
 
 func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug string, isPC bool) {
 	staging := m.cfg.QBSavePath
-	os.MkdirAll(staging, 0755)
+	if err := os.MkdirAll(staging, 0755); err != nil {
+		slog.Error("cannot create staging dir", "path", staging, "error", err)
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("cannot create staging dir %s: %v", staging, err),
+		})
+		return
+	}
 
 	var filepath_ string
-	var err error
+	var dlErr error
 
 	if vimmID != "" {
 		filepath_ = m.downloadVimmGame(vimmID, staging, jobID)
 	} else if dlURL != "" {
-		filepath_ = m.downloadDDL(dlURL, staging, jobID)
+		filepath_, dlErr = m.downloadDDL(dlURL, staging, jobID)
 	}
 
 	if filepath_ == "" || !pathExists(filepath_) {
@@ -423,8 +426,12 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 		if ok {
 			status, _ := job["status"].(string)
 			if status != "error" {
+				errMsg := "Download failed"
+				if dlErr != nil {
+					errMsg = fmt.Sprintf("Download failed: %v", dlErr)
+				}
 				m.jobs.UpdateMulti(jobID, map[string]interface{}{
-					"status": "error", "error": "Download failed",
+					"status": "error", "error": errMsg,
 				})
 			}
 		}
@@ -454,24 +461,22 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 		"status": "organizing", "detail": "Moving to library...",
 	})
 	m.organizeDDLFile(jobID, filepath_, title, platf, platSlug, isPC)
-
-	_ = err
 }
 
-func (m *Manager) downloadDDL(dlURL, destPath, jobID string) string {
+func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	req, _ := http.NewRequest("GET", dlURL, nil)
 	req.Header.Set("User-Agent", "Gamarr/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("DDL download failed", "error", err)
-		return ""
+		slog.Error("DDL download failed", "url", dlURL, "error", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		slog.Error("DDL download failed", "status", resp.StatusCode)
-		return ""
+		slog.Error("DDL download failed", "url", dlURL, "status", resp.StatusCode)
+		return "", fmt.Errorf("HTTP %d from server", resp.StatusCode)
 	}
 
 	total := resp.ContentLength
@@ -488,7 +493,8 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) string {
 	fp := filepath.Join(destPath, filename)
 	f, err := os.Create(fp)
 	if err != nil {
-		return ""
+		slog.Error("DDL cannot create file", "path", fp, "error", err)
+		return "", fmt.Errorf("cannot create file %s: %v", fp, err)
 	}
 	defer f.Close()
 
@@ -513,7 +519,7 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) string {
 		}
 	}
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
-	return fp
+	return fp, nil
 }
 
 var vimmFormRe = regexp.MustCompile(`<form[^>]*id=["']dl_form["'][^>]*>`)

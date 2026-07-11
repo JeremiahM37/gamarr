@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,6 +52,16 @@ type delugeError struct {
 	Code    int    `json:"code"`
 }
 
+// isAuthError reports whether an RPC error response indicates an expired or
+// missing web session. Deluge reports session expiry as a JSON-RPC error
+// (code 1, "Not authenticated"), not as a transport failure.
+func (e *delugeError) isAuthError() bool {
+	if e == nil {
+		return false
+	}
+	return e.Code == 1 || strings.Contains(strings.ToLower(e.Message), "not authenticated")
+}
+
 // Login authenticates with the Deluge Web UI.
 func (d *DelugeClient) Login() error {
 	d.mu.Lock()
@@ -85,8 +96,8 @@ func (d *DelugeClient) AddTorrent(url string, options map[string]interface{}) (s
 	}
 
 	resp, err := d.call("core.add_torrent_url", []interface{}{url, options})
-	if err != nil {
-		// Try re-auth once.
+	if err != nil || resp.Error.isAuthError() {
+		// Transport/parse failure or expired session: re-auth once and retry.
 		if loginErr := d.login(); loginErr != nil {
 			return "", fmt.Errorf("deluge re-auth: %w", loginErr)
 		}

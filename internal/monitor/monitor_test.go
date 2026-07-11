@@ -1,9 +1,16 @@
 package monitor
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"gamarr/internal/config"
@@ -396,5 +403,94 @@ func TestMonitorAction_JSON(t *testing.T) {
 
 	if m["action"] != "retry_job" {
 		t.Errorf("action=%v", m["action"])
+	}
+}
+
+// fakeDockerSocket starts a minimal one-shot HTTP server on a unix socket
+// that records the request line of the first request and replies 204.
+// It returns the socket path and a func that yields the captured request line.
+func fakeDockerSocket(t *testing.T) (string, func() string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "gamarr-dock")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	sock := filepath.Join(dir, "docker.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen unix %s: %v", sock, err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	var mu sync.Mutex
+	var reqLine string
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		rd := bufio.NewReader(conn)
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		reqLine = strings.TrimRight(line, "\r\n")
+		mu.Unlock()
+		conn.Write([]byte("HTTP/1.0 204 No Content\r\n\r\n"))
+	}()
+
+	return sock, func() string {
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		return reqLine
+	}
+}
+
+func TestActRestartQBittorrent_ContainerName(t *testing.T) {
+	tests := []struct {
+		name          string
+		containerName string
+		wantContainer string
+	}{
+		{"default when unset", "", "qbittorrent"},
+		{"custom name", "qbit-main", "qbit-main"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sock, requestLine := fakeDockerSocket(t)
+			cfg := &config.Config{
+				DockerSocket:    sock,
+				QBContainerName: tt.containerName,
+			}
+			mon := New(cfg, Callbacks{})
+
+			result := mon.executeAction("restart_qbittorrent", nil)
+
+			wantMsg := fmt.Sprintf("Container %q restart requested", tt.wantContainer)
+			if result != wantMsg {
+				t.Errorf("result=%q, want %q", result, wantMsg)
+			}
+			wantLine := fmt.Sprintf("POST /containers/%s/restart HTTP/1.0", tt.wantContainer)
+			if got := requestLine(); got != wantLine {
+				t.Errorf("request line=%q, want %q", got, wantLine)
+			}
+		})
+	}
+}
+
+func TestActRestartQBittorrent_NoSocket(t *testing.T) {
+	cfg := &config.Config{DockerSocket: ""}
+	mon := New(cfg, Callbacks{})
+	if got := mon.actRestartQBittorrent(); got != "Docker socket not available" {
+		t.Errorf("got %q", got)
 	}
 }

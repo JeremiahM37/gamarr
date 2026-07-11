@@ -35,6 +35,7 @@ type Scheduler struct {
 	lastResults   int
 	autoDownloads int
 	stopCh        chan struct{}
+	rateLimit     time.Duration // wait between wishlist searches
 }
 
 // New creates a new Scheduler.
@@ -46,6 +47,7 @@ func New(cfg *config.Config, jobs *db.JobStore, searchFn SearchFunc, downloadFn 
 		downloadFn: downloadFn,
 		webhookFn:  webhookFn,
 		stopCh:     make(chan struct{}),
+		rateLimit:  2 * time.Second,
 	}
 }
 
@@ -141,12 +143,24 @@ func (s *Scheduler) run() {
 		minScore = 70
 	}
 
-	for _, item := range wishlist {
-		// Check for stop signal between items
-		select {
-		case <-s.stopCh:
-			return
-		default:
+	for i, item := range wishlist {
+		// Check for stop signal between items, and rate-limit before every
+		// item after the first. Waiting at the top of the loop (rather than
+		// sleeping at the bottom) applies the rate limit on every iteration,
+		// including ones that end early via continue, and a Stop() call
+		// interrupts the wait immediately.
+		if i == 0 {
+			select {
+			case <-s.stopCh:
+				return
+			default:
+			}
+		} else {
+			select {
+			case <-s.stopCh:
+				return
+			case <-time.After(s.rateLimit):
+			}
 		}
 
 		results := s.searchFn(item.Title, item.PlatformSlug)
@@ -194,9 +208,6 @@ func (s *Scheduler) run() {
 			// Remove from wishlist after successful download
 			s.jobs.DeleteWishlistItem(item.ID)
 		}
-
-		// Rate limit between searches
-		time.Sleep(2 * time.Second)
 	}
 
 	s.mu.Lock()

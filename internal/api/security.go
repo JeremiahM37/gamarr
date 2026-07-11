@@ -27,12 +27,22 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// maxBodySize caps non-multipart request bodies at 1MB.
+const maxBodySize = 1 << 20 // 1MB
+
 // requestSizeLimitMiddleware caps non-multipart request bodies at 1MB.
+// Requests whose declared Content-Length already exceeds the cap are
+// rejected up front with 413; bodies without a declared length are wrapped
+// in http.MaxBytesReader so oversized reads fail mid-decode (surfaced as
+// 413 by decodeJSONBody).
 func requestSizeLimitMiddleware(next http.Handler) http.Handler {
-	const maxBodySize = 1 << 20 // 1MB
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get("Content-Type")
 		if r.Body != nil && !strings.HasPrefix(contentType, "multipart/") {
+			if r.ContentLength > maxBodySize {
+				writeError(w, http.StatusRequestEntityTooLarge, "Request body too large")
+				return
+			}
 			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		}
 		next.ServeHTTP(w, r)

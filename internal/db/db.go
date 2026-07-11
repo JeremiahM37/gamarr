@@ -88,20 +88,36 @@ func (s *JobStore) loadAll() {
 	}
 }
 
-// Set stores or updates a job.
-func (s *JobStore) Set(jobID string, data map[string]interface{}) {
-	s.mu.Lock()
-	s.cache[jobID] = data
-	s.mu.Unlock()
-	s.persist(jobID, data)
+// copyJob returns a copy of a job map. Job values are scalars (strings,
+// bools, numbers, nil), so a per-map shallow copy fully detaches the result.
+func copyJob(data map[string]interface{}) map[string]interface{} {
+	cp := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		cp[k] = v
+	}
+	return cp
 }
 
-// Get returns a job by ID.
+// Set stores or updates a job. The input map is copied, so later caller
+// mutations do not affect the store.
+func (s *JobStore) Set(jobID string, data map[string]interface{}) {
+	s.mu.Lock()
+	s.cache[jobID] = copyJob(data)
+	snap := copyJob(data)
+	s.mu.Unlock()
+	s.persist(jobID, snap)
+}
+
+// Get returns a copy of a job by ID. Callers may read or mutate the result
+// without racing writers that update the cached map under the store lock.
 func (s *JobStore) Get(jobID string) (map[string]interface{}, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	d, ok := s.cache[jobID]
-	return d, ok
+	if !ok {
+		return nil, false
+	}
+	return copyJob(d), true
 }
 
 // Update updates a single field on a job.
@@ -113,8 +129,9 @@ func (s *JobStore) Update(jobID, key string, value interface{}) {
 		return
 	}
 	job[key] = value
+	snap := copyJob(job)
 	s.mu.Unlock()
-	s.persist(jobID, job)
+	s.persist(jobID, snap)
 }
 
 // UpdateMulti updates multiple fields on a job.
@@ -128,8 +145,9 @@ func (s *JobStore) UpdateMulti(jobID string, fields map[string]interface{}) {
 	for k, v := range fields {
 		job[k] = v
 	}
+	snap := copyJob(job)
 	s.mu.Unlock()
-	s.persist(jobID, job)
+	s.persist(jobID, snap)
 }
 
 // Delete removes a job.
@@ -148,7 +166,8 @@ func (s *JobStore) Contains(jobID string) bool {
 	return ok
 }
 
-// Items returns all jobs as (id, data) pairs.
+// Items returns all jobs as (id, data) pairs. Data maps are copies, safe to
+// read or mutate without racing writers.
 func (s *JobStore) Items() []struct {
 	ID   string
 	Data map[string]interface{}
@@ -163,18 +182,18 @@ func (s *JobStore) Items() []struct {
 		items = append(items, struct {
 			ID   string
 			Data map[string]interface{}
-		}{id, data})
+		}{id, copyJob(data)})
 	}
 	return items
 }
 
-// Values returns all job data.
+// Values returns copies of all job data.
 func (s *JobStore) Values() []map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	vals := make([]map[string]interface{}, 0, len(s.cache))
 	for _, data := range s.cache {
-		vals = append(vals, data)
+		vals = append(vals, copyJob(data))
 	}
 	return vals
 }

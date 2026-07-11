@@ -46,8 +46,21 @@ func (p *Pipeline) organizePC(sourcePath string) (string, error) {
 		return sourcePath, err
 	}
 
+	fi, err := os.Stat(sourcePath)
+	if err != nil {
+		return sourcePath, err
+	}
+
 	baseName := filepath.Base(sourcePath)
-	cleanName := CleanFilename(baseName)
+	var cleanName string
+	if fi.IsDir() {
+		// Directory names have no file extension: "Game.v1.0-FITGIRL" must
+		// not be parsed as name "Game.v1" + extension ".0-FITGIRL", which
+		// would leave the scene suffix uncleaned.
+		cleanName = cleanBaseName(baseName)
+	} else {
+		cleanName = CleanFilename(baseName)
+	}
 	dest := filepath.Join(destDir, cleanName)
 
 	// Check duplicate.
@@ -164,7 +177,12 @@ func CleanFilename(name string) string {
 	// Preserve extension.
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
+	return cleanBaseName(base) + ext
+}
 
+// cleanBaseName cleans an extensionless name — a directory name, or a file
+// name with its extension already split off.
+func cleanBaseName(base string) string {
 	// Replace dots with spaces (scene naming: Game.Name.v1.2-GROUP).
 	if strings.Count(base, ".") > 2 {
 		base = strings.ReplaceAll(base, ".", " ")
@@ -187,7 +205,7 @@ func CleanFilename(name string) string {
 		base = "Unknown"
 	}
 
-	return base + ext
+	return base
 }
 
 // ExtractArchives extracts .zip, .7z, and .rar files in a directory.

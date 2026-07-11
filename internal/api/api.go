@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -289,6 +291,24 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]interface{}{"success": false, "error": msg})
+}
+
+// decodeJSONBody decodes a JSON request body into v. An empty body is
+// accepted and leaves v unchanged (handlers apply their own defaults);
+// a body that exceeded the requestSizeLimitMiddleware cap writes 413;
+// any other malformed JSON writes a 400 error response and returns false.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
+	err := json.NewDecoder(r.Body).Decode(v)
+	if err == nil || errors.Is(err, io.EOF) {
+		return true
+	}
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		writeError(w, http.StatusRequestEntityTooLarge, "Request body too large")
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "Invalid JSON body: "+err.Error())
+	return false
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -763,7 +783,9 @@ func (s *Server) handleOrganizeTorrent(w http.ResponseWriter, r *http.Request) {
 		IsPC         bool   `json:"is_pc"`
 		Platform     string `json:"platform"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
 
 	jobID, err := s.mgr.OrganizeTorrent(hash, req.Platform, req.PlatformSlug, req.IsPC)
 	if err != nil {
@@ -790,7 +812,9 @@ func (s *Server) handleAddDDLSource(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		URL  string `json:"url"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
 	if req.Name == "" || req.URL == "" {
 		writeError(w, 400, "Name and URL required")
 		return
@@ -820,7 +844,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req map[string]interface{}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
 	settings := s.mgr.LoadSettings()
 	if v, ok := req["extract_archives"].(bool); ok {
 		settings.ExtractArchives = v

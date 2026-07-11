@@ -298,6 +298,92 @@ func TestMultiUserSessionFlow(t *testing.T) {
 	})
 }
 
+// TestAdminRegisterOnExemptPath locks in the fix for the unreachable
+// admin-registers-a-user branch: /api/register is auth-exempt, but the
+// middleware must still resolve credentials best-effort so handleRegister
+// can see an admin caller's role. Resolution failure must NEVER reject an
+// exempt request.
+func TestAdminRegisterOnExemptPath(t *testing.T) {
+	t.Run("admin session can register a user without invite", func(t *testing.T) {
+		env := newTestEnv(t, nil)
+
+		// First user → admin with auto-login token.
+		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+		wantStatus(t, rr, 201)
+		adminTok, _ := decodeMap(t, rr)["token"].(string)
+		if adminTok == "" {
+			t.Fatal("first-user registration did not return a session token")
+		}
+
+		// Admin registers bob directly — no invite code needed.
+		rr = env.do("POST", "/api/register", `{"username":"bob","password":"secret456"}`, withSession(adminTok))
+		wantStatus(t, rr, 201)
+		if m := decodeMap(t, rr); m["role"] != "user" {
+			t.Errorf("bob role = %v, want user", m["role"])
+		}
+
+		// Bob's account really works.
+		rr = env.do("POST", "/api/login", `{"username":"bob","password":"secret456"}`)
+		wantStatus(t, rr, 200)
+	})
+
+	t.Run("admin API key can register a user without invite", func(t *testing.T) {
+		env := newTestEnv(t, func(c *config.Config) { c.APIKey = "agent-key" })
+
+		// Anonymous first-user registration still works with an API key
+		// configured and zero users in the DB.
+		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+		wantStatus(t, rr, 201)
+		if m := decodeMap(t, rr); m["role"] != "admin" {
+			t.Errorf("first user role = %v, want admin", m["role"])
+		}
+
+		// API key (admin role) registers carol via header.
+		rr = env.do("POST", "/api/register", `{"username":"carol","password":"secret789"}`,
+			withHeader("X-Api-Key", "agent-key"))
+		wantStatus(t, rr, 201)
+
+		// And via query param.
+		rr = env.do("POST", "/api/register?apikey=agent-key", `{"username":"dave","password":"secret000"}`)
+		wantStatus(t, rr, 201)
+
+		// Wrong API key does not grant the admin branch — but must not be
+		// rejected by the middleware either: the handler's own 403 fires.
+		rr = env.do("POST", "/api/register", `{"username":"eve","password":"secret123"}`,
+			withHeader("X-Api-Key", "wrong-key"))
+		wantStatus(t, rr, 403)
+	})
+
+	t.Run("anonymous without invite still forbidden once users exist", func(t *testing.T) {
+		env := newTestEnv(t, nil)
+		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+		wantStatus(t, rr, 201)
+
+		rr = env.do("POST", "/api/register", `{"username":"eve","password":"secret123"}`)
+		wantStatus(t, rr, 403)
+
+		// A bogus session cookie must not reject the exempt request outright;
+		// it simply proceeds unauthenticated and hits the handler's 403.
+		rr = env.do("POST", "/api/register", `{"username":"eve","password":"secret123"}`,
+			withSession("not-a-real-token"))
+		wantStatus(t, rr, 403)
+	})
+
+	t.Run("anonymous first-user registration works on empty DB", func(t *testing.T) {
+		env := newTestEnv(t, func(c *config.Config) {
+			// Legacy auth configured → no unconditional admin pass-through,
+			// so this exercises the exempt path with zero users.
+			c.AuthUsername = "legacy"
+			c.AuthPassword = "legacy-pass"
+		})
+		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+		wantStatus(t, rr, 201)
+		if m := decodeMap(t, rr); m["role"] != "admin" {
+			t.Errorf("first user role = %v, want admin", m["role"])
+		}
+	})
+}
+
 func TestAPIKeyStillWorksInMultiUserMode(t *testing.T) {
 	env := newTestEnv(t, func(c *config.Config) { c.APIKey = "agent-key" })
 

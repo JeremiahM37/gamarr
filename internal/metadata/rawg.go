@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // GameMetadata holds enriched game information from RAWG.
@@ -307,11 +309,17 @@ func rawgDetailToMetadata(g *rawgGameDetail) *GameMetadata {
 	return meta
 }
 
+// truncate caps s at roughly maxLen bytes, backing up to the nearest rune
+// boundary so a multi-byte UTF-8 sequence is never split.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // ── Platform slug mapping ────────────────────────────────────────────────────
@@ -346,7 +354,7 @@ func mapPlatformSlugToRAWG(slug string) string {
 		"genesis":  "167",
 		"dc":       "106",
 		"saturn":   "107",
-		"sms":      "26",
+		"sms":      "74",
 		"gamegear": "77",
 	}
 	if id, ok := m[slug]; ok {
@@ -354,6 +362,61 @@ func mapPlatformSlugToRAWG(slug string) string {
 	}
 	return ""
 }
+
+// rawgPlatformNameToSlug maps lowercase RAWG platform-name substrings to
+// Gamarr platform slugs.
+var rawgPlatformNameToSlug = map[string]string{
+	"pc":                 "pc",
+	"playstation 2":      "ps2",
+	"playstation 3":      "ps3",
+	"playstation 4":      "ps4",
+	"playstation 5":      "ps5",
+	"psp":                "psp",
+	"playstation":        "psx",
+	"ps vita":            "vita",
+	"xbox":               "xbox",
+	"xbox 360":           "xbox360",
+	"xbox one":           "xboxone",
+	"xbox series s/x":    "xboxone",
+	"nintendo switch":    "switch",
+	"wii":                "wii",
+	"wii u":              "wiiu",
+	"nintendo 64":        "n64",
+	"gamecube":           "ngc",
+	"nes":                "nes",
+	"snes":               "snes",
+	"super nintendo":     "snes",
+	"game boy advance":   "gba",
+	"game boy":           "gb",
+	"game boy color":     "gbc",
+	"nintendo ds":        "nds",
+	"nintendo 3ds":       "3ds",
+	"sega genesis":       "genesis",
+	"sega mega drive":    "genesis",
+	"dreamcast":          "dc",
+	"sega saturn":        "saturn",
+	"sega master system": "sms",
+	"game gear":          "gamegear",
+}
+
+// rawgPlatformNamesOrdered holds the keys of rawgPlatformNameToSlug sorted
+// longest-first (ties broken lexicographically) so substring matching is
+// deterministic and the most specific name wins: "xbox 360" before "xbox",
+// "snes" before "nes", "sega genesis" before "nes", "wii u" before "wii",
+// "playstation 2" before "playstation", "game boy advance" before "game boy".
+var rawgPlatformNamesOrdered = func() []string {
+	keys := make([]string, 0, len(rawgPlatformNameToSlug))
+	for k := range rawgPlatformNameToSlug {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) > len(keys[j])
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}()
 
 // MapRAWGPlatformToSlug maps a RAWG platform name to a Gamarr platform slug.
 func MapRAWGPlatformToSlug(name string) string {
@@ -365,43 +428,9 @@ func MapRAWGPlatformToSlug(name string) string {
 		lower = decoded
 	}
 
-	m := map[string]string{
-		"pc":                 "pc",
-		"playstation 2":      "ps2",
-		"playstation 3":      "ps3",
-		"playstation 4":      "ps4",
-		"playstation 5":      "ps5",
-		"psp":                "psp",
-		"playstation":        "psx",
-		"ps vita":            "vita",
-		"xbox":               "xbox",
-		"xbox 360":           "xbox360",
-		"xbox one":           "xboxone",
-		"xbox series s/x":    "xboxone",
-		"nintendo switch":    "switch",
-		"wii":                "wii",
-		"wii u":              "wiiu",
-		"nintendo 64":        "n64",
-		"gamecube":           "ngc",
-		"nes":                "nes",
-		"snes":               "snes",
-		"super nintendo":     "snes",
-		"game boy advance":   "gba",
-		"game boy":           "gb",
-		"game boy color":     "gbc",
-		"nintendo ds":        "nds",
-		"nintendo 3ds":       "3ds",
-		"sega genesis":       "genesis",
-		"sega mega drive":    "genesis",
-		"dreamcast":          "dc",
-		"sega saturn":        "saturn",
-		"sega master system": "sms",
-		"game gear":          "gamegear",
-	}
-
-	for key, slug := range m {
+	for _, key := range rawgPlatformNamesOrdered {
 		if strings.Contains(lower, key) {
-			return slug
+			return rawgPlatformNameToSlug[key]
 		}
 	}
 

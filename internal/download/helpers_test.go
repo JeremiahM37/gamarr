@@ -142,8 +142,9 @@ func (q *qbitMock) deletedHashes() []string {
 	return out
 }
 
-// jobFromDB reads a job's persisted state directly from SQLite. This avoids
-// data races with worker goroutines that mutate the in-memory job map.
+// jobFromDB reads a job's persisted state directly from SQLite, verifying the
+// write-through path. (JobStore.Get now returns a copy, so reading the map
+// directly is also race-safe; this helper additionally checks persistence.)
 func jobFromDB(t *testing.T, jobs *db.JobStore, jobID string) (map[string]interface{}, bool) {
 	t.Helper()
 	var data string

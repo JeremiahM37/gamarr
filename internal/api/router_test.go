@@ -1,7 +1,9 @@
 package api
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -240,18 +242,45 @@ func TestCORSMiddleware(t *testing.T) {
 
 func TestRequestSizeLimit(t *testing.T) {
 	env := newTestEnv(t, nil)
-
-	// >1MB JSON body must be rejected by the MaxBytesReader cap. The handler
-	// surfaces it as a decode failure (400); a raw http.Server would emit 413.
 	huge := `{"title":"` + strings.Repeat("A", (1<<20)+1024) + `"}`
-	rr := env.do("POST", "/api/wishlist", huge)
-	if rr.Code != http.StatusBadRequest && rr.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized body: status = %d, want 400 or 413 (body: %s)", rr.Code, rr.Body.String())
-	}
 
-	// A body just under the limit still parses fine (fails only validation,
-	// proving the limiter did not truncate it).
-	okBody := `{"title":"` + strings.Repeat("B", 400) + `","platform":"NES","platform_slug":"nes"}`
-	rr = env.do("POST", "/api/wishlist", okBody)
-	wantStatus(t, rr, 200)
+	t.Run("oversized Content-Length is 413 from middleware", func(t *testing.T) {
+		// >1MB declared body must be rejected up front by
+		// requestSizeLimitMiddleware with 413, not surfaced as a 400
+		// decode failure.
+		rr := env.do("POST", "/api/wishlist", huge)
+		wantStatus(t, rr, http.StatusRequestEntityTooLarge)
+		if m := decodeMap(t, rr); m["success"] != false {
+			t.Errorf("413 body should be a JSON error envelope, got: %v", m)
+		}
+	})
+
+	t.Run("oversized body without declared length is 413 via decode", func(t *testing.T) {
+		// Wrap the reader so httptest.NewRequest cannot infer ContentLength
+		// (-1 / chunked): the middleware cannot pre-reject, so the
+		// MaxBytesReader trips mid-decode and decodeJSONBody must map
+		// *http.MaxBytesError to 413.
+		body := struct{ io.Reader }{strings.NewReader(huge)}
+		req := httptest.NewRequest("POST", "/api/wishlist", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		env.router.ServeHTTP(rr, req)
+		wantStatus(t, rr, http.StatusRequestEntityTooLarge)
+	})
+
+	t.Run("multipart bodies bypass the size cap", func(t *testing.T) {
+		// The multipart exemption must survive: a huge multipart upload is
+		// not 413'd by the middleware (it reaches the handler, which rejects
+		// the content type itself).
+		rr := env.do("POST", "/api/wishlist", huge,
+			withHeader("Content-Type", "multipart/form-data; boundary=x"))
+		wantStatus(t, rr, http.StatusUnsupportedMediaType)
+	})
+
+	t.Run("body under the limit parses fine", func(t *testing.T) {
+		// Proves the limiter did not truncate a legitimate body.
+		okBody := `{"title":"` + strings.Repeat("B", 400) + `","platform":"NES","platform_slug":"nes"}`
+		rr := env.do("POST", "/api/wishlist", okBody)
+		wantStatus(t, rr, 200)
+	})
 }

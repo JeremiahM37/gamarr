@@ -19,11 +19,12 @@ type Config struct {
 	ProwlarrAPIKey string
 
 	// qBittorrent
-	QBURL      string
-	QBUser     string
-	QBPass     string
-	QBSavePath string
-	QBCategory string
+	QBURL           string
+	QBUser          string
+	QBPass          string
+	QBSavePath      string
+	QBCategory      string
+	QBContainerName string
 
 	// Library destination paths
 	GamesVaultPath string
@@ -140,11 +141,12 @@ func Load() *Config {
 		ProwlarrURL:    envStr("PROWLARR_URL", "http://prowlarr:9696"),
 		ProwlarrAPIKey: envStr("PROWLARR_API_KEY", ""),
 
-		QBURL:      envStr("QB_URL", "http://qbittorrent:8080"),
-		QBUser:     envStr("QB_USER", "admin"),
-		QBPass:     envStr("QB_PASS", ""),
-		QBSavePath: envStr("QB_SAVE_PATH", "/data/incoming/"),
-		QBCategory: envStr("QB_CATEGORY", "games"),
+		QBURL:           envStr("QB_URL", "http://qbittorrent:8080"),
+		QBUser:          envStr("QB_USER", "admin"),
+		QBPass:          envStr("QB_PASS", ""),
+		QBSavePath:      envStr("QB_SAVE_PATH", "/data/incoming/"),
+		QBCategory:      envStr("QB_CATEGORY", "games"),
+		QBContainerName: envStr("QB_CONTAINER_NAME", "qbittorrent"),
 
 		GamesVaultPath: envStr("GAMES_VAULT_PATH", "/data/vault"),
 		GamesRomsPath:  envStr("GAMES_ROMS_PATH", "/data/roms"),

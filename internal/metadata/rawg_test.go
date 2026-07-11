@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 // rewriteTransport redirects every request to the given test server host,
@@ -400,6 +401,8 @@ func TestTruncate(t *testing.T) {
 		{"exactly max", "hello", 5, "hello"},
 		{"longer than max", "hello world", 5, "hello..."},
 		{"empty", "", 5, ""},
+		// "€" is 3 bytes (0xE2 0x82 0xAC); a byte-wise cut at 3 would split it.
+		{"multi-byte rune straddling limit", "aa€zz", 3, "aa..."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -407,6 +410,22 @@ func TestTruncate(t *testing.T) {
 				t.Errorf("truncate(%q, %d) = %q, want %q", tt.in, tt.maxLen, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTruncateDoesNotSplitRunes(t *testing.T) {
+	// 400 x 3-byte "€" = 1200 bytes; byte 1000 falls mid-rune, so a byte-wise
+	// slice at the 1000-byte cap produces invalid UTF-8.
+	s := strings.Repeat("€", 400)
+	got := truncate(s, 1000)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncate produced invalid UTF-8: %q...", got[:12])
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("truncated string missing ellipsis suffix")
+	}
+	if len(got) > 1003 {
+		t.Errorf("len = %d, want <= 1003", len(got))
 	}
 }
 
@@ -421,6 +440,8 @@ func TestMapPlatformSlugToRAWG(t *testing.T) {
 		{"ps5", "187"},
 		{"n64", "83"},
 		{"gamegear", "77"},
+		{"sms", "74"}, // Sega Master System — 26 is Game Boy's ID
+		{"gb", "26"},
 		{"amiga", ""},
 		{"", ""},
 	}
@@ -434,10 +455,6 @@ func TestMapPlatformSlugToRAWG(t *testing.T) {
 }
 
 func TestMapRAWGPlatformToSlug(t *testing.T) {
-	// NOTE: only unambiguous names are tested here. Names where one map key is
-	// a substring of another matching name (e.g. "Xbox 360" contains "xbox",
-	// "SNES" contains "nes") resolve nondeterministically because the function
-	// iterates a map — see bug report.
 	tests := []struct {
 		name string
 		want string
@@ -452,6 +469,22 @@ func TestMapRAWGPlatformToSlug(t *testing.T) {
 		{"Nintendo%2064", "n64"}, // URL-encoded input is decoded
 		{"Atari 2600", ""},       // unmapped
 		{"", ""},
+		// Ambiguous names: one map key is a substring of another matching
+		// name. Longest-match-first ordering must resolve these
+		// deterministically to the most specific slug.
+		{"Xbox 360", "xbox360"},
+		{"Xbox One", "xboxone"},
+		{"Xbox", "xbox"},
+		{"Wii U", "wiiu"},
+		{"Wii", "wii"},
+		{"SNES", "snes"},
+		{"NES", "nes"},
+		{"Sega Genesis", "genesis"}, // "genesis" contains "nes"
+		{"PlayStation 2", "ps2"},
+		{"PlayStation", "psx"},
+		{"Game Boy Advance", "gba"},
+		{"Game Boy Color", "gbc"},
+		{"Game Boy", "gb"},
 	}
 	for _, tt := range tests {
 		t.Run("name_"+tt.name, func(t *testing.T) {

@@ -1,8 +1,10 @@
 package db
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -132,6 +134,113 @@ func TestJobStore_Values(t *testing.T) {
 	vals := store.Values()
 	if len(vals) != 2 {
 		t.Fatalf("expected 2 values, got %d", len(vals))
+	}
+}
+
+func TestJobStore_GetAndItemsReturnCopies(t *testing.T) {
+	store := newTestStore(t)
+	store.Set("job1", map[string]interface{}{"status": "downloading", "title": "Copy Game"})
+
+	t.Run("Get returns a copy", func(t *testing.T) {
+		got, ok := store.Get("job1")
+		if !ok {
+			t.Fatal("expected job to exist")
+		}
+		got["status"] = "hacked"
+		again, _ := store.Get("job1")
+		if again["status"] != "downloading" {
+			t.Errorf("mutating Get result leaked into store: status=%v", again["status"])
+		}
+	})
+
+	t.Run("Items returns copies", func(t *testing.T) {
+		items := store.Items()
+		if len(items) != 1 {
+			t.Fatalf("expected 1 item, got %d", len(items))
+		}
+		items[0].Data["title"] = "hacked"
+		again, _ := store.Get("job1")
+		if again["title"] != "Copy Game" {
+			t.Errorf("mutating Items result leaked into store: title=%v", again["title"])
+		}
+	})
+
+	t.Run("Values returns copies", func(t *testing.T) {
+		vals := store.Values()
+		if len(vals) != 1 {
+			t.Fatalf("expected 1 value, got %d", len(vals))
+		}
+		vals[0]["detail"] = "hacked"
+		again, _ := store.Get("job1")
+		if again["detail"] != nil {
+			t.Errorf("mutating Values result leaked into store: detail=%v", again["detail"])
+		}
+	})
+
+	t.Run("Set detaches from caller map", func(t *testing.T) {
+		data := map[string]interface{}{"status": "queued"}
+		store.Set("job2", data)
+		data["status"] = "hacked"
+		got, _ := store.Get("job2")
+		if got["status"] != "queued" {
+			t.Errorf("mutating Set input leaked into store: status=%v", got["status"])
+		}
+	})
+}
+
+// TestJobStore_ConcurrentReadersAndWriters exercises Get/Items readers racing
+// Update/UpdateMulti writers on the same job. Run under -race: the old
+// implementation handed out live references to the cached maps, so readers
+// outside the store lock raced writer mutations.
+func TestJobStore_ConcurrentReadersAndWriters(t *testing.T) {
+	store := newTestStore(t)
+	store.Set("job1", map[string]interface{}{
+		"status": "downloading", "title": "Race Game", "error": nil,
+	})
+
+	const iters = 100
+	var wg sync.WaitGroup
+
+	for w := 0; w < 3; w++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				store.Update("job1", "detail", fmt.Sprintf("progress %d/%d", n, i))
+				store.UpdateMulti("job1", map[string]interface{}{
+					"status": "downloading", "progress": i,
+				})
+			}
+		}(w)
+	}
+
+	for r := 0; r < 3; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				if job, ok := store.Get("job1"); ok {
+					_, _ = job["detail"].(string)
+					job["reader_scratch"] = i // returned copy must be safe to mutate
+				}
+				for _, item := range store.Items() {
+					_, _ = item.Data["status"].(string)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	got, ok := store.Get("job1")
+	if !ok {
+		t.Fatal("job disappeared during concurrent access")
+	}
+	if got["title"] != "Race Game" {
+		t.Errorf("title=%v, want 'Race Game'", got["title"])
+	}
+	if _, leaked := got["reader_scratch"]; leaked {
+		t.Error("reader mutation of a returned map leaked into the store")
 	}
 }
 

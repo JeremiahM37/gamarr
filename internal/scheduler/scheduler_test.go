@@ -314,6 +314,81 @@ func TestRunAbortsAfterStop(t *testing.T) {
 	}
 }
 
+func TestStopInterruptsRateLimitSleep(t *testing.T) {
+	store := newTestStore(t)
+	for _, title := range []string{"Game One", "Game Two", "Game Three"} {
+		if _, err := store.AddWishlistItem(title, "NES", "nes"); err != nil {
+			t.Fatalf("AddWishlistItem: %v", err)
+		}
+	}
+
+	firstSearch := make(chan struct{})
+	var searches int64
+	searchFn := func(q, p string) []*models.SearchResult {
+		if atomic.AddInt64(&searches, 1) == 1 {
+			close(firstSearch)
+		}
+		// Non-empty results (below any threshold) so the iteration reaches
+		// the inter-item rate limit rather than an early continue.
+		return []*models.SearchResult{{Title: q, Platform: "NES", Score: 10}}
+	}
+
+	cfg := &config.Config{SchedulerAutoDownload: true, SchedulerMinScore: 95}
+	s := New(cfg, store, searchFn, noopDownload, nil)
+
+	go func() {
+		<-firstSearch
+		s.Stop()
+	}()
+
+	start := time.Now()
+	s.run()
+	elapsed := time.Since(start)
+
+	// The full rate-limit budget for 3 items is 2 sleeps x 2s = 4s. A stop
+	// after the first item must interrupt the pending sleep, returning well
+	// under a single 2s sleep.
+	if elapsed >= 1500*time.Millisecond {
+		t.Errorf("run took %v after Stop, want well under the 2s rate-limit sleep", elapsed)
+	}
+	if got := atomic.LoadInt64(&searches); got != 1 {
+		t.Errorf("searchFn called %d times, want 1 (stopped after first item)", got)
+	}
+}
+
+func TestRateLimitAppliedOnContinuePaths(t *testing.T) {
+	store := newTestStore(t)
+	for _, title := range []string{"No Results One", "No Results Two", "No Results Three"} {
+		if _, err := store.AddWishlistItem(title, "NES", "nes"); err != nil {
+			t.Fatalf("AddWishlistItem: %v", err)
+		}
+	}
+
+	var searches int64
+	// Zero results exercises the continue branch, which previously skipped
+	// the inter-item rate limit entirely.
+	searchFn := func(q, p string) []*models.SearchResult {
+		atomic.AddInt64(&searches, 1)
+		return nil
+	}
+
+	cfg := &config.Config{SchedulerAutoDownload: true}
+	s := New(cfg, store, searchFn, noopDownload, nil)
+	s.rateLimit = 80 * time.Millisecond
+
+	start := time.Now()
+	s.run()
+	elapsed := time.Since(start)
+
+	if got := atomic.LoadInt64(&searches); got != 3 {
+		t.Errorf("searchFn called %d times, want 3", got)
+	}
+	// Two inter-item waits must elapse even though every iteration continues.
+	if want := 160 * time.Millisecond; elapsed < want {
+		t.Errorf("run took %v, want >= %v (rate limit skipped on continue)", elapsed, want)
+	}
+}
+
 func TestRunGuardPreventsConcurrentRuns(t *testing.T) {
 	store := newTestStore(t)
 	if _, err := store.AddWishlistItem("Guarded Game", "GBA", "gba"); err != nil {
