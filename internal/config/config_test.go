@@ -8,7 +8,7 @@ import (
 func TestLoad_Defaults(t *testing.T) {
 	// Clear relevant env vars
 	for _, k := range []string{"PROWLARR_URL", "PROWLARR_API_KEY", "QB_URL", "QB_USER", "QB_PASS",
-		"GAMARR_PORT", "MAX_RETRIES", "METRICS_ENABLED", "PROWLARR_GAME_INDEXERS",
+		"QB_CONTAINER_NAME", "GAMARR_PORT", "MAX_RETRIES", "METRICS_ENABLED", "PROWLARR_GAME_INDEXERS",
 		"AI_MONITOR_ENABLED", "EXTRACT_ARCHIVES", "SABNZBD_URL", "SABNZBD_API_KEY"} {
 		os.Unsetenv(k)
 	}
@@ -20,6 +20,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.QBUser != "admin" {
 		t.Errorf("QBUser=%q", cfg.QBUser)
+	}
+	if cfg.QBContainerName != "qbittorrent" {
+		t.Errorf("QBContainerName=%q, want %q", cfg.QBContainerName, "qbittorrent")
 	}
 	if cfg.Port != 5001 {
 		t.Errorf("Port=%d, want 5001", cfg.Port)
@@ -54,6 +57,7 @@ func TestLoad_FromEnv(t *testing.T) {
 	os.Setenv("PROWLARR_API_KEY", "testkey123")
 	os.Setenv("QB_USER", "jam")
 	os.Setenv("QB_PASS", "secret")
+	os.Setenv("QB_CONTAINER_NAME", "qbit-custom")
 	os.Setenv("PROWLARR_GAME_INDEXERS", "1,2,3")
 	os.Setenv("AI_MONITOR_ENABLED", "true")
 	os.Setenv("EXTRACT_ARCHIVES", "1")
@@ -62,6 +66,7 @@ func TestLoad_FromEnv(t *testing.T) {
 		os.Unsetenv("PROWLARR_API_KEY")
 		os.Unsetenv("QB_USER")
 		os.Unsetenv("QB_PASS")
+		os.Unsetenv("QB_CONTAINER_NAME")
 		os.Unsetenv("PROWLARR_GAME_INDEXERS")
 		os.Unsetenv("AI_MONITOR_ENABLED")
 		os.Unsetenv("EXTRACT_ARCHIVES")
@@ -80,6 +85,9 @@ func TestLoad_FromEnv(t *testing.T) {
 	}
 	if cfg.QBPass != "secret" {
 		t.Errorf("QBPass=%q", cfg.QBPass)
+	}
+	if cfg.QBContainerName != "qbit-custom" {
+		t.Errorf("QBContainerName=%q, want %q", cfg.QBContainerName, "qbit-custom")
 	}
 	if len(cfg.ProwlarrGameIndexers) != 3 || cfg.ProwlarrGameIndexers[0] != 1 {
 		t.Errorf("ProwlarrGameIndexers=%v", cfg.ProwlarrGameIndexers)

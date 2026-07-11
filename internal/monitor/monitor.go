@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -569,6 +570,15 @@ func (m *GamarrMonitor) actClearInterrupted() string {
 	return fmt.Sprintf("Cleared %d interrupted job(s)", cleared)
 }
 
+// qbContainerName returns the configured qBittorrent container name,
+// falling back to the historical default when unset.
+func (m *GamarrMonitor) qbContainerName() string {
+	if m.cfg.QBContainerName != "" {
+		return m.cfg.QBContainerName
+	}
+	return "qbittorrent"
+}
+
 func (m *GamarrMonitor) actRestartQBittorrent() string {
 	if m.cfg.DockerSocket == "" {
 		return "Docker socket not available"
@@ -583,15 +593,16 @@ func (m *GamarrMonitor) actRestartQBittorrent() string {
 	}
 	defer conn.Close()
 
+	name := m.qbContainerName()
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	req := "POST /containers/qbittorrent/restart HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+	req := fmt.Sprintf("POST /containers/%s/restart HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n", url.PathEscape(name))
 	conn.Write([]byte(req))
 	buf := make([]byte, 256)
 	n, _ := conn.Read(buf)
 	resp := string(buf[:n])
 
 	if strings.Contains(resp, "204") || strings.Contains(resp, "200") {
-		return "Container 'qbittorrent' restart requested"
+		return fmt.Sprintf("Container %q restart requested", name)
 	}
 	return fmt.Sprintf("Unexpected Docker response: %s", resp[:min(100, len(resp))])
 }

@@ -96,11 +96,13 @@ func (w *Watcher) checkCompleted() {
 	}
 }
 
-// hasMatchingJob checks if there's already a job tracking this torrent.
+// hasMatchingJob checks if there's already a job tracking this torrent. It
+// uses the same fuzzy match as Manager.watchGameTorrent so a torrent renamed
+// by the tracker (still claimed by an active job) is not double-imported.
 func (w *Watcher) hasMatchingJob(t qbit.Torrent) bool {
 	for _, item := range w.mgr.Jobs().Items() {
 		title, _ := item.Data["title"].(string)
-		if title == t.Name {
+		if titlesMatch(title, t.Name) {
 			return true
 		}
 	}

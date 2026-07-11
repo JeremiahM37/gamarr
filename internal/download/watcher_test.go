@@ -145,6 +145,10 @@ func TestWatcherHasMatchingJob(t *testing.T) {
 	}{
 		{"exact title match", qbit.Torrent{Name: "Known Game"}, true},
 		{"different title", qbit.Torrent{Name: "Other Game"}, false},
+		// Tracker-renamed torrents must match the same way watchGameTorrent
+		// matches, or the watcher double-imports a job's torrent.
+		{"tracker rename containing job title", qbit.Torrent{Name: "Known Game [FitGirl Repack] v1.02"}, true},
+		{"torrent name contained in job title", qbit.Torrent{Name: "known game"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

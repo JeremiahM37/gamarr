@@ -131,6 +131,37 @@ func TestOrganizeGameDirectorySource(t *testing.T) {
 	}
 }
 
+func TestOrganizeGameVersionedDirectorySource(t *testing.T) {
+	// Directory names have no file extension: "Some.Game.v1.0-FITGIRL" must
+	// not be parsed as name "Some.Game.v1" + extension ".0-FITGIRL", which
+	// would leave the scene suffix uncleaned.
+	p, vault, _ := newTestPipeline(t)
+	srcRoot := t.TempDir()
+	src := filepath.Join(srcRoot, "Some.Game.v1.0-FITGIRL")
+	writeFile(t, filepath.Join(src, "setup.exe"), "installer")
+
+	dest, err := p.OrganizeGame(src, "PC", "", true)
+	if err != nil {
+		t.Fatalf("OrganizeGame: %v", err)
+	}
+	if filepath.Dir(dest) != vault {
+		t.Errorf("dest dir = %q, want vault %q", filepath.Dir(dest), vault)
+	}
+	base := filepath.Base(dest)
+	if strings.Contains(strings.ToUpper(base), "FITGIRL") {
+		t.Errorf("scene group not stripped from directory name: %q", base)
+	}
+	if want := "Some Game v1 0"; base != want {
+		t.Errorf("dest base = %q, want %q", base, want)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "setup.exe")); err != nil {
+		t.Errorf("missing setup.exe in destination: %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Error("source directory was not removed")
+	}
+}
+
 func TestOrganizeGameDuplicate(t *testing.T) {
 	t.Run("ROM", func(t *testing.T) {
 		p, _, roms := newTestPipeline(t)

@@ -178,16 +178,21 @@ func TestDelugeAddTorrent(t *testing.T) {
 		}
 	})
 
-	t.Run("rpc error", func(t *testing.T) {
+	t.Run("non-auth rpc error surfaces without re-auth", func(t *testing.T) {
+		rec := &dlRecorder{}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, `{"id":1,"result":null,"error":{"message":"Not authenticated","code":1}}`)
+			rec.record(r)
+			fmt.Fprint(w, `{"id":1,"result":null,"error":{"message":"invalid torrent file","code":8}}`)
 		}))
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "secret")
 		_, err := c.AddTorrent("magnet:x", nil)
-		if err == nil || !strings.Contains(err.Error(), "Not authenticated") {
-			t.Fatalf("err = %v, want Not authenticated", err)
+		if err == nil || !strings.Contains(err.Error(), "invalid torrent file") {
+			t.Fatalf("err = %v, want invalid torrent file", err)
+		}
+		if got := rec.methods(); len(got) != 1 {
+			t.Errorf("call sequence = %v, want single add attempt", got)
 		}
 	})
 
@@ -232,6 +237,45 @@ func TestDelugeAddTorrent(t *testing.T) {
 		}
 		if id != "hash-after-reauth" {
 			t.Errorf("id = %q, want hash-after-reauth", id)
+		}
+		want := []string{"core.add_torrent_url", "auth.login", "core.add_torrent_url"}
+		got := rec.methods()
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("call sequence = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("re-auth after rpc Not authenticated error then success", func(t *testing.T) {
+		// An expired session is reported as a JSON-RPC error response, not a
+		// transport failure. The client must re-login and retry once.
+		rec := &dlRecorder{}
+		var calls int
+		var mu sync.Mutex
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body := rec.record(r)
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			switch {
+			case n == 1: // First add attempt: session expired.
+				fmt.Fprint(w, `{"id":1,"result":null,"error":{"message":"Not authenticated","code":1}}`)
+			case body.Method == "auth.login":
+				http.SetCookie(w, &http.Cookie{Name: "_session_id", Value: "fresh"})
+				fmt.Fprint(w, `{"id":2,"result":true,"error":null}`)
+			default: // Retried add.
+				fmt.Fprint(w, `{"id":3,"result":"hash-after-session-expiry","error":null}`)
+			}
+		}))
+		defer srv.Close()
+
+		c := newDeluge(srv.URL, "secret")
+		id, err := c.AddTorrent("magnet:x", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if id != "hash-after-session-expiry" {
+			t.Errorf("id = %q, want hash-after-session-expiry", id)
 		}
 		want := []string{"core.add_torrent_url", "auth.login", "core.add_torrent_url"}
 		got := rec.methods()

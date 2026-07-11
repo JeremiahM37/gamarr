@@ -33,6 +33,31 @@ func TestCleanTitle(t *testing.T) {
 	}
 }
 
+func TestTitlesMatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		title       string
+		torrentName string
+		want        bool
+	}{
+		{"exact", "Super Game", "Super Game", true},
+		{"case insensitive", "Super Game", "SUPER game", true},
+		{"torrent renamed with suffix", "Super Game", "Super Game (USA) [Repack]", true},
+		{"title contains torrent name", "Super Game Deluxe Edition", "super game deluxe", true},
+		{"unrelated", "Super Game", "Other Thing", false},
+		{"empty title never matches", "", "Anything", false},
+		{"empty torrent name never matches", "Super Game", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := titlesMatch(tt.title, tt.torrentName); got != tt.want {
+				t.Errorf("titlesMatch(%q, %q) = %v, want %v", tt.title, tt.torrentName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPlatformNameFromSlug(t *testing.T) {
 	tests := []struct {
 		slug string

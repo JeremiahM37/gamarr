@@ -189,13 +189,11 @@ func (m *Manager) AutoRetryFailed() {
 			retryCount = int(rc)
 		}
 		if retryCount >= m.cfg.MaxRetries {
-			// Move to dead letter
-			if status != "dead_letter" {
-				m.jobs.UpdateMulti(item.ID, map[string]interface{}{
-					"status": "dead_letter",
-					"detail": fmt.Sprintf("Max retries (%d) exceeded", m.cfg.MaxRetries),
-				})
-			}
+			// Move to dead letter (status is always "error" here).
+			m.jobs.UpdateMulti(item.ID, map[string]interface{}{
+				"status": "dead_letter",
+				"detail": fmt.Sprintf("Max retries (%d) exceeded", m.cfg.MaxRetries),
+			})
 			continue
 		}
 		// Check if enough time has passed for backoff

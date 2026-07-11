@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -93,8 +92,7 @@ func (s *Server) handleAddWishlist(w http.ResponseWriter, r *http.Request) {
 		Platform     string `json:"platform"`
 		PlatformSlug string `json:"platform_slug"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Title == "" {

@@ -462,7 +462,7 @@ func TestDownloadDDL(t *testing.T) {
 		}
 	})
 
-	t.Run("http error fails the job", func(t *testing.T) {
+	t.Run("http error fails the job with cause", func(t *testing.T) {
 		cfg := newTestConfig(t)
 		jobs := newTestJobs(t)
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -473,8 +473,38 @@ func TestDownloadDDL(t *testing.T) {
 		m := New(cfg, jobs, nil)
 		jobID := m.DownloadDDL(srv.URL+"/gone", "", "Missing Game", "PC", "", true)
 		job := waitJobStatus(t, jobs, jobID, "error", 5*time.Second)
-		if errMsg, _ := job["error"].(string); errMsg != "Download failed" {
+		errMsg, _ := job["error"].(string)
+		if !strings.Contains(errMsg, "Download failed") {
 			t.Errorf("error = %q, want Download failed", errMsg)
+		}
+		if !strings.Contains(errMsg, "404") {
+			t.Errorf("error = %q, want HTTP 404 cause included", errMsg)
+		}
+	})
+
+	t.Run("uncreatable staging dir fails the job with cause", func(t *testing.T) {
+		cfg := newTestConfig(t)
+		jobs := newTestJobs(t)
+		// A regular file where the staging dir's parent should be makes
+		// os.MkdirAll fail with ENOTDIR.
+		blocker := filepath.Join(t.TempDir(), "blocker")
+		writeFileT(t, blocker, []byte("not a dir"))
+		cfg.QBSavePath = filepath.Join(blocker, "staging")
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("rom-bytes"))
+		}))
+		defer srv.Close()
+
+		m := New(cfg, jobs, nil)
+		jobID := m.DownloadDDL(srv.URL+"/dl", "", "Blocked Game", "PC", "", true)
+		job := waitJobStatus(t, jobs, jobID, "error", 5*time.Second)
+		errMsg, _ := job["error"].(string)
+		if !strings.Contains(errMsg, "cannot create staging dir") {
+			t.Errorf("error = %q, want 'cannot create staging dir' cause", errMsg)
+		}
+		if !strings.Contains(errMsg, cfg.QBSavePath) {
+			t.Errorf("error = %q, want staging path %q included", errMsg, cfg.QBSavePath)
 		}
 	})
 
@@ -499,12 +529,38 @@ func TestDownloadDDLFilenameFromURL(t *testing.T) {
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
 
-	got := m.downloadDDL(srv.URL+"/files/zelda.gba?token=1", cfg.QBSavePath, jobID)
+	got, err := m.downloadDDL(srv.URL+"/files/zelda.gba?token=1", cfg.QBSavePath, jobID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if filepath.Base(got) != "zelda.gba" {
 		t.Errorf("filename = %q, want zelda.gba", filepath.Base(got))
 	}
 	if !pathExists(got) {
 		t.Error("downloaded file missing")
+	}
+}
+
+func TestDownloadDDLCreateFileFailure(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("data"))
+	}))
+	defer srv.Close()
+
+	m := New(cfg, jobs, nil)
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	// Destination dir does not exist, so os.Create fails.
+	dest := filepath.Join(t.TempDir(), "no-such-dir")
+	got, err := m.downloadDDL(srv.URL+"/files/game.bin", dest, jobID)
+	if got != "" {
+		t.Errorf("path = %q, want empty on create failure", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "cannot create file") {
+		t.Errorf("err = %v, want 'cannot create file' cause", err)
 	}
 }
 

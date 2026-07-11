@@ -142,8 +142,9 @@ func (q *qbitMock) deletedHashes() []string {
 	return out
 }
 
-// jobFromDB reads a job's persisted state directly from SQLite. This avoids
-// data races with worker goroutines that mutate the in-memory job map.
+// jobFromDB reads a job's persisted state directly from SQLite, verifying the
+// write-through path. (JobStore.Get now returns a copy, so reading the map
+// directly is also race-safe; this helper additionally checks persistence.)
 func jobFromDB(t *testing.T, jobs *db.JobStore, jobID string) (map[string]interface{}, bool) {
 	t.Helper()
 	var data string
@@ -161,6 +162,9 @@ func jobFromDB(t *testing.T, jobs *db.JobStore, jobID string) (map[string]interf
 // waitJobStatus polls the persisted job until it reaches the wanted status.
 func waitJobStatus(t *testing.T, jobs *db.JobStore, jobID, want string, timeout time.Duration) map[string]interface{} {
 	t.Helper()
+	if timeout < minPollTimeout {
+		timeout = minPollTimeout
+	}
 	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
@@ -178,8 +182,19 @@ func waitJobStatus(t *testing.T, jobs *db.JobStore, jobID, want string, timeout 
 }
 
 // waitFor polls until cond returns true.
+// minPollTimeout floors the deadline for background-goroutine polling helpers.
+// The workers these tests wait on finish in milliseconds locally, but under
+// the CI -race build (2-20x slower) on a shared, throttled runner with every
+// package running in parallel, a 5-10s deadline can occasionally lose the race.
+// Raising the floor never slows a passing test — the helper returns the instant
+// its condition holds — it only makes a genuinely failing test wait longer.
+const minPollTimeout = 45 * time.Second
+
 func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
+	if timeout < minPollTimeout {
+		timeout = minPollTimeout
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if cond() {

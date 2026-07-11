@@ -196,7 +196,6 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 
 func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bool) {
 	slog.Info("watching game torrent", "title", title, "platform", platf)
-	titleLower := strings.ToLower(title)
 	maxWait := 7 * 24 * time.Hour
 	start := time.Now()
 	fileScanDone := false
@@ -205,10 +204,7 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 		torrents := m.qb.GetTorrents(m.cfg.QBCategory)
 		for _, t := range torrents {
 			tName := t.Name
-			isMatch := tName == title ||
-				strings.Contains(strings.ToLower(tName), titleLower) ||
-				strings.Contains(titleLower, strings.ToLower(tName))
-			if !isMatch {
+			if !titlesMatch(title, tName) {
 				continue
 			}
 
@@ -324,7 +320,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	}
 
 	if isPC {
-		dest := filepath.Join(m.cfg.GamesVaultPath, filepath.Base(contentPath))
+		dest := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(contentPath)))
 		if err := moveContent(contentPath, dest); err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
@@ -337,11 +333,13 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
 		m.TrackInLibrary(torrentName, platf, platSlug, isPC, dest, 0, "torrent", "prowlarr", "torrent:"+torrentHash)
 		m.jobs.LogActivity("download_completed", torrentName, "Organized to GameVault", jobID, nil)
-		slog.Info("PC game organized", "name", torrentName, "dest", dest)
+		slog.Info("PC game organized", "name", sanitizeLog(torrentName), "dest", sanitizeLog(dest))
 	} else if platSlug != "" {
-		destDir := filepath.Join(m.cfg.GamesRomsPath, platSlug)
+		// platSlug arrives from the download request; keep it a single path
+		// component so it cannot climb out of the ROM library root.
+		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
 		os.MkdirAll(destDir, 0755)
-		dest := filepath.Join(destDir, filepath.Base(contentPath))
+		dest := filepath.Join(destDir, sanitizeFilename(filepath.Base(contentPath)))
 		if err := moveContent(contentPath, dest); err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
@@ -354,7 +352,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
 		m.TrackInLibrary(torrentName, platf, platSlug, isPC, dest, 0, "torrent", "prowlarr", "torrent:"+torrentHash)
 		m.jobs.LogActivity("download_completed", torrentName, fmt.Sprintf("Organized to %s", platf), jobID, nil)
-		slog.Info("ROM organized", "name", torrentName, "dest", dest)
+		slog.Info("ROM organized", "name", sanitizeLog(torrentName), "dest", sanitizeLog(dest))
 
 		// Experimental: extract archives
 		m.maybeExtractArchives(jobID, dest)
@@ -407,15 +405,22 @@ func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, p
 
 func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug string, isPC bool) {
 	staging := m.cfg.QBSavePath
-	os.MkdirAll(staging, 0755)
+	if err := os.MkdirAll(staging, 0755); err != nil {
+		slog.Error("cannot create staging dir", "path", staging, "error", err)
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("cannot create staging dir %s: %v", staging, err),
+		})
+		return
+	}
 
 	var filepath_ string
-	var err error
+	var dlErr error
 
 	if vimmID != "" {
 		filepath_ = m.downloadVimmGame(vimmID, staging, jobID)
 	} else if dlURL != "" {
-		filepath_ = m.downloadDDL(dlURL, staging, jobID)
+		filepath_, dlErr = m.downloadDDL(dlURL, staging, jobID)
 	}
 
 	if filepath_ == "" || !pathExists(filepath_) {
@@ -423,8 +428,12 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 		if ok {
 			status, _ := job["status"].(string)
 			if status != "error" {
+				errMsg := "Download failed"
+				if dlErr != nil {
+					errMsg = fmt.Sprintf("Download failed: %v", dlErr)
+				}
 				m.jobs.UpdateMulti(jobID, map[string]interface{}{
-					"status": "error", "error": "Download failed",
+					"status": "error", "error": errMsg,
 				})
 			}
 		}
@@ -454,24 +463,22 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 		"status": "organizing", "detail": "Moving to library...",
 	})
 	m.organizeDDLFile(jobID, filepath_, title, platf, platSlug, isPC)
-
-	_ = err
 }
 
-func (m *Manager) downloadDDL(dlURL, destPath, jobID string) string {
+func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	req, _ := http.NewRequest("GET", dlURL, nil)
 	req.Header.Set("User-Agent", "Gamarr/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("DDL download failed", "error", err)
-		return ""
+		slog.Error("DDL download failed", "url", sanitizeLog(dlURL), "error", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		slog.Error("DDL download failed", "status", resp.StatusCode)
-		return ""
+		slog.Error("DDL download failed", "url", sanitizeLog(dlURL), "status", resp.StatusCode)
+		return "", fmt.Errorf("HTTP %d from server", resp.StatusCode)
 	}
 
 	total := resp.ContentLength
@@ -484,11 +491,19 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) string {
 		parts := strings.Split(strings.Split(dlURL, "?")[0], "/")
 		filename = parts[len(parts)-1]
 	}
+	// The filename comes from the remote server (Content-Disposition or URL);
+	// never let it name a path outside the staging dir.
+	filename = sanitizeFilename(filename)
 
-	fp := filepath.Join(destPath, filename)
+	fp, err := safeChild(destPath, filename)
+	if err != nil {
+		slog.Error("DDL rejected unsafe filename", "filename", sanitizeLog(filename))
+		return "", err
+	}
 	f, err := os.Create(fp)
 	if err != nil {
-		return ""
+		slog.Error("DDL cannot create file", "path", sanitizeLog(fp), "error", err)
+		return "", fmt.Errorf("cannot create file %s: %v", fp, err)
 	}
 	defer f.Close()
 
@@ -513,7 +528,7 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) string {
 		}
 	}
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
-	return fp
+	return fp, nil
 }
 
 var vimmFormRe = regexp.MustCompile(`<form[^>]*id=["']dl_form["'][^>]*>`)
@@ -676,7 +691,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 }
 
 func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC bool) {
-	filename := filepath.Base(fp)
+	filename := sanitizeFilename(filepath.Base(fp))
 	if isPC {
 		dest := filepath.Join(m.cfg.GamesVaultPath, filename)
 		if err := moveFile(fp, dest); err != nil {
@@ -691,9 +706,9 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 		writeMetadataSidecar(dest, title, platf, platSlug, isPC, "ddl")
 		m.TrackInLibrary(title, platf, platSlug, isPC, dest, 0, "ddl", "ddl", "ddl:"+dest)
 		m.jobs.LogActivity("download_completed", title, "DDL to GameVault", jobID, nil)
-		slog.Info("DDL PC game organized", "file", filename, "dest", dest)
+		slog.Info("DDL PC game organized", "file", sanitizeLog(filename), "dest", sanitizeLog(dest))
 	} else if platSlug != "" {
-		destDir := filepath.Join(m.cfg.GamesRomsPath, platSlug)
+		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, filename)
 		if err := moveFile(fp, dest); err != nil {
@@ -708,7 +723,7 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 		writeMetadataSidecar(dest, title, platf, platSlug, isPC, "ddl")
 		m.TrackInLibrary(title, platf, platSlug, isPC, dest, 0, "ddl", "ddl", "ddl:"+dest)
 		m.jobs.LogActivity("download_completed", title, fmt.Sprintf("DDL to %s", platf), jobID, nil)
-		slog.Info("DDL ROM organized", "file", filename, "dest", dest)
+		slog.Info("DDL ROM organized", "file", sanitizeLog(filename), "dest", sanitizeLog(dest))
 		m.maybeExtractArchives(jobID, dest)
 	} else {
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -845,12 +860,12 @@ func extractArchives(directory string) []string {
 				cmd = exec.Command("7z", "x", fmt.Sprintf("-o%s", extractDir), "-y", archive)
 			}
 			if err := cmd.Run(); err != nil {
-				slog.Warn("extraction failed", "archive", filepath.Base(archive), "error", err)
+				slog.Warn("extraction failed", "archive", sanitizeLog(filepath.Base(archive)), "error", err)
 				os.RemoveAll(extractDir)
 				continue
 			}
 			extracted = append(extracted, archive)
-			slog.Info("extracted archive", "name", filepath.Base(archive))
+			slog.Info("extracted archive", "name", sanitizeLog(filepath.Base(archive)))
 		}
 	}
 
@@ -858,7 +873,11 @@ func extractArchives(directory string) []string {
 	entries, _ := os.ReadDir(directory)
 	for _, e := range entries {
 		if e.IsDir() && !strings.HasSuffix(e.Name(), ".extracted") {
-			extracted = append(extracted, extractArchives(filepath.Join(directory, e.Name()))...)
+			sub, err := safeChild(directory, e.Name())
+			if err != nil {
+				continue
+			}
+			extracted = append(extracted, extractArchives(sub)...)
 		}
 	}
 	return extracted
@@ -918,8 +937,14 @@ func copyDir(src, dest string) error {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dest, rel)
+		rel, err := filepath.Rel(src, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("path %q escapes source dir", path)
+		}
+		target, err := safeChild(dest, rel)
+		if err != nil {
+			return err
+		}
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
 		}

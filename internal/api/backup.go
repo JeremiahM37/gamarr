@@ -2,7 +2,6 @@ package api
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -41,7 +40,9 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
 
 	name := req.Name
 	if name == "" {
@@ -54,11 +55,17 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		return '_'
 	}, name)
+	name = filepath.Base(name)
 
 	backupDir := filepath.Join(s.cfg.DataDir, "backups")
 	os.MkdirAll(backupDir, 0755)
 
-	zipPath := filepath.Join(backupDir, fmt.Sprintf("gamarr-backup-%s.zip", name))
+	zipName := fmt.Sprintf("gamarr-backup-%s.zip", name)
+	zipPath, err := safeJoin(backupDir, zipName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid backup name")
+		return
+	}
 
 	f, err := os.Create(zipPath)
 	if err != nil {
@@ -191,7 +198,9 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		destPath := filepath.Join(dataDir, f.Name)
+		// Zip-slip guard: entry names come from the uploaded archive and must
+		// stay a single component inside the data dir.
+		destPath := filepath.Join(dataDir, filepath.Base(f.Name))
 
 		// Backup current file before overwriting
 		if _, err := os.Stat(destPath); err == nil {

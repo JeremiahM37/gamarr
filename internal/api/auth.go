@@ -194,6 +194,50 @@ func isExempt(path string) bool {
 	return false
 }
 
+// resolveIdentity attempts to authenticate the request via API key (header
+// or query param), multi-user session cookie, or legacy single-user session,
+// in that order. On success it returns a context enriched with the caller's
+// role/username (plus user ID for multi-user sessions) and true. On failure
+// it returns the request's original context and false — it never writes a
+// response and never consumes the request body.
+func resolveIdentity(r *http.Request, cfg *config.Config, sessions *SessionStore, multiUser bool) (context.Context, bool) {
+	// Check API key (header or query param).
+	if cfg.HasAPIKey() {
+		apiKey := r.Header.Get("X-Api-Key")
+		if apiKey == "" {
+			apiKey = r.URL.Query().Get("apikey")
+		}
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(cfg.APIKey)) == 1 {
+			ctx := context.WithValue(r.Context(), ctxUserRole, "admin")
+			ctx = context.WithValue(ctx, ctxUsername, "api")
+			return ctx, true
+		}
+	}
+
+	// Check session cookie for multi-user mode.
+	if multiUser {
+		if cookie, err := r.Cookie("gamarr_session"); err == nil {
+			if data, ok := sessions.Get(cookie.Value); ok {
+				ctx := context.WithValue(r.Context(), ctxUserID, data.UserID)
+				ctx = context.WithValue(ctx, ctxUserRole, data.Role)
+				ctx = context.WithValue(ctx, ctxUsername, data.Username)
+				return ctx, true
+			}
+		}
+	}
+
+	// Legacy single-user session auth (when no multi-user DB users exist).
+	if !multiUser && cfg.HasAuth() {
+		if cookie, err := r.Cookie("gamarr_session"); err == nil && sessions.Valid(cookie.Value) {
+			ctx := context.WithValue(r.Context(), ctxUserRole, "admin")
+			ctx = context.WithValue(ctx, ctxUsername, cfg.AuthUsername)
+			return ctx, true
+		}
+	}
+
+	return r.Context(), false
+}
+
 // authMiddleware returns an HTTP middleware that enforces authentication.
 func authMiddleware(cfg *config.Config, database *db.JobStore, sessions *SessionStore, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -209,49 +253,24 @@ func authMiddleware(cfg *config.Config, database *db.JobStore, sessions *Session
 			return
 		}
 
-		// Exempt paths always pass through.
+		// Exempt paths always pass through, but credentials are still
+		// resolved best-effort so exempt handlers that care about the
+		// caller's role can see it (e.g. /api/register's admin-registers-
+		// a-user branch). Resolution failure NEVER rejects an exempt
+		// request — the request simply proceeds unauthenticated. Torznab
+		// paths are unaffected: resolveIdentity only reads headers/cookies/
+		// query params, and the Torznab handler validates its own apikey.
 		if isExempt(r.URL.Path) {
+			if ctx, ok := resolveIdentity(r, cfg, sessions, multiUser); ok {
+				r = r.WithContext(ctx)
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Check API key (header or query param).
-		if cfg.HasAPIKey() {
-			apiKey := r.Header.Get("X-Api-Key")
-			if apiKey == "" {
-				apiKey = r.URL.Query().Get("apikey")
-			}
-			if subtle.ConstantTimeCompare([]byte(apiKey), []byte(cfg.APIKey)) == 1 {
-				ctx := context.WithValue(r.Context(), ctxUserRole, "admin")
-				ctx = context.WithValue(ctx, ctxUsername, "api")
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-		}
-
-		// Check session cookie for multi-user mode.
-		if multiUser {
-			cookie, err := r.Cookie("gamarr_session")
-			if err == nil {
-				if data, ok := sessions.Get(cookie.Value); ok {
-					ctx := context.WithValue(r.Context(), ctxUserID, data.UserID)
-					ctx = context.WithValue(ctx, ctxUserRole, data.Role)
-					ctx = context.WithValue(ctx, ctxUsername, data.Username)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
-			}
-		}
-
-		// Legacy single-user session auth (when no multi-user DB users exist).
-		if !multiUser && cfg.HasAuth() {
-			cookie, err := r.Cookie("gamarr_session")
-			if err == nil && sessions.Valid(cookie.Value) {
-				ctx := context.WithValue(r.Context(), ctxUserRole, "admin")
-				ctx = context.WithValue(ctx, ctxUsername, cfg.AuthUsername)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
+		if ctx, ok := resolveIdentity(r, cfg, sessions, multiUser); ok {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
 		}
 
 		// No valid auth found.
@@ -304,11 +323,7 @@ func handleLogin(cfg *config.Config, database *db.JobStore, sessions *SessionSto
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"success": false,
-				"error":   "Invalid request body",
-			})
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 
@@ -406,11 +421,7 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 			Password   string `json:"password"`
 			InviteCode string `json:"invite_code"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"success": false,
-				"error":   "Invalid request body",
-			})
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 
@@ -494,7 +505,7 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 			database.UseInviteCode(req.InviteCode)
 		}
 
-		slog.Info("user registered", "id", id, "username", req.Username, "role", role)
+		slog.Info("user registered", "id", id, "username", sanitizeLog(req.Username), "role", role)
 
 		// If first user, auto-login.
 		if isFirstUser {
@@ -585,8 +596,7 @@ func handleLoginTOTP(database *db.JobStore, sessions *SessionStore) http.Handler
 			PendingToken string `json:"session_pending"`
 			Code         string `json:"code"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "Invalid request body")
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 
