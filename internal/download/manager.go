@@ -510,11 +510,14 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	downloaded := int64(0)
 	lastUpdate := time.Now()
 	buf := make([]byte, 256*1024)
+	var writeErr error
 
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			f.Write(buf[:n])
+			if _, writeErr = f.Write(buf[:n]); writeErr != nil {
+				break
+			}
 			downloaded += int64(n)
 			if time.Since(lastUpdate) > 2*time.Second && total > 0 {
 				pct := float64(downloaded) / float64(total) * 100
@@ -524,8 +527,22 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 			}
 		}
 		if readErr != nil {
+			if readErr != io.EOF {
+				writeErr = readErr
+			}
 			break
 		}
+	}
+	// Don't report a truncated file as a finished download — a dropped
+	// connection or full disk would otherwise pass a partial archive to the
+	// scan/organize pipeline as if it were complete.
+	if writeErr != nil {
+		os.Remove(fp)
+		return "", fmt.Errorf("download interrupted after %s: %w", search.HumanSize(downloaded), writeErr)
+	}
+	if total > 0 && downloaded != total {
+		os.Remove(fp)
+		return "", fmt.Errorf("incomplete download: got %s of %s", search.HumanSize(downloaded), search.HumanSize(total))
 	}
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
 	return fp, nil
@@ -661,8 +678,18 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	if fm := fnRe.FindStringSubmatch(cd); fm != nil {
 		filename = strings.TrimSpace(fm[1])
 	}
+	// The filename comes from the remote server (Content-Disposition); never let
+	// it name a path outside the staging dir.
+	filename = sanitizeFilename(filename)
 
-	fp := filepath.Join(destPath, filename)
+	fp, err := safeChild(destPath, filename)
+	if err != nil {
+		slog.Error("Vimm rejected unsafe filename", "filename", sanitizeLog(filename))
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error", "error": "Vimm returned an unsafe filename",
+		})
+		return ""
+	}
 	f, err := os.Create(fp)
 	if err != nil {
 		return ""
@@ -671,10 +698,13 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 
 	downloaded := int64(0)
 	buf := make([]byte, 256*1024)
+	var writeErr error
 	for {
 		n, readErr := dlResp.Body.Read(buf)
 		if n > 0 {
-			f.Write(buf[:n])
+			if _, writeErr = f.Write(buf[:n]); writeErr != nil {
+				break
+			}
 			downloaded += int64(n)
 			if total > 0 {
 				pct := float64(downloaded) / float64(total) * 100
@@ -683,8 +713,21 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 			}
 		}
 		if readErr != nil {
+			if readErr != io.EOF {
+				writeErr = readErr
+			}
 			break
 		}
+	}
+	// A dropped connection or full disk must not pass a truncated .7z off as a
+	// finished download — it would land in the library as a complete game.
+	if writeErr != nil || (total > 0 && downloaded != total) {
+		os.Remove(fp)
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("Vimm download incomplete (%s of %s)", search.HumanSize(downloaded), search.HumanSize(total)),
+		})
+		return ""
 	}
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
 	return fp

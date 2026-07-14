@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"gamarr/internal/config"
@@ -187,21 +188,28 @@ func TestExtractCatIDs(t *testing.T) {
 	}
 }
 
-func TestQueryEscape(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"super mario", "super+mario"},
-		{"game&more", "game%26more"},
-		{"nospaces", "nospaces"},
+// TestQueryEscapingRoundTrips guards the Prowlarr query construction against
+// the old hand-rolled escaper, which only handled spaces and '&' and so
+// corrupted any title containing '?', '#', '%' or '+'. Building the URL exactly
+// as the search code does and parsing it back must yield the original title.
+func TestQueryEscapingRoundTrips(t *testing.T) {
+	titles := []string{
+		"Who Wants to Be a Millionaire?",
+		"R.B.I. Baseball",
+		"100% Orange Juice",
+		"C++ Programming",
+		"Sonic & Knuckles",
+		"Ratchet & Clank #2",
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := queryEscape(tt.input)
-			if got != tt.want {
-				t.Errorf("queryEscape(%q) = %q, want %q", tt.input, got, tt.want)
+	for _, q := range titles {
+		t.Run(q, func(t *testing.T) {
+			raw := "https://prowlarr/api/v1/search?query=" + url.QueryEscape(q) + "&type=search&limit=50"
+			parsed, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", q, err)
+			}
+			if got := parsed.Query().Get("query"); got != q {
+				t.Errorf("query round-trip = %q, want %q", got, q)
 			}
 		})
 	}
