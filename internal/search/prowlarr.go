@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
-	"strings"
 	"time"
 
 	"gamarr/internal/config"
@@ -44,9 +44,9 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 	hadError := false
 
 	for _, indexerID := range cfg.ProwlarrGameIndexers {
-		url := fmt.Sprintf("%s/api/v1/search?query=%s&indexerIds=%d&type=search&limit=50",
-			cfg.ProwlarrURL, queryEscape(query), indexerID)
-		req, _ := http.NewRequest("GET", url, nil)
+		reqURL := fmt.Sprintf("%s/api/v1/search?query=%s&indexerIds=%d&type=search&limit=50",
+			cfg.ProwlarrURL, url.QueryEscape(query), indexerID)
+		req, _ := http.NewRequest("GET", reqURL, nil)
 		req.Header.Set("X-Api-Key", cfg.ProwlarrAPIKey)
 
 		resp, err := client.Do(req)
@@ -156,8 +156,4 @@ func jsonInt64(m map[string]interface{}, key string) int64 {
 func jsonArray(m map[string]interface{}, key string) []interface{} {
 	v, _ := m[key].([]interface{})
 	return v
-}
-
-func queryEscape(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, " ", "+"), "&", "%26")
 }
