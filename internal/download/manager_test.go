@@ -564,6 +564,40 @@ func TestDownloadDDLCreateFileFailure(t *testing.T) {
 	}
 }
 
+// TestDownloadDDLTruncatedDownloadIsError verifies that a server which declares
+// a Content-Length but drops the connection early does not leave a partial file
+// reported as a finished download. Without the guard the truncated archive would
+// pass to the scan/organize pipeline as complete.
+func TestDownloadDDLTruncatedDownloadIsError(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="Truncated.sfc"`)
+		w.Header().Set("Content-Length", "1000") // claim far more than we send
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("only-a-few-bytes"))
+		// Return without sending the rest; the client sees an unexpected EOF.
+	}))
+	defer srv.Close()
+
+	m := New(cfg, jobs, nil)
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	dest := t.TempDir()
+	got, err := m.downloadDDL(srv.URL+"/dl", dest, jobID)
+	if err == nil {
+		t.Fatal("expected an error for a truncated download, got nil")
+	}
+	if got != "" {
+		t.Errorf("path = %q, want empty on truncated download", got)
+	}
+	entries, _ := os.ReadDir(dest)
+	if len(entries) != 0 {
+		t.Errorf("partial file left behind: %v", entries)
+	}
+}
+
 func TestOrganizeDDLFile(t *testing.T) {
 	newFixture := func(t *testing.T) (*Manager, string, string) {
 		cfg := newTestConfig(t)
