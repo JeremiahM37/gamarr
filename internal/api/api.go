@@ -66,23 +66,52 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Use(func(next http.Handler) http.Handler { return rateLimitMiddleware(rl, next) })
 	r.Use(func(next http.Handler) http.Handler { return authMiddleware(cfg, mgr.Jobs(), sessions, next) })
 
-	// UI
+	s.registerUIRoutes(r)
+	s.registerAuthRoutes(r)
+	s.registerSearchRoutes(r)
+	s.registerDownloadRoutes(r)
+	s.registerLibraryRoutes(r)
+	s.registerRequestRoutes(r)
+	s.registerAdminRoutes(r)
+
+	// Metadata & enrichment
+	s.RegisterMetadataRoutes(r)
+
+	// Metrics
+	r.Get("/metrics", s.handleMetrics)
+
+	return r
+}
+
+// registerUIRoutes serves the embedded frontend.
+func (s *Server) registerUIRoutes(r chi.Router) {
 	r.Get("/", s.handleIndex)
 	r.Handle("/static/*", staticHandler())
+}
 
+// registerAuthRoutes wires login/session, registration, TOTP, and OIDC/SSO.
+func (s *Server) registerAuthRoutes(r chi.Router) {
 	// Auth routes (exempt from auth middleware).
-	r.Post("/api/login", handleLogin(cfg, mgr.Jobs(), sessions))
-	r.Post("/api/login/totp", handleLoginTOTP(mgr.Jobs(), sessions))
-	r.Post("/api/logout", handleLogout(sessions, mgr.Jobs()))
-	r.Post("/api/register", handleRegister(mgr.Jobs(), sessions))
-	r.Get("/api/auth/status", handleAuthStatus(mgr.Jobs(), sessions, cfg))
+	r.Post("/api/login", handleLogin(s.cfg, s.mgr.Jobs(), s.sessions))
+	r.Post("/api/login/totp", handleLoginTOTP(s.mgr.Jobs(), s.sessions))
+	r.Post("/api/logout", handleLogout(s.sessions, s.mgr.Jobs()))
+	r.Post("/api/register", handleRegister(s.mgr.Jobs(), s.sessions))
+	r.Get("/api/auth/status", handleAuthStatus(s.mgr.Jobs(), s.sessions, s.cfg))
 
 	// OIDC/SSO routes (exempt from auth middleware).
 	r.Get("/api/oidc/login", s.handleOIDCLogin)
 	r.Get("/api/oidc/callback", s.handleOIDCCallback)
 	r.Get("/api/oidc/status", s.handleOIDCStatus)
 
-	// Search & browse
+	// TOTP / 2FA
+	r.Post("/api/totp/setup", handleTOTPSetup(s.mgr.Jobs()))
+	r.Post("/api/totp/verify", handleTOTPVerify(s.mgr.Jobs()))
+	r.Post("/api/totp/disable", handleTOTPDisable(s.mgr.Jobs()))
+	r.Get("/api/totp/status", handleTOTPStatus(s.mgr.Jobs()))
+}
+
+// registerSearchRoutes wires search, browse metadata, Torznab, and source health.
+func (s *Server) registerSearchRoutes(r chi.Router) {
 	r.Get("/api/search", s.handleSearch)
 	r.Get("/api/platforms", s.handlePlatforms)
 	r.Get("/api/sources", s.handleSources)
@@ -90,22 +119,17 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	// Torznab indexer endpoint — lets Prowlarr / Sonarr / other *arr apps
 	// query Gamarr as if it were a Torznab indexer. /api alias is the path
 	// Prowlarr probes during indexer discovery.
-	tz := torznab.New(cfg.TorznabAPIKey, s.searchForTorznab)
+	tz := torznab.New(s.cfg.TorznabAPIKey, s.searchForTorznab)
 	r.Get("/torznab/api", tz.ServeHTTP)
 	r.Get("/api", tz.ServeHTTPAlias)
 
-	// Bulk operations — accept a list of ids, or operate on all jobs
-	// matching the natural filter (failed for retry, active for cancel).
-	r.Post("/api/admin/bulk/retry", s.handleBulkRetry)
-	r.Post("/api/admin/bulk/cancel", s.handleBulkCancel)
-	r.Post("/api/wishlist/bulk-delete", s.handleBulkDeleteWishlist)
+	// Source health
+	r.Get("/api/sources/health", s.handleSourcesHealth)
+	r.Post("/api/sources/{name}/reset", s.handleSourceReset)
+}
 
-	// OpenAPI 3.1 spec — AI agents / tooling can introspect this to
-	// discover endpoints, request shapes, and response shapes without
-	// prior knowledge of the codebase.
-	r.Get("/api/openapi.json", s.handleOpenAPI)
-
-	// Downloads
+// registerDownloadRoutes wires download start/inspect/organize and DDL sources.
+func (s *Server) registerDownloadRoutes(r chi.Router) {
 	r.Post("/api/download", s.handleDownload)
 	r.Get("/api/downloads", s.handleDownloads)
 	r.Delete("/api/downloads/torrent/{hash}", s.handleDeleteTorrent)
@@ -114,62 +138,83 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Post("/api/downloads/organize/{hash}", s.handleOrganizeTorrent)
 	r.Post("/api/downloads/{jobID}/retry", s.handleRetryJob)
 
+	// DDL sources
+	r.Get("/api/ddl-sources", s.handleDDLSources)
+	r.Post("/api/ddl-sources", s.handleAddDDLSource)
+	r.Delete("/api/ddl-sources/{idx}", s.handleDeleteDDLSource)
+}
+
+// registerLibraryRoutes wires the library, wishlist, tags, history, calendar,
+// import/export, and related curation endpoints.
+func (s *Server) registerLibraryRoutes(r chi.Router) {
 	// Library
 	r.Get("/api/library", s.handleLibrary)
 	r.Delete("/api/library/{id}", s.handleDeleteLibraryItem)
+
+	// Duplicate detection
+	r.Get("/api/library/check", s.handleCheckLibrary)
 
 	// Wishlist
 	r.Get("/api/wishlist", s.handleWishlist)
 	r.Post("/api/wishlist", s.handleAddWishlist)
 	r.Delete("/api/wishlist/{id}", s.handleDeleteWishlist)
+	r.Post("/api/wishlist/bulk-delete", s.handleBulkDeleteWishlist)
 
 	// Activity
 	r.Get("/api/activity", s.handleActivity)
 
-	// DDL sources
-	r.Get("/api/ddl-sources", s.handleDDLSources)
-	r.Post("/api/ddl-sources", s.handleAddDDLSource)
-	r.Delete("/api/ddl-sources/{idx}", s.handleDeleteDDLSource)
+	// Import/Export
+	r.Get("/api/export/library", s.handleExportLibrary)
+	r.Get("/api/export/wishlist", s.handleExportWishlist)
+	r.Get("/api/export/requests", s.handleExportRequests)
+	r.Post("/api/import/library", s.handleImportLibrary)
+	r.Post("/api/import/wishlist", s.handleImportWishlist)
+	r.Post("/api/import/csv", s.handleImportCSV)
 
-	// Settings & config (admin only)
-	r.Get("/api/settings", requireAdmin(s.handleGetSettings))
-	r.Put("/api/settings", requireAdmin(s.handleUpdateSettings))
-	r.Get("/api/config", s.handleConfig)
-	r.Get("/api/stats", s.handleStats)
-	r.Get("/api/health", s.handleHealth)
+	// Manual Import (scan + import files)
+	r.Post("/api/import/scan", s.handleScanImport)
+	r.Post("/api/import/files", s.handleImportFiles)
 
-	// Connection tests (admin only)
-	r.Post("/api/test/prowlarr", requireAdmin(s.handleTestProwlarr))
-	r.Post("/api/test/qbittorrent", requireAdmin(s.handleTestQBittorrent))
-	r.Post("/api/test/sabnzbd", requireAdmin(s.handleTestSABnzbd))
+	// Play History
+	r.Post("/api/history", s.handleAddHistory)
+	r.Get("/api/history", s.handleGetHistory)
+	r.Get("/api/history/stats", s.handleHistoryStats)
+	r.Patch("/api/history/{id}", s.handleUpdateHistory)
+	r.Delete("/api/history/{id}", s.handleDeleteHistory)
 
-	// Source health
-	r.Get("/api/sources/health", s.handleSourcesHealth)
-	r.Post("/api/sources/{name}/reset", s.handleSourceReset)
+	// Quality Profiles
+	r.Get("/api/quality-profiles", s.handleGetQualityProfiles)
+	r.Post("/api/quality-profiles", s.handleCreateQualityProfile)
+	r.Put("/api/quality-profiles/{id}", s.handleUpdateQualityProfile)
+	r.Delete("/api/quality-profiles/{id}", s.handleDeleteQualityProfile)
 
-	// Monitoring
-	r.Get("/api/monitor/status", s.handleMonitorStatus)
-	r.Post("/api/monitor/analyze", s.handleMonitorAnalyze)
-	r.Post("/api/monitor/actions/{actionID}/approve", s.handleMonitorApprove)
-	r.Post("/api/monitor/actions/{actionID}/dismiss", s.handleMonitorDismiss)
+	// Blocklist
+	r.Get("/api/blocklist", s.handleGetBlocklist)
+	r.Post("/api/blocklist", s.handleAddBlocklistEntry)
+	r.Delete("/api/blocklist/clear", s.handleClearBlocklist)
+	r.Delete("/api/blocklist/{id}", s.handleDeleteBlocklistEntry)
 
-	// Admin dashboard & user management
-	r.Get("/api/admin/dashboard", requireAdmin(s.handleAdminDashboard))
-	r.Get("/api/users", requireAdmin(handleListUsers(mgr.Jobs())))
-	r.Patch("/api/users/{id}", requireAdmin(handleUpdateUser(mgr.Jobs())))
-	r.Delete("/api/users/{id}", requireAdmin(handleDeleteUser(mgr.Jobs())))
+	// Release Profiles
+	r.Get("/api/release-profiles", s.handleGetReleaseProfiles)
+	r.Post("/api/release-profiles", s.handleCreateReleaseProfile)
+	r.Put("/api/release-profiles/{id}", s.handleUpdateReleaseProfile)
+	r.Delete("/api/release-profiles/{id}", s.handleDeleteReleaseProfile)
 
-	// TOTP / 2FA
-	r.Post("/api/totp/setup", handleTOTPSetup(mgr.Jobs()))
-	r.Post("/api/totp/verify", handleTOTPVerify(mgr.Jobs()))
-	r.Post("/api/totp/disable", handleTOTPDisable(mgr.Jobs()))
-	r.Get("/api/totp/status", handleTOTPStatus(mgr.Jobs()))
+	// Tags
+	r.Get("/api/tags", s.handleGetTags)
+	r.Post("/api/tags", s.handleCreateTag)
+	r.Delete("/api/tags/{id}", s.handleDeleteTag)
+	r.Post("/api/library/{id}/tags", s.handleAddItemTag)
+	r.Delete("/api/library/{id}/tags/{tagID}", s.handleRemoveItemTag)
+	r.Get("/api/library/{id}/tags", s.handleGetItemTags)
 
-	// Invite codes (admin only)
-	r.Get("/api/invites", requireAdmin(handleListInvites(mgr.Jobs())))
-	r.Post("/api/invites", requireAdmin(handleCreateInvite(mgr.Jobs())))
-	r.Delete("/api/invites/{id}", requireAdmin(handleDeleteInvite(mgr.Jobs())))
+	// Release Calendar
+	r.Get("/api/calendar", s.handleCalendar)
+	r.Get("/api/calendar/recent", s.handleCalendarRecent)
+}
 
+// registerRequestRoutes wires user requests, notifications, and webhooks.
+func (s *Server) registerRequestRoutes(r chi.Router) {
 	// Requests
 	r.Post("/api/requests", s.handleCreateRequest)
 	r.Get("/api/requests", s.handleListRequests)
@@ -190,76 +235,59 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Post("/api/webhooks", s.handleAddWebhook)
 	r.Delete("/api/webhooks/{id}", s.handleDeleteWebhook)
 	r.Post("/api/webhooks/test", s.handleTestWebhook)
+}
 
-	// Import/Export
-	r.Get("/api/export/library", s.handleExportLibrary)
-	r.Get("/api/export/wishlist", s.handleExportWishlist)
-	r.Get("/api/export/requests", s.handleExportRequests)
-	r.Post("/api/import/library", s.handleImportLibrary)
-	r.Post("/api/import/wishlist", s.handleImportWishlist)
-	r.Post("/api/import/csv", s.handleImportCSV)
+// registerAdminRoutes wires settings, ops/introspection, user management,
+// monitoring, scheduler, backups, and bulk job operations.
+func (s *Server) registerAdminRoutes(r chi.Router) {
+	// Settings & config (admin only)
+	r.Get("/api/settings", requireAdmin(s.handleGetSettings))
+	r.Put("/api/settings", requireAdmin(s.handleUpdateSettings))
+	r.Get("/api/config", s.handleConfig)
+	r.Get("/api/stats", s.handleStats)
+	r.Get("/api/health", s.handleHealth)
+
+	// OpenAPI 3.1 spec — AI agents / tooling can introspect this to
+	// discover endpoints, request shapes, and response shapes without
+	// prior knowledge of the codebase.
+	r.Get("/api/openapi.json", s.handleOpenAPI)
+
+	// Connection tests (admin only)
+	r.Post("/api/test/prowlarr", requireAdmin(s.handleTestProwlarr))
+	r.Post("/api/test/qbittorrent", requireAdmin(s.handleTestQBittorrent))
+	r.Post("/api/test/sabnzbd", requireAdmin(s.handleTestSABnzbd))
+
+	// Monitoring
+	r.Get("/api/monitor/status", s.handleMonitorStatus)
+	r.Post("/api/monitor/analyze", s.handleMonitorAnalyze)
+	r.Post("/api/monitor/actions/{actionID}/approve", s.handleMonitorApprove)
+	r.Post("/api/monitor/actions/{actionID}/dismiss", s.handleMonitorDismiss)
+
+	// Admin dashboard & user management
+	r.Get("/api/admin/dashboard", requireAdmin(s.handleAdminDashboard))
+	r.Get("/api/users", requireAdmin(handleListUsers(s.mgr.Jobs())))
+	r.Patch("/api/users/{id}", requireAdmin(handleUpdateUser(s.mgr.Jobs())))
+	r.Delete("/api/users/{id}", requireAdmin(handleDeleteUser(s.mgr.Jobs())))
+
+	// Invite codes (admin only)
+	r.Get("/api/invites", requireAdmin(handleListInvites(s.mgr.Jobs())))
+	r.Post("/api/invites", requireAdmin(handleCreateInvite(s.mgr.Jobs())))
+	r.Delete("/api/invites/{id}", requireAdmin(handleDeleteInvite(s.mgr.Jobs())))
+
+	// Bulk operations — accept a list of ids, or operate on all jobs
+	// matching the natural filter (failed for retry, active for cancel).
+	r.Post("/api/admin/bulk/retry", s.handleBulkRetry)
+	r.Post("/api/admin/bulk/cancel", s.handleBulkCancel)
 
 	// Scheduler
 	r.Get("/api/scheduler/status", s.handleSchedulerStatus)
 	r.Post("/api/scheduler/run", s.handleSchedulerRun)
-
-	// Play History
-	r.Post("/api/history", s.handleAddHistory)
-	r.Get("/api/history", s.handleGetHistory)
-	r.Get("/api/history/stats", s.handleHistoryStats)
-	r.Patch("/api/history/{id}", s.handleUpdateHistory)
-	r.Delete("/api/history/{id}", s.handleDeleteHistory)
-
-	// Duplicate detection
-	r.Get("/api/library/check", s.handleCheckLibrary)
-
-	// Quality Profiles
-	r.Get("/api/quality-profiles", s.handleGetQualityProfiles)
-	r.Post("/api/quality-profiles", s.handleCreateQualityProfile)
-	r.Put("/api/quality-profiles/{id}", s.handleUpdateQualityProfile)
-	r.Delete("/api/quality-profiles/{id}", s.handleDeleteQualityProfile)
-
-	// Blocklist
-	r.Get("/api/blocklist", s.handleGetBlocklist)
-	r.Post("/api/blocklist", s.handleAddBlocklistEntry)
-	r.Delete("/api/blocklist/clear", s.handleClearBlocklist)
-	r.Delete("/api/blocklist/{id}", s.handleDeleteBlocklistEntry)
-
-	// Release Profiles
-	r.Get("/api/release-profiles", s.handleGetReleaseProfiles)
-	r.Post("/api/release-profiles", s.handleCreateReleaseProfile)
-	r.Put("/api/release-profiles/{id}", s.handleUpdateReleaseProfile)
-	r.Delete("/api/release-profiles/{id}", s.handleDeleteReleaseProfile)
-
-	// Manual Import (scan + import files)
-	r.Post("/api/import/scan", s.handleScanImport)
-	r.Post("/api/import/files", s.handleImportFiles)
-
-	// Tags
-	r.Get("/api/tags", s.handleGetTags)
-	r.Post("/api/tags", s.handleCreateTag)
-	r.Delete("/api/tags/{id}", s.handleDeleteTag)
-	r.Post("/api/library/{id}/tags", s.handleAddItemTag)
-	r.Delete("/api/library/{id}/tags/{tagID}", s.handleRemoveItemTag)
-	r.Get("/api/library/{id}/tags", s.handleGetItemTags)
 
 	// Backup / Restore
 	r.Get("/api/backup", requireAdmin(s.handleBackupDownload))
 	r.Post("/api/backup/create", requireAdmin(s.handleBackupCreate))
 	r.Get("/api/backup/list", requireAdmin(s.handleBackupList))
 	r.Post("/api/restore", requireAdmin(s.handleRestore))
-
-	// Release Calendar
-	r.Get("/api/calendar", s.handleCalendar)
-	r.Get("/api/calendar/recent", s.handleCalendarRecent)
-
-	// Metadata & enrichment
-	s.RegisterMetadataRoutes(r)
-
-	// Metrics
-	r.Get("/metrics", s.handleMetrics)
-
-	return r
 }
 
 func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
