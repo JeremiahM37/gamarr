@@ -26,6 +26,22 @@ import (
 
 var Version = "1.0.0"
 
+// enabledWebhooks returns the enabled webhook configs stored in the database,
+// plus the env-configured default webhook (WEBHOOK_URL) if one is set.
+func enabledWebhooks(database *db.JobStore, cfg *config.Config) []webhook.WebhookConfig {
+	configs := database.GetEnabledWebhooks()
+	if cfg.WebhookURL != "" {
+		configs = append(configs, webhook.WebhookConfig{
+			Name:    "default",
+			URL:     cfg.WebhookURL,
+			Type:    cfg.WebhookType,
+			Enabled: true,
+			Events:  "*",
+		})
+	}
+	return configs
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -38,7 +54,10 @@ func main() {
 
 	// Ensure directories exist
 	for _, dir := range []string{cfg.DataDir, cfg.QBSavePath, cfg.GamesVaultPath, cfg.GamesRomsPath} {
-		os.MkdirAll(dir, 0755)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			slog.Error("failed to create directory", "dir", dir, "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Initialize database
@@ -87,17 +106,7 @@ func main() {
 
 	// Set up webhook notification callback
 	mgr.NotifyFunc = func(userID, notifType, title, message string) {
-		configs := database.GetEnabledWebhooks()
-		// Also add env-configured webhook if set
-		if cfg.WebhookURL != "" {
-			configs = append(configs, webhook.WebhookConfig{
-				Name:    "default",
-				URL:     cfg.WebhookURL,
-				Type:    cfg.WebhookType,
-				Enabled: true,
-				Events:  "*",
-			})
-		}
+		configs := enabledWebhooks(database, cfg)
 		if len(configs) > 0 {
 			status := "info"
 			if notifType == models.NotifTypeDownloadComplete || notifType == models.NotifTypeRequestCompleted {
@@ -184,17 +193,7 @@ func main() {
 	}
 
 	webhookFn := func() []webhook.WebhookConfig {
-		configs := database.GetEnabledWebhooks()
-		if cfg.WebhookURL != "" {
-			configs = append(configs, webhook.WebhookConfig{
-				Name:    "default",
-				URL:     cfg.WebhookURL,
-				Type:    cfg.WebhookType,
-				Enabled: true,
-				Events:  "*",
-			})
-		}
-		return configs
+		return enabledWebhooks(database, cfg)
 	}
 
 	sched := scheduler.New(cfg, database, searchFn, downloadFn, webhookFn)
