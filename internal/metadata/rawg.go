@@ -1,3 +1,5 @@
+// Package metadata enriches games with cover art, genres, ratings, and other
+// details fetched from the RAWG API.
 package metadata
 
 import (

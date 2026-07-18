@@ -1,3 +1,5 @@
+// Package search implements the source search drivers (Prowlarr, Myrient,
+// Vimm) plus result filtering, scoring, and per-source circuit breakers.
 package search
 
 import (

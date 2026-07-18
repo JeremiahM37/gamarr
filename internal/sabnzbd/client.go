@@ -1,3 +1,5 @@
+// Package sabnzbd is a minimal SABnzbd API client used for Usenet (NZB)
+// downloads.
 package sabnzbd
 
 import (

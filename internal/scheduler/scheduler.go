@@ -1,3 +1,5 @@
+// Package scheduler runs periodic wishlist searches, auto-grabbing matching
+// releases and notifying webhooks on results.
 package scheduler
 
 import (

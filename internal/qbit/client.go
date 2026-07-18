@@ -1,3 +1,5 @@
+// Package qbit is a minimal qBittorrent Web API client used to add, inspect,
+// and manage torrents.
 package qbit
 
 import (

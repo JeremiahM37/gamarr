@@ -1,3 +1,5 @@
+// Package safety screens downloads for dangerous file types and can scan
+// completed files with an on-demand ClamAV container.
 package safety
 
 import (

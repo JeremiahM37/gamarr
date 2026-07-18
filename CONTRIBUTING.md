@@ -20,4 +20,4 @@ go test ./...
 
 ## License
 
-GPL-3.0
+MIT — see [LICENSE](LICENSE). By contributing, you agree that your contributions will be licensed under the same terms.

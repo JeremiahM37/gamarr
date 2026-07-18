@@ -1,3 +1,6 @@
+// Package monitor implements the AI-powered self-healing monitor, which
+// captures runtime errors and queues corrective actions such as qBittorrent
+// re-auth, cache clears, and orphan recovery.
 package monitor
 
 import (

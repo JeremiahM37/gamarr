@@ -1,3 +1,5 @@
+// Package webhook sends event notifications to Discord and generic JSON
+// webhook endpoints.
 package webhook
 
 import (

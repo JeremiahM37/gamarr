@@ -1,3 +1,5 @@
+// Package platform defines the game platforms Gamarr supports and maps each
+// one to its display info, indexer categories, and source paths.
 package platform
 
 import (

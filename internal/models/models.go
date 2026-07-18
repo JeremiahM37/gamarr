@@ -1,3 +1,5 @@
+// Package models defines the shared data types passed between Gamarr
+// subsystems: search results, requests, notifications, and related structs.
 package models
 
 // SearchResult represents a search result from any source.

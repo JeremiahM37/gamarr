@@ -26,6 +26,22 @@ import (
 
 var Version = "1.0.0"
 
+// enabledWebhooks returns the enabled webhook configs stored in the database,
+// plus the env-configured default webhook (WEBHOOK_URL) if one is set.
+func enabledWebhooks(database *db.JobStore, cfg *config.Config) []webhook.WebhookConfig {
+	configs := database.GetEnabledWebhooks()
+	if cfg.WebhookURL != "" {
+		configs = append(configs, webhook.WebhookConfig{
+			Name:    "default",
+			URL:     cfg.WebhookURL,
+			Type:    cfg.WebhookType,
+			Enabled: true,
+			Events:  "*",
+		})
+	}
+	return configs
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -36,9 +52,18 @@ func main() {
 	// Load config
 	cfg := config.Load()
 
-	// Ensure directories exist
-	for _, dir := range []string{cfg.DataDir, cfg.QBSavePath, cfg.GamesVaultPath, cfg.GamesRomsPath} {
-		os.MkdirAll(dir, 0755)
+	// Ensure directories exist. DataDir holds the database, so the binary
+	// cannot run without it. The download/library paths default to /data/*
+	// volume mounts that only exist in the Docker deployment — downloads and
+	// organizing fail loudly later if they're missing, so a warning suffices.
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		slog.Error("failed to create data directory", "dir", cfg.DataDir, "error", err)
+		os.Exit(1)
+	}
+	for _, dir := range []string{cfg.QBSavePath, cfg.GamesVaultPath, cfg.GamesRomsPath} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			slog.Warn("could not create directory (downloads/organizing to it will fail)", "dir", dir, "error", err)
+		}
 	}
 
 	// Initialize database
@@ -87,17 +112,7 @@ func main() {
 
 	// Set up webhook notification callback
 	mgr.NotifyFunc = func(userID, notifType, title, message string) {
-		configs := database.GetEnabledWebhooks()
-		// Also add env-configured webhook if set
-		if cfg.WebhookURL != "" {
-			configs = append(configs, webhook.WebhookConfig{
-				Name:    "default",
-				URL:     cfg.WebhookURL,
-				Type:    cfg.WebhookType,
-				Enabled: true,
-				Events:  "*",
-			})
-		}
+		configs := enabledWebhooks(database, cfg)
 		if len(configs) > 0 {
 			status := "info"
 			if notifType == models.NotifTypeDownloadComplete || notifType == models.NotifTypeRequestCompleted {
@@ -184,17 +199,7 @@ func main() {
 	}
 
 	webhookFn := func() []webhook.WebhookConfig {
-		configs := database.GetEnabledWebhooks()
-		if cfg.WebhookURL != "" {
-			configs = append(configs, webhook.WebhookConfig{
-				Name:    "default",
-				URL:     cfg.WebhookURL,
-				Type:    cfg.WebhookType,
-				Enabled: true,
-				Events:  "*",
-			})
-		}
-		return configs
+		return enabledWebhooks(database, cfg)
 	}
 
 	sched := scheduler.New(cfg, database, searchFn, downloadFn, webhookFn)
