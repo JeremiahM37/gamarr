@@ -49,7 +49,7 @@ func (s *Server) handleBulkRetry(w http.ResponseWriter, r *http.Request) {
 	if len(targets) == 0 {
 		// Fan out to every failed job.
 		for _, item := range s.mgr.Jobs().Items() {
-			status, _ := item.Data["status"].(string)
+			status := item.Data.Status()
 			if jobFailedStatuses[strings.ToLower(status)] {
 				targets = append(targets, item.ID)
 			}
@@ -96,7 +96,7 @@ func (s *Server) handleBulkCancel(w http.ResponseWriter, r *http.Request) {
 	if len(targets) == 0 {
 		// Fan out to every active job.
 		for _, item := range s.mgr.Jobs().Items() {
-			status, _ := item.Data["status"].(string)
+			status := item.Data.Status()
 			if jobActiveStatuses[strings.ToLower(status)] {
 				targets = append(targets, item.ID)
 			}

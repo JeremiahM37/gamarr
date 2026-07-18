@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"gamarr/internal/config"
+	"gamarr/internal/db"
 	"gamarr/internal/download"
 	"gamarr/internal/models"
 	"gamarr/internal/monitor"
@@ -699,15 +700,12 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 		speed := search.HumanSize(t.DLSpeed) + "/s"
 
 		// Try to match to a job
-		var matchedJob struct {
-			ID   string
-			Data map[string]interface{}
-		}
+		var matchedJob db.JobItem
 		found := false
 		for _, item := range jobs.Items() {
-			jTitle, _ := item.Data["title"].(string)
-			if strings.Contains(strings.ToLower(t.Name), strings.ToLower(jTitle)) ||
-				strings.Contains(strings.ToLower(jTitle), strings.ToLower(t.Name)) {
+			jobTitle := item.Data.Title()
+			if strings.Contains(strings.ToLower(t.Name), strings.ToLower(jobTitle)) ||
+				strings.Contains(strings.ToLower(jobTitle), strings.ToLower(t.Name)) {
 				matchedJob = item
 				found = true
 				break
@@ -716,25 +714,21 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 
 		if found {
 			matchedJobIDs[matchedJob.ID] = true
-			jStatus, _ := matchedJob.Data["status"].(string)
-			displayStatus := jStatus
-			if jStatus == "downloading" {
+			displayStatus := matchedJob.Data.Status()
+			if displayStatus == db.StatusDownloading {
 				if mapped, ok := statusMap[t.State]; ok {
 					displayStatus = mapped
 				}
 			}
-			platf, _ := matchedJob.Data["platform"].(string)
-			errMsg, _ := matchedJob.Data["error"].(string)
-			detail, _ := matchedJob.Data["detail"].(string)
 
 			downloads = append(downloads, models.DownloadEntry{
 				Type:     "job",
-				Title:    jTitle(matchedJob.Data),
-				Platform: platf,
+				Title:    matchedJob.Data.Title(),
+				Platform: matchedJob.Data.Platform(),
 				Status:   displayStatus,
 				JobID:    matchedJob.ID,
-				Error:    errMsg,
-				Detail:   detail,
+				Error:    matchedJob.Data.Error(),
+				Detail:   matchedJob.Data.Detail(),
 				Progress: progress,
 				Size:     search.HumanSize(t.TotalSize),
 				Speed:    speed,
@@ -764,28 +758,18 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 		if matchedJobIDs[item.ID] {
 			continue
 		}
-		platf, _ := item.Data["platform"].(string)
-		status, _ := item.Data["status"].(string)
-		errMsg, _ := item.Data["error"].(string)
-		detail, _ := item.Data["detail"].(string)
-
 		downloads = append(downloads, models.DownloadEntry{
 			Type:     "job",
-			Title:    jTitle(item.Data),
-			Platform: platf,
-			Status:   status,
+			Title:    item.Data.Title(),
+			Platform: item.Data.Platform(),
+			Status:   item.Data.Status(),
 			JobID:    item.ID,
-			Error:    errMsg,
-			Detail:   detail,
+			Error:    item.Data.Error(),
+			Detail:   item.Data.Detail(),
 		})
 	}
 
 	writeJSON(w, 200, map[string]interface{}{"downloads": downloads})
-}
-
-func jTitle(data map[string]interface{}) string {
-	t, _ := data["title"].(string)
-	return t
 }
 
 func (s *Server) handleDeleteTorrent(w http.ResponseWriter, r *http.Request) {
@@ -807,8 +791,8 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleClearFinished(w http.ResponseWriter, r *http.Request) {
 	cleared := 0
 	for _, item := range s.mgr.Jobs().Items() {
-		status, _ := item.Data["status"].(string)
-		if status == "completed" || status == "error" {
+		status := item.Data.Status()
+		if status == db.StatusCompleted || status == db.StatusError {
 			s.mgr.Jobs().Delete(item.ID)
 			cleared++
 		}
@@ -900,8 +884,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	items := s.mgr.Jobs().Items()
 	byStatus := make(map[string]int)
 	for _, item := range items {
-		status, _ := item.Data["status"].(string)
-		byStatus[status]++
+		byStatus[item.Data.Status()]++
 	}
 
 	// Library stats (from library_items table)

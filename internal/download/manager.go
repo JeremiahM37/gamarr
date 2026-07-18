@@ -89,14 +89,14 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 		return "", fmt.Errorf("no download URL")
 	}
 	jobID := newJobID()
-	m.jobs.Set(jobID, map[string]interface{}{
-		"status":        "downloading",
-		"title":         title,
-		"platform":      platf,
-		"platform_slug": platSlug,
-		"is_pc":         isPC,
-		"error":         nil,
-		"detail":        "Sending to download client...",
+	m.jobs.Set(jobID, db.Job{
+		db.JobStatus:       db.StatusDownloading,
+		db.JobTitle:        title,
+		db.JobPlatform:     platf,
+		db.JobPlatformSlug: platSlug,
+		db.JobIsPC:         isPC,
+		db.JobError:        nil,
+		db.JobDetail:       "Sending to download client...",
 	})
 
 	added := false
@@ -105,7 +105,7 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 
 	// Try qBittorrent first.
 	if m.cfg.HasQBittorrent() {
-		m.jobs.Update(jobID, "detail", "Sending to qBittorrent...")
+		m.jobs.Update(jobID, db.JobDetail, "Sending to qBittorrent...")
 		if err := m.qb.AddTorrent(url, title, m.cfg.QBSavePath, m.cfg.QBCategory); err == nil {
 			added = true
 			clientUsed = "qBittorrent"
@@ -117,7 +117,7 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 
 	// Try Transmission.
 	if !added && m.transmission != nil {
-		m.jobs.Update(jobID, "detail", "Sending to Transmission...")
+		m.jobs.Update(jobID, db.JobDetail, "Sending to Transmission...")
 		_, err := m.transmission.AddTorrent(url, m.cfg.QBSavePath)
 		if err == nil {
 			added = true
@@ -130,7 +130,7 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 
 	// Try Deluge.
 	if !added && m.deluge != nil {
-		m.jobs.Update(jobID, "detail", "Sending to Deluge...")
+		m.jobs.Update(jobID, db.JobDetail, "Sending to Deluge...")
 		opts := map[string]interface{}{
 			"download_location": m.cfg.QBSavePath,
 		}
@@ -149,16 +149,16 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 		if len(clientErrs) > 0 {
 			errMsg = fmt.Sprintf("%s (%s)", errMsg, strings.Join(clientErrs, "; "))
 		}
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  errMsg,
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError,
+			db.JobError:  errMsg,
 		})
 		// Return the job ID alongside the error: the job exists (in error
 		// state) so callers can surface both the failure and its record.
 		return jobID, errors.New(errMsg)
 	}
 
-	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloading via %s...", clientUsed))
+	m.jobs.Update(jobID, db.JobDetail, fmt.Sprintf("Downloading via %s...", clientUsed))
 	slog.Info("torrent added", "client", clientUsed, "title", title)
 
 	go m.watchGameTorrent(jobID, title, platf, platSlug, isPC)
@@ -168,14 +168,14 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 // DownloadDDL starts a direct download.
 func (m *Manager) DownloadDDL(url, vimmID, title, platf, platSlug string, isPC bool) string {
 	jobID := newJobID()
-	m.jobs.Set(jobID, map[string]interface{}{
-		"status":        "downloading",
-		"title":         title,
-		"platform":      platf,
-		"platform_slug": platSlug,
-		"is_pc":         isPC,
-		"error":         nil,
-		"detail":        "Starting direct download...",
+	m.jobs.Set(jobID, db.Job{
+		db.JobStatus:       db.StatusDownloading,
+		db.JobTitle:        title,
+		db.JobPlatform:     platf,
+		db.JobPlatformSlug: platSlug,
+		db.JobIsPC:         isPC,
+		db.JobError:        nil,
+		db.JobDetail:       "Starting direct download...",
 	})
 	go m.ddlDownloadWorker(jobID, url, vimmID, title, platf, platSlug, isPC)
 	return jobID
@@ -199,14 +199,14 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 	}
 
 	jobID := newJobID()
-	m.jobs.Set(jobID, map[string]interface{}{
-		"status":        "organizing",
-		"title":         torrent.Name,
-		"platform":      platf,
-		"platform_slug": platSlug,
-		"is_pc":         isPC,
-		"error":         nil,
-		"detail":        "Scanning and organizing...",
+	m.jobs.Set(jobID, db.Job{
+		db.JobStatus:       db.StatusOrganizing,
+		db.JobTitle:        torrent.Name,
+		db.JobPlatform:     platf,
+		db.JobPlatformSlug: platSlug,
+		db.JobIsPC:         isPC,
+		db.JobError:        nil,
+		db.JobDetail:       "Scanning and organizing...",
 	})
 
 	go m.organizeWithScan(jobID, torrent, platf, platSlug, isPC)
@@ -229,20 +229,20 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 
 			// Layer 1: scan file list once metadata is available
 			if !fileScanDone && t.Progress > 0 {
-				m.jobs.Update(jobID, "detail", "Scanning file list...")
+				m.jobs.Update(jobID, db.JobDetail, "Scanning file list...")
 				isSafe, issues := safety.ScanTorrentFileList(m.qb, t.Hash)
 				fileScanDone = true
 				if !isSafe {
 					slog.Warn("file list scan failed", "title", title, "issues", issues)
-					m.jobs.UpdateMulti(jobID, map[string]interface{}{
-						"status": "error",
-						"error":  fmt.Sprintf("Blocked: %s", strings.Join(issues, "; ")),
-						"detail": "Dangerous files detected - download cancelled",
+					m.jobs.UpdateMulti(jobID, db.Job{
+						db.JobStatus: db.StatusError,
+						db.JobError:  fmt.Sprintf("Blocked: %s", strings.Join(issues, "; ")),
+						db.JobDetail: "Dangerous files detected - download cancelled",
 					})
 					m.qb.DeleteTorrent(t.Hash, true)
 					return
 				}
-				m.jobs.Update(jobID, "detail", "File list clean. Downloading...")
+				m.jobs.Update(jobID, db.JobDetail, "File list clean. Downloading...")
 			}
 
 			// Wait for completion
@@ -258,9 +258,9 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 				}
 
 				// Layer 2: ClamAV scan
-				m.jobs.UpdateMulti(jobID, map[string]interface{}{
-					"status": "scanning",
-					"detail": "Running virus scan...",
+				m.jobs.UpdateMulti(jobID, db.Job{
+					db.JobStatus: db.StatusScanning,
+					db.JobDetail: "Running virus scan...",
 				})
 				isClean, infected := safety.ScanWithClamAV(scanPath, m.cfg.ClamAVContainer, m.cfg.ClamAVSocket, m.cfg.DockerSocket)
 				if !isClean {
@@ -269,18 +269,18 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 					if len(detail) > 3 {
 						detail = detail[:3]
 					}
-					m.jobs.UpdateMulti(jobID, map[string]interface{}{
-						"status": "error",
-						"error":  fmt.Sprintf("Virus detected: %s", strings.Join(detail, "; ")),
-						"detail": "Infected files found - download quarantined",
+					m.jobs.UpdateMulti(jobID, db.Job{
+						db.JobStatus: db.StatusError,
+						db.JobError:  fmt.Sprintf("Virus detected: %s", strings.Join(detail, "; ")),
+						db.JobDetail: "Infected files found - download quarantined",
 					})
 					m.qb.DeleteTorrent(t.Hash, true)
 					return
 				}
 
-				m.jobs.UpdateMulti(jobID, map[string]interface{}{
-					"status": "organizing",
-					"detail": "Scans passed. Moving to library...",
+				m.jobs.UpdateMulti(jobID, db.Job{
+					db.JobStatus: db.StatusOrganizing,
+					db.JobDetail: "Scans passed. Moving to library...",
 				})
 				m.organizeGame(jobID, &t, platf, platSlug, isPC)
 				return
@@ -294,9 +294,9 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 		case <-time.After(5 * time.Second):
 		}
 	}
-	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status": "error",
-		"error":  "Timed out waiting for download",
+	m.jobs.UpdateMulti(jobID, db.Job{
+		db.JobStatus: db.StatusError,
+		db.JobError:  "Timed out waiting for download",
 	})
 }
 
@@ -314,9 +314,9 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	}
 
 	if !pathExists(contentPath) {
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("Cannot find downloaded files at %s", contentPath),
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError,
+			db.JobError:  fmt.Sprintf("Cannot find downloaded files at %s", contentPath),
 		})
 		slog.Error("content path not found", "path", contentPath)
 		return
@@ -326,8 +326,8 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	if platSlug == "" && !isPC {
 		if info, ok := platform.DetectPlatformFromMetadata(contentPath); ok {
 			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			m.jobs.UpdateMulti(jobID, db.Job{
+				db.JobPlatform: platf, db.JobPlatformSlug: platSlug, db.JobIsPC: isPC,
 			})
 			slog.Info("detected platform from metadata", "platform", platf)
 		}
@@ -337,8 +337,8 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	if platSlug == "" && !isPC {
 		if info, ok := platform.DetectPlatformFromFiles(contentPath, torrentName); ok {
 			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			m.jobs.UpdateMulti(jobID, db.Job{
+				db.JobPlatform: platf, db.JobPlatformSlug: platSlug, db.JobIsPC: isPC,
 			})
 			slog.Info("detected platform from files/title", "platform", platf)
 		}
@@ -347,13 +347,13 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	if isPC {
 		dest := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(contentPath)))
 		if err := moveContent(contentPath, dest); err != nil {
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
+			m.jobs.UpdateMulti(jobID, db.Job{
+				db.JobStatus: db.StatusError, db.JobError: fmt.Sprintf("Organize failed: %v", err),
 			})
 			return
 		}
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": "Moved to GameVault",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusCompleted, db.JobDetail: "Moved to GameVault",
 		})
 		writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
 		m.TrackInLibrary(torrentName, platf, platSlug, isPC, dest, 0, "torrent", "prowlarr", "torrent:"+torrentHash)
@@ -366,13 +366,13 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, sanitizeFilename(filepath.Base(contentPath)))
 		if err := moveContent(contentPath, dest); err != nil {
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
+			m.jobs.UpdateMulti(jobID, db.Job{
+				db.JobStatus: db.StatusError, db.JobError: fmt.Sprintf("Organize failed: %v", err),
 			})
 			return
 		}
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": fmt.Sprintf("Moved to RomM (%s)", platf),
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusCompleted, db.JobDetail: fmt.Sprintf("Moved to RomM (%s)", platf),
 		})
 		writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
 		m.TrackInLibrary(torrentName, platf, platSlug, isPC, dest, 0, "torrent", "prowlarr", "torrent:"+torrentHash)
@@ -382,8 +382,8 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		// Experimental: extract archives
 		m.maybeExtractArchives(jobID, dest)
 	} else {
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": "Downloaded (unknown platform, left in staging)",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusCompleted, db.JobDetail: "Downloaded (unknown platform, left in staging)",
 		})
 		slog.Warn("no platform slug, left in downloads", "name", torrentName)
 		return // Don't delete torrent
@@ -404,8 +404,8 @@ func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, p
 		scanPath = filepath.Join(savePath, tName)
 	}
 
-	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status": "scanning", "detail": "Running virus scan...",
+	m.jobs.UpdateMulti(jobID, db.Job{
+		db.JobStatus: db.StatusScanning, db.JobDetail: "Running virus scan...",
 	})
 	isClean, infected := safety.ScanWithClamAV(scanPath, m.cfg.ClamAVContainer, m.cfg.ClamAVSocket, m.cfg.DockerSocket)
 	if !isClean {
@@ -414,16 +414,16 @@ func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, p
 		if len(detail) > 3 {
 			detail = detail[:3]
 		}
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("Virus detected: %s", strings.Join(detail, "; ")),
-			"detail": "Infected files found - download quarantined",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError,
+			db.JobError:  fmt.Sprintf("Virus detected: %s", strings.Join(detail, "; ")),
+			db.JobDetail: "Infected files found - download quarantined",
 		})
 		m.qb.DeleteTorrent(torrent.Hash, true)
 		return
 	}
-	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status": "organizing", "detail": "Scans passed. Moving to library...",
+	m.jobs.UpdateMulti(jobID, db.Job{
+		db.JobStatus: db.StatusOrganizing, db.JobDetail: "Scans passed. Moving to library...",
 	})
 	m.organizeGame(jobID, torrent, platf, platSlug, isPC)
 }
@@ -432,9 +432,9 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 	staging := m.cfg.QBSavePath
 	if err := os.MkdirAll(staging, 0755); err != nil {
 		slog.Error("cannot create staging dir", "path", staging, "error", err)
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("cannot create staging dir %s: %v", staging, err),
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError,
+			db.JobError:  fmt.Sprintf("cannot create staging dir %s: %v", staging, err),
 		})
 		return
 	}
@@ -451,14 +451,13 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 	if filepath_ == "" || !pathExists(filepath_) {
 		job, ok := m.jobs.Get(jobID)
 		if ok {
-			status, _ := job["status"].(string)
-			if status != "error" {
+			if job.Status() != db.StatusError {
 				errMsg := "Download failed"
 				if dlErr != nil {
 					errMsg = fmt.Sprintf("Download failed: %v", dlErr)
 				}
-				m.jobs.UpdateMulti(jobID, map[string]interface{}{
-					"status": "error", "error": errMsg,
+				m.jobs.UpdateMulti(jobID, db.Job{
+					db.JobStatus: db.StatusError, db.JobError: errMsg,
 				})
 			}
 		}
@@ -466,8 +465,8 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 	}
 
 	// ClamAV scan
-	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status": "scanning", "detail": "Running virus scan...",
+	m.jobs.UpdateMulti(jobID, db.Job{
+		db.JobStatus: db.StatusScanning, db.JobDetail: "Running virus scan...",
 	})
 	isClean, infected := safety.ScanWithClamAV(filepath_, m.cfg.ClamAVContainer, m.cfg.ClamAVSocket, m.cfg.DockerSocket)
 	if !isClean {
@@ -476,16 +475,16 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 		if len(detail) > 3 {
 			detail = detail[:3]
 		}
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("Virus detected: %s", strings.Join(detail, "; ")),
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError,
+			db.JobError:  fmt.Sprintf("Virus detected: %s", strings.Join(detail, "; ")),
 		})
 		os.Remove(filepath_)
 		return
 	}
 
-	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status": "organizing", "detail": "Moving to library...",
+	m.jobs.UpdateMulti(jobID, db.Job{
+		db.JobStatus: db.StatusOrganizing, db.JobDetail: "Moving to library...",
 	})
 	m.organizeDDLFile(jobID, filepath_, title, platf, platSlug, isPC)
 }
@@ -546,7 +545,7 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 			downloaded += int64(n)
 			if time.Since(lastUpdate) > 2*time.Second && total > 0 {
 				pct := float64(downloaded) / float64(total) * 100
-				m.jobs.Update(jobID, "detail",
+				m.jobs.Update(jobID, db.JobDetail,
 					fmt.Sprintf("Downloading... %.1f%% (%s/%s)", pct, search.HumanSize(downloaded), search.HumanSize(total)))
 				lastUpdate = time.Now()
 			}
@@ -569,7 +568,7 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 		os.Remove(fp)
 		return "", fmt.Errorf("incomplete download: got %s of %s", search.HumanSize(downloaded), search.HumanSize(total))
 	}
-	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
+	m.jobs.Update(jobID, db.JobDetail, fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
 	return fp, nil
 }
 
@@ -590,7 +589,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 	gameURL := fmt.Sprintf("https://vimm.net/vault/%s", gameID)
-	m.jobs.Update(jobID, "detail", "Fetching game page...")
+	m.jobs.Update(jobID, db.JobDetail, "Fetching game page...")
 
 	req, _ := http.NewRequestWithContext(m.ctx, "GET", gameURL, nil)
 	req.Header.Set("User-Agent", ua)
@@ -604,8 +603,8 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	pageText := string(body)
 
 	if strings.Contains(pageText, "unavailable at the request of") {
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error", "error": "Game removed by DMCA takedown",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError, db.JobError: "Game removed by DMCA takedown",
 		})
 		return ""
 	}
@@ -638,8 +637,8 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 
 	if actionURL == "" || mediaID == "" {
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error", "error": "Could not find download form on Vimm",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError, db.JobError: "Could not find download form on Vimm",
 		})
 		return ""
 	}
@@ -649,7 +648,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 	slog.Info("Vimm download", "action", actionURL, "mediaId", mediaID)
 
-	m.jobs.Update(jobID, "detail", "Starting download from Vimm...")
+	m.jobs.Update(jobID, db.JobDetail, "Starting download from Vimm...")
 	select { // Respectful delay
 	case <-m.ctx.Done():
 		return ""
@@ -692,9 +691,9 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 
 	if dlResp == nil {
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("Vimm download server rejected request (tried %d URLs)", len(dlURLs)),
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError,
+			db.JobError:  fmt.Sprintf("Vimm download server rejected request (tried %d URLs)", len(dlURLs)),
 		})
 		return ""
 	}
@@ -714,8 +713,8 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	fp, err := safeChild(destPath, filename)
 	if err != nil {
 		slog.Error("Vimm rejected unsafe filename", "filename", sanitizeLog(filename))
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error", "error": "Vimm returned an unsafe filename",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError, db.JobError: "Vimm returned an unsafe filename",
 		})
 		return ""
 	}
@@ -737,7 +736,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 			downloaded += int64(n)
 			if total > 0 {
 				pct := float64(downloaded) / float64(total) * 100
-				m.jobs.Update(jobID, "detail",
+				m.jobs.Update(jobID, db.JobDetail,
 					fmt.Sprintf("Downloading... %.1f%% (%s/%s)", pct, search.HumanSize(downloaded), search.HumanSize(total)))
 			}
 		}
@@ -752,13 +751,13 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	// finished download — it would land in the library as a complete game.
 	if writeErr != nil || (total > 0 && downloaded != total) {
 		os.Remove(fp)
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("Vimm download incomplete (%s of %s)", search.HumanSize(downloaded), search.HumanSize(total)),
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusError,
+			db.JobError:  fmt.Sprintf("Vimm download incomplete (%s of %s)", search.HumanSize(downloaded), search.HumanSize(total)),
 		})
 		return ""
 	}
-	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
+	m.jobs.Update(jobID, db.JobDetail, fmt.Sprintf("Downloaded %s", search.HumanSize(downloaded)))
 	return fp
 }
 
@@ -767,13 +766,13 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 	if isPC {
 		dest := filepath.Join(m.cfg.GamesVaultPath, filename)
 		if err := moveFile(fp, dest); err != nil {
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
+			m.jobs.UpdateMulti(jobID, db.Job{
+				db.JobStatus: db.StatusError, db.JobError: fmt.Sprintf("Organize failed: %v", err),
 			})
 			return
 		}
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": "Moved to GameVault",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusCompleted, db.JobDetail: "Moved to GameVault",
 		})
 		writeMetadataSidecar(dest, title, platf, platSlug, isPC, "ddl")
 		m.TrackInLibrary(title, platf, platSlug, isPC, dest, 0, "ddl", "ddl", "ddl:"+dest)
@@ -784,13 +783,13 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, filename)
 		if err := moveFile(fp, dest); err != nil {
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
+			m.jobs.UpdateMulti(jobID, db.Job{
+				db.JobStatus: db.StatusError, db.JobError: fmt.Sprintf("Organize failed: %v", err),
 			})
 			return
 		}
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": fmt.Sprintf("Moved to RomM (%s)", platf),
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusCompleted, db.JobDetail: fmt.Sprintf("Moved to RomM (%s)", platf),
 		})
 		writeMetadataSidecar(dest, title, platf, platSlug, isPC, "ddl")
 		m.TrackInLibrary(title, platf, platSlug, isPC, dest, 0, "ddl", "ddl", "ddl:"+dest)
@@ -798,8 +797,8 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 		slog.Info("DDL ROM organized", "file", sanitizeLog(filename), "dest", sanitizeLog(dest))
 		m.maybeExtractArchives(jobID, dest)
 	} else {
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": "Downloaded (unknown platform, left in staging)",
+		m.jobs.UpdateMulti(jobID, db.Job{
+			db.JobStatus: db.StatusCompleted, db.JobDetail: "Downloaded (unknown platform, left in staging)",
 		})
 	}
 }
@@ -866,25 +865,25 @@ func (m *Manager) RecoverOrphanedTorrents() {
 		}
 
 		if t.Progress >= 1.0 {
-			m.jobs.Set(jobID, map[string]interface{}{
-				"status":        "completed_unorganized",
-				"title":         t.Name,
-				"platform":      platf,
-				"platform_slug": platSlug,
-				"is_pc":         isPC,
-				"error":         nil,
-				"detail":        "Completed - needs organizing (use organize button)",
+			m.jobs.Set(jobID, db.Job{
+				db.JobStatus:       db.StatusCompletedUnorganized,
+				db.JobTitle:        t.Name,
+				db.JobPlatform:     platf,
+				db.JobPlatformSlug: platSlug,
+				db.JobIsPC:         isPC,
+				db.JobError:        nil,
+				db.JobDetail:       "Completed - needs organizing (use organize button)",
 			})
 			slog.Info("recovered completed torrent", "name", t.Name)
 		} else {
-			m.jobs.Set(jobID, map[string]interface{}{
-				"status":        "downloading",
-				"title":         t.Name,
-				"platform":      platf,
-				"platform_slug": platSlug,
-				"is_pc":         isPC,
-				"error":         nil,
-				"detail":        "Recovered - watching download...",
+			m.jobs.Set(jobID, db.Job{
+				db.JobStatus:       db.StatusDownloading,
+				db.JobTitle:        t.Name,
+				db.JobPlatform:     platf,
+				db.JobPlatformSlug: platSlug,
+				db.JobIsPC:         isPC,
+				db.JobError:        nil,
+				db.JobDetail:       "Recovered - watching download...",
 			})
 			go m.watchGameTorrent(jobID, t.Name, platf, platSlug, isPC)
 			slog.Info("recovered in-progress torrent", "name", t.Name, "progress", fmt.Sprintf("%.0f%%", t.Progress*100))
@@ -909,8 +908,7 @@ func (m *Manager) maybeExtractArchives(jobID, dest string) {
 	if len(extracted) > 0 {
 		job, ok := m.jobs.Get(jobID)
 		if ok {
-			detail, _ := job["detail"].(string)
-			m.jobs.Update(jobID, "detail", fmt.Sprintf("%s (extracted %d archive(s))", detail, len(extracted)))
+			m.jobs.Update(jobID, db.JobDetail, fmt.Sprintf("%s (extracted %d archive(s))", job.Detail(), len(extracted)))
 		}
 		slog.Info("extracted archives", "count", len(extracted))
 	}

@@ -101,7 +101,7 @@ func (w *Watcher) checkCompleted() {
 // by the tracker (still claimed by an active job) is not double-imported.
 func (w *Watcher) hasMatchingJob(t qbit.Torrent) bool {
 	for _, item := range w.mgr.Jobs().Items() {
-		title, _ := item.Data["title"].(string)
+		title := item.Data.Title()
 		if titlesMatch(title, t.Name) {
 			return true
 		}
@@ -144,7 +144,7 @@ func (w *Watcher) importTorrent(t qbit.Torrent) {
 	// Check if organize succeeded.
 	job, ok := w.mgr.Jobs().Get(jobID)
 	if ok {
-		status, _ := job["status"].(string)
+		status := job.Status()
 		if status == "completed" {
 			w.imported.Store(t.Hash, struct{}{})
 			slog.Info("watcher: auto-import completed", "name", t.Name)

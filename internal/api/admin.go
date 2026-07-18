@@ -17,7 +17,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, _ *http.Request) {
 	// Active downloads.
 	activeCount := 0
 	for _, item := range s.mgr.Jobs().Items() {
-		status, _ := item.Data["status"].(string)
+		status := item.Data.Status()
 		if status == "downloading" || status == "queued" || status == "scanning" {
 			activeCount++
 		}

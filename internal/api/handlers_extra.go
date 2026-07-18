@@ -250,7 +250,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// Job status counts
 	statusCounts := make(map[string]int)
 	for _, item := range s.mgr.Jobs().Items() {
-		status, _ := item.Data["status"].(string)
+		status := item.Data.Status()
 		statusCounts[status]++
 	}
 

@@ -19,7 +19,7 @@ import (
 // It keeps an in-memory cache and writes through to SQLite on every mutation.
 type JobStore struct {
 	mu    sync.RWMutex
-	cache map[string]map[string]interface{}
+	cache map[string]Job
 	db    *sql.DB
 	path  string
 }
@@ -34,7 +34,7 @@ func New(dbPath string) (*JobStore, error) {
 		return nil, err
 	}
 	s := &JobStore{
-		cache: make(map[string]map[string]interface{}),
+		cache: make(map[string]Job),
 		db:    db,
 		path:  dbPath,
 	}
@@ -73,14 +73,14 @@ func (s *JobStore) loadAll() {
 		if err := rows.Scan(&jobID, &dataStr); err != nil {
 			continue
 		}
-		var data map[string]interface{}
+		var data Job
 		if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
 			continue
 		}
-		status, _ := data["status"].(string)
-		if status == "downloading" || status == "scanning" || status == "organizing" {
-			data["status"] = "interrupted"
-			data["error"] = "Interrupted by restart"
+		switch data.Status() {
+		case StatusDownloading, StatusScanning, StatusOrganizing:
+			data[JobStatus] = StatusInterrupted
+			data[JobError] = "Interrupted by restart"
 			stale++
 		}
 		s.cache[jobID] = data
@@ -92,8 +92,8 @@ func (s *JobStore) loadAll() {
 
 // copyJob returns a copy of a job map. Job values are scalars (strings,
 // bools, numbers, nil), so a per-map shallow copy fully detaches the result.
-func copyJob(data map[string]interface{}) map[string]interface{} {
-	cp := make(map[string]interface{}, len(data))
+func copyJob(data Job) Job {
+	cp := make(Job, len(data))
 	for k, v := range data {
 		cp[k] = v
 	}
@@ -102,7 +102,7 @@ func copyJob(data map[string]interface{}) map[string]interface{} {
 
 // Set stores or updates a job. The input map is copied, so later caller
 // mutations do not affect the store.
-func (s *JobStore) Set(jobID string, data map[string]interface{}) {
+func (s *JobStore) Set(jobID string, data Job) {
 	s.mu.Lock()
 	s.cache[jobID] = copyJob(data)
 	snap := copyJob(data)
@@ -112,7 +112,7 @@ func (s *JobStore) Set(jobID string, data map[string]interface{}) {
 
 // Get returns a copy of a job by ID. Callers may read or mutate the result
 // without racing writers that update the cached map under the store lock.
-func (s *JobStore) Get(jobID string) (map[string]interface{}, bool) {
+func (s *JobStore) Get(jobID string) (Job, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	d, ok := s.cache[jobID]
@@ -137,7 +137,7 @@ func (s *JobStore) Update(jobID, key string, value interface{}) {
 }
 
 // UpdateMulti updates multiple fields on a job.
-func (s *JobStore) UpdateMulti(jobID string, fields map[string]interface{}) {
+func (s *JobStore) UpdateMulti(jobID string, fields Job) {
 	s.mu.Lock()
 	job, ok := s.cache[jobID]
 	if !ok {
@@ -170,30 +170,21 @@ func (s *JobStore) Contains(jobID string) bool {
 
 // Items returns all jobs as (id, data) pairs. Data maps are copies, safe to
 // read or mutate without racing writers.
-func (s *JobStore) Items() []struct {
-	ID   string
-	Data map[string]interface{}
-} {
+func (s *JobStore) Items() []JobItem {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	items := make([]struct {
-		ID   string
-		Data map[string]interface{}
-	}, 0, len(s.cache))
+	items := make([]JobItem, 0, len(s.cache))
 	for id, data := range s.cache {
-		items = append(items, struct {
-			ID   string
-			Data map[string]interface{}
-		}{id, copyJob(data)})
+		items = append(items, JobItem{ID: id, Data: copyJob(data)})
 	}
 	return items
 }
 
 // Values returns copies of all job data.
-func (s *JobStore) Values() []map[string]interface{} {
+func (s *JobStore) Values() []Job {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	vals := make([]map[string]interface{}, 0, len(s.cache))
+	vals := make([]Job, 0, len(s.cache))
 	for _, data := range s.cache {
 		vals = append(vals, copyJob(data))
 	}
@@ -216,9 +207,8 @@ func (s *JobStore) CleanupStaleDownloads(hours int) int {
 		// Sync cache
 		s.mu.Lock()
 		for id, data := range s.cache {
-			status, _ := data["status"].(string)
-			if status == "downloading" {
-				if updated, ok := data["updated_at"].(float64); ok && updated < cutoff {
+			if data.Status() == StatusDownloading {
+				if updated, ok := data[JobUpdatedAt].(float64); ok && updated < cutoff {
 					delete(s.cache, id)
 				}
 			}
@@ -255,8 +245,8 @@ func (s *JobStore) Cleanup(days int) int {
 		}
 		s.mu.Lock()
 		for id, data := range s.cache {
-			status, _ := data["status"].(string)
-			if (status == "completed" || status == "error" || status == "interrupted") && !surviving[id] {
+			status := data.Status()
+			if (status == StatusCompleted || status == StatusError || status == StatusInterrupted) && !surviving[id] {
 				delete(s.cache, id)
 			}
 		}
@@ -271,7 +261,7 @@ func (s *JobStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *JobStore) persist(jobID string, data map[string]interface{}) {
+func (s *JobStore) persist(jobID string, data Job) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		slog.Error("failed to marshal job", "error", err)
