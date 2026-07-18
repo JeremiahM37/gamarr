@@ -1,3 +1,5 @@
+// Package db provides the SQLite-backed persistence layer: the JobStore for
+// download jobs plus library items, users, webhooks, requests, and history.
 package db
 
 import (

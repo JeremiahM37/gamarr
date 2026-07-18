@@ -1,3 +1,5 @@
+// Package api implements Gamarr's HTTP layer: the chi router, authentication
+// (sessions, API keys, OIDC), rate limiting, and all REST and UI handlers.
 package api
 
 import (

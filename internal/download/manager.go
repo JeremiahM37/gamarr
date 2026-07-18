@@ -1,3 +1,5 @@
+// Package download orchestrates torrent, DDL, and NZB downloads across
+// clients and watches for completed transfers to import into the library.
 package download
 
 import (

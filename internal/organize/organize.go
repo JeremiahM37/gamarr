@@ -1,3 +1,5 @@
+// Package organize handles post-download organization: extracting, renaming,
+// and moving finished game files into the vault and ROM library layout.
 package organize
 
 import (

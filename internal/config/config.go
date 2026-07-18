@@ -1,3 +1,5 @@
+// Package config loads Gamarr's runtime configuration from environment
+// variables, including the source-driver registry consumed by search drivers.
 package config
 
 import (
