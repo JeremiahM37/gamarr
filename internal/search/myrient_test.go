@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,7 +40,7 @@ func TestMyrientPlatformSlugs(t *testing.T) {
 func TestSearchMyrient_RequiresPlatform(t *testing.T) {
 	reg := testRegistry(t)
 	// Without a platform, SearchMyrient returns nil
-	results := SearchMyrient(reg, "mario", "")
+	results := SearchMyrient(context.Background(), reg, "mario", "")
 	if results != nil {
 		t.Error("expected nil when no platform specified")
 	}
@@ -47,7 +48,7 @@ func TestSearchMyrient_RequiresPlatform(t *testing.T) {
 
 func TestSearchMyrient_UnknownPlatform(t *testing.T) {
 	reg := testRegistry(t)
-	results := SearchMyrient(reg, "mario", "atari2600")
+	results := SearchMyrient(context.Background(), reg, "mario", "atari2600")
 	if results != nil {
 		t.Error("expected nil for unknown platform")
 	}
@@ -55,7 +56,7 @@ func TestSearchMyrient_UnknownPlatform(t *testing.T) {
 
 func TestSearchMyrient_EmptyQuery(t *testing.T) {
 	reg := testRegistry(t)
-	results := SearchMyrient(reg, "", "nes")
+	results := SearchMyrient(context.Background(), reg, "", "nes")
 	if results != nil {
 		t.Error("expected nil for empty query")
 	}

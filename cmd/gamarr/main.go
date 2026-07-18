@@ -49,6 +49,12 @@ func main() {
 
 	slog.Info("gamarr starting", "version", Version)
 
+	// Shutdown context: cancelled on SIGINT/SIGTERM. Threaded through the
+	// download manager and search paths so background watchers stop and
+	// in-flight HTTP work aborts instead of outliving the shutdown window.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Load config
 	cfg := config.Load()
 
@@ -85,7 +91,7 @@ func main() {
 	}
 
 	// Initialize download manager
-	mgr := download.New(cfg, database, qb)
+	mgr := download.New(ctx, cfg, database, qb)
 
 	// Initialize AI monitor
 	mon := monitor.New(cfg, monitor.Callbacks{
@@ -143,21 +149,21 @@ func main() {
 		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			results := search.SearchProwlarr(cfg, query, slug)
+			results := search.SearchProwlarr(ctx, cfg, query, slug)
 			mu.Lock()
 			allResults = append(allResults, results...)
 			mu.Unlock()
 		}()
 		go func() {
 			defer wg.Done()
-			results := search.SearchMyrient(cfg.Sources, query, slug)
+			results := search.SearchMyrient(ctx, cfg.Sources, query, slug)
 			mu.Lock()
 			allResults = append(allResults, results...)
 			mu.Unlock()
 		}()
 		go func() {
 			defer wg.Done()
-			results := search.SearchVimm(cfg.Sources, query, slug)
+			results := search.SearchVimm(ctx, cfg.Sources, query, slug)
 			mu.Lock()
 			allResults = append(allResults, results...)
 			mu.Unlock()
@@ -254,9 +260,6 @@ func main() {
 	}()
 
 	// Graceful shutdown
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	<-ctx.Done()
 	slog.Info("shutting down...")
 

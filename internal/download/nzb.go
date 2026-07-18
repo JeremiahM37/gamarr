@@ -88,7 +88,13 @@ func (m *Manager) watchSABnzbdDownload(sab *sabnzbd.Client, jobID, nzoID, title,
 			}
 		}
 
-		time.Sleep(10 * time.Second)
+		select {
+		case <-m.ctx.Done():
+			// Shutting down: leave the job as-is; JobStore.loadAll marks
+			// in-flight jobs "interrupted" on the next start.
+			return
+		case <-time.After(10 * time.Second):
+		}
 	}
 	m.jobs.UpdateMulti(jobID, map[string]interface{}{
 		"status": "error",

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -62,7 +63,7 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	t.Cleanup(func() { store.Close() })
 
 	qb := qbit.New(cfg.QBURL, cfg.QBUser, cfg.QBPass)
-	mgr := download.New(cfg, store, qb)
+	mgr := download.New(context.Background(), cfg, store, qb)
 
 	var sab *sabnzbd.Client
 	if cfg.HasSABnzbd() {

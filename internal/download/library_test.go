@@ -2,6 +2,7 @@ package download
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -14,7 +15,7 @@ func bigROM() []byte {
 func TestScanLibraryDirs(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 
 	// Vault: every top-level entry is one PC game.
 	writeFileT(t, filepath.Join(cfg.GamesVaultPath, "Game One", "setup.exe"), []byte("x"))
@@ -85,7 +86,7 @@ func TestScanLibraryDirsEmptyPaths(t *testing.T) {
 	cfg.GamesVaultPath = ""
 	cfg.GamesRomsPath = ""
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 	m.ScanLibraryDirs() // must not panic
 	if total := jobs.LibraryTotal(); total != 0 {
 		t.Errorf("library total = %d, want 0", total)
@@ -94,7 +95,7 @@ func TestScanLibraryDirsEmptyPaths(t *testing.T) {
 
 func TestScanVaultMissingDir(t *testing.T) {
 	cfg := newTestConfig(t)
-	m := New(cfg, newTestJobs(t), nil)
+	m := New(context.Background(), cfg, newTestJobs(t), nil)
 	if n := m.scanVault(filepath.Join(t.TempDir(), "ghost")); n != 0 {
 		t.Errorf("scanVault(missing) = %d, want 0", n)
 	}
@@ -102,14 +103,14 @@ func TestScanVaultMissingDir(t *testing.T) {
 
 func TestScanDir(t *testing.T) {
 	t.Run("missing dir", func(t *testing.T) {
-		m := New(newTestConfig(t), newTestJobs(t), nil)
+		m := New(context.Background(), newTestConfig(t), newTestJobs(t), nil)
 		if n := m.scanDir("/no/such/dir", "SNES", "snes", false); n != 0 {
 			t.Errorf("scanDir = %d, want 0", n)
 		}
 	})
 
 	t.Run("pc scan keeps small files", func(t *testing.T) {
-		m := New(newTestConfig(t), newTestJobs(t), nil)
+		m := New(context.Background(), newTestConfig(t), newTestJobs(t), nil)
 		dir := t.TempDir()
 		writeFileT(t, filepath.Join(dir, "small-installer.exe"), []byte("tiny"))
 		if n := m.scanDir(dir, "PC", "", true); n != 1 {
@@ -118,7 +119,7 @@ func TestScanDir(t *testing.T) {
 	})
 
 	t.Run("extracted dirs skipped", func(t *testing.T) {
-		m := New(newTestConfig(t), newTestJobs(t), nil)
+		m := New(context.Background(), newTestConfig(t), newTestJobs(t), nil)
 		dir := t.TempDir()
 		writeFileT(t, filepath.Join(dir, "game.zip.extracted", "rom.sfc"), bigROM())
 		if n := m.scanDir(dir, "SNES", "snes", false); n != 0 {
@@ -178,7 +179,7 @@ func TestContainsGameFiles(t *testing.T) {
 func TestAddLibraryEntryDedup(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 
 	fp := filepath.Join(t.TempDir(), "Game.sfc")
 	writeFileT(t, fp, []byte("rom"))
@@ -194,7 +195,7 @@ func TestAddLibraryEntryDedup(t *testing.T) {
 func TestAddLibraryEntryDirectorySize(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 
 	dir := filepath.Join(t.TempDir(), "Multi Disc Game")
 	writeFileT(t, filepath.Join(dir, "disc1.iso"), []byte("12345"))
@@ -215,7 +216,7 @@ func TestAddLibraryEntryDirectorySize(t *testing.T) {
 func TestTrackInLibrary(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 
 	m.TrackInLibrary("Tracked Game", "SNES", "snes", false, "/roms/snes/g.sfc", 42, "torrent", "prowlarr", "torrent:abc")
 
@@ -281,7 +282,7 @@ func TestDirSize(t *testing.T) {
 func TestScanVaultSkipsHiddenAndSidecars(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 
 	dir := t.TempDir()
 	writeFileT(t, filepath.Join(dir, ".DS_Store"), []byte("x"))

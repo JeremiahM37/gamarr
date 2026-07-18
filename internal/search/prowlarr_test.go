@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,7 @@ import (
 
 func TestSearchProwlarr_NoProwlarr(t *testing.T) {
 	cfg := &config.Config{ProwlarrURL: "", ProwlarrAPIKey: ""}
-	results := SearchProwlarr(cfg, "zelda", "")
+	results := SearchProwlarr(context.Background(), cfg, "zelda", "")
 	if results != nil {
 		t.Error("expected nil when Prowlarr not configured")
 	}
@@ -47,7 +48,7 @@ func TestSearchProwlarr_ParsesResults(t *testing.T) {
 		ProwlarrAPIKey:       "testkey",
 		ProwlarrGameIndexers: []int{1},
 	}
-	results := SearchProwlarr(cfg, "zelda", "")
+	results := SearchProwlarr(context.Background(), cfg, "zelda", "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -86,7 +87,7 @@ func TestSearchProwlarr_PCRepackFallback(t *testing.T) {
 		ProwlarrAPIKey:       "key",
 		ProwlarrGameIndexers: []int{1},
 	}
-	results := SearchProwlarr(cfg, "game", "")
+	results := SearchProwlarr(context.Background(), cfg, "game", "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -124,7 +125,7 @@ func TestSearchProwlarr_CategoryFilter(t *testing.T) {
 		ProwlarrGameIndexers: []int{1},
 	}
 	// Filter to switch only
-	results := SearchProwlarr(cfg, "game", "switch")
+	results := SearchProwlarr(context.Background(), cfg, "game", "switch")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result with switch filter, got %d", len(results))
 	}
@@ -144,7 +145,7 @@ func TestSearchProwlarr_ServerError(t *testing.T) {
 		ProwlarrAPIKey:       "key",
 		ProwlarrGameIndexers: []int{1},
 	}
-	results := SearchProwlarr(cfg, "game", "")
+	results := SearchProwlarr(context.Background(), cfg, "game", "")
 	if len(results) != 0 {
 		t.Errorf("expected 0 results on server error, got %d", len(results))
 	}

@@ -1,6 +1,7 @@
 package download
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -54,7 +55,7 @@ func (s *sabMock) client() *sabnzbd.Client {
 }
 
 func TestDownloadNZBNilClient(t *testing.T) {
-	m := New(newTestConfig(t), newTestJobs(t), nil)
+	m := New(context.Background(), newTestConfig(t), newTestJobs(t), nil)
 	_, err := m.DownloadNZB(nil, "http://x/nzb", "Game", "PC", "", true)
 	if err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("err = %v, want not configured", err)
@@ -68,7 +69,7 @@ func TestDownloadNZBAddError(t *testing.T) {
 	sab.addStatus = false
 	sab.addError = "invalid api key"
 
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 	jobID, err := m.DownloadNZB(sab.client(), "http://x/file.nzb", "Bad Game", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -103,7 +104,7 @@ func TestDownloadNZBCompletedFlow(t *testing.T) {
 		{"nzo_id": sab.nzoID, "status": "Completed", "storage": storage},
 	}
 
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 	jobID, err := m.DownloadNZB(sab.client(), "http://x/game.nzb", "Usenet Game", "SNES", "snes", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -133,7 +134,7 @@ func TestDownloadNZBFailedFlow(t *testing.T) {
 		{"nzo_id": sab.nzoID, "status": "Failed"},
 	}
 
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 	jobID, err := m.DownloadNZB(sab.client(), "http://x/game.nzb", "Doomed", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -146,7 +147,7 @@ func TestDownloadNZBFailedFlow(t *testing.T) {
 
 func TestOrganizeNZBDownload(t *testing.T) {
 	newFixture := func(t *testing.T) (*Manager, string) {
-		m := New(newTestConfig(t), newTestJobs(t), nil)
+		m := New(context.Background(), newTestConfig(t), newTestJobs(t), nil)
 		jobID := newJobID()
 		m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 		return m, jobID
@@ -265,7 +266,7 @@ func TestRetryJob(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := New(newTestConfig(t), newTestJobs(t), nil)
+			m := New(context.Background(), newTestConfig(t), newTestJobs(t), nil)
 			jobID := newJobID()
 			tt.setup(jobID, m)
 
@@ -293,7 +294,7 @@ func TestAutoRetryFailed(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.MaxRetries = 2
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 
 	jobs.Set("job-max", map[string]interface{}{
 		"status": "error", "retry_count": float64(2),

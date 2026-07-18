@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -27,8 +28,8 @@ func VimmPlatformSlugs(reg *sources.Registry) []string {
 
 var vimmGameRe = regexp.MustCompile(`<a\s+href=\s*"/vault/(\d+)"[^>]*>([^<]+)</a>`)
 
-// SearchVimm searches Vimm's Lair for ROMs.
-func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*models.SearchResult {
+// SearchVimm searches Vimm's Lair for ROMs. ctx cancels the search request.
+func SearchVimm(ctx context.Context, reg *sources.Registry, query string, platformSlug string) []*models.SearchResult {
 	if IsCircuitOpen("vimm") {
 		slog.Warn("vimm circuit open, skipping search")
 		return nil
@@ -47,7 +48,7 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
-	req, _ := http.NewRequest("GET", reg.Vimm.BaseURL+"?"+params.Encode(), nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", reg.Vimm.BaseURL+"?"+params.Encode(), nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)

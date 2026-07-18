@@ -3,6 +3,7 @@
 package download
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,7 @@ type NotifyCallback func(userID, notifType, title, message string)
 
 // Manager handles download orchestration.
 type Manager struct {
+	ctx          context.Context
 	cfg          *config.Config
 	jobs         *db.JobStore
 	qb           *qbit.Client
@@ -39,9 +41,14 @@ type Manager struct {
 	NotifyFunc   NotifyCallback
 }
 
-// New creates a new download Manager.
-func New(cfg *config.Config, jobs *db.JobStore, qb *qbit.Client) *Manager {
-	mgr := &Manager{cfg: cfg, jobs: jobs, qb: qb}
+// New creates a new download Manager. ctx is the manager's lifetime context
+// (typically main's shutdown context): background watchers stop and in-flight
+// DDL/Vimm transfers abort when it is cancelled.
+func New(ctx context.Context, cfg *config.Config, jobs *db.JobStore, qb *qbit.Client) *Manager {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mgr := &Manager{ctx: ctx, cfg: cfg, jobs: jobs, qb: qb}
 
 	// Initialize optional download clients.
 	if cfg.HasTransmission() {
@@ -279,7 +286,13 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 				return
 			}
 		}
-		time.Sleep(5 * time.Second)
+		select {
+		case <-m.ctx.Done():
+			// Shutting down: leave the job as-is; JobStore.loadAll marks
+			// in-flight jobs "interrupted" on the next start.
+			return
+		case <-time.After(5 * time.Second):
+		}
 	}
 	m.jobs.UpdateMulti(jobID, map[string]interface{}{
 		"status": "error",
@@ -479,7 +492,7 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 
 func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
-	req, _ := http.NewRequest("GET", dlURL, nil)
+	req, _ := http.NewRequestWithContext(m.ctx, "GET", dlURL, nil)
 	req.Header.Set("User-Agent", "Gamarr/1.0")
 
 	resp, err := client.Do(req)
@@ -579,7 +592,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	gameURL := fmt.Sprintf("https://vimm.net/vault/%s", gameID)
 	m.jobs.Update(jobID, "detail", "Fetching game page...")
 
-	req, _ := http.NewRequest("GET", gameURL, nil)
+	req, _ := http.NewRequestWithContext(m.ctx, "GET", gameURL, nil)
 	req.Header.Set("User-Agent", ua)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -637,7 +650,11 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	slog.Info("Vimm download", "action", actionURL, "mediaId", mediaID)
 
 	m.jobs.Update(jobID, "detail", "Starting download from Vimm...")
-	time.Sleep(3 * time.Second) // Respectful delay
+	select { // Respectful delay
+	case <-m.ctx.Done():
+		return ""
+	case <-time.After(3 * time.Second):
+	}
 
 	// Try action URL and alternates
 	dlURLs := []string{actionURL}
@@ -648,7 +665,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	var dlResp *http.Response
 	for _, dlURL := range dlURLs {
 		form := strings.NewReader(fmt.Sprintf("mediaId=%s", mediaID))
-		req, _ := http.NewRequest("POST", dlURL, form)
+		req, _ := http.NewRequestWithContext(m.ctx, "POST", dlURL, form)
 		req.Header.Set("User-Agent", ua)
 		req.Header.Set("Referer", gameURL)
 		req.Header.Set("Origin", "https://vimm.net")
@@ -795,7 +812,11 @@ func (m *Manager) RecoverOrphanedTorrents() {
 			break
 		}
 		slog.Info("orphan recovery: waiting for qBit", "attempt", attempt+1)
-		time.Sleep(5 * time.Second)
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
 		if attempt == 11 {
 			slog.Warn("cannot check orphaned torrents - qBit login failed after retries")
 			return

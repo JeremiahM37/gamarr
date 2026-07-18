@@ -420,6 +420,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
+	ctx := r.Context()
 	var allResults []*models.SearchResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -432,7 +433,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if slug == "all" {
 			slug = ""
 		}
-		results := search.SearchProwlarr(s.cfg, query, slug)
+		results := search.SearchProwlarr(ctx, s.cfg, query, slug)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
@@ -443,7 +444,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if slug == "all" {
 			slug = ""
 		}
-		results := search.SearchMyrient(s.cfg.Sources, query, slug)
+		results := search.SearchMyrient(ctx, s.cfg.Sources, query, slug)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
@@ -454,7 +455,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if slug == "all" {
 			slug = ""
 		}
-		results := search.SearchVimm(s.cfg.Sources, query, slug)
+		results := search.SearchVimm(ctx, s.cfg.Sources, query, slug)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()

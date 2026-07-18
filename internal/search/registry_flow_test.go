@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,7 +63,7 @@ func TestRegistryFlow(t *testing.T) {
 		reg.Myrient.BaseURL = srv.URL + "/"
 		reg.Myrient.PlatformPaths = map[string]string{"nes": "TestNES/"}
 
-		_ = SearchMyrient(reg, "game", "nes")
+		_ = SearchMyrient(context.Background(), reg, "game", "nes")
 		if !srv.hit() {
 			t.Fatalf("Myrient did not call the registry URL")
 		}
@@ -80,7 +81,7 @@ func TestRegistryFlow(t *testing.T) {
 		reg.Myrient.BaseURL = "https://sentinel.test.invalid/"
 		reg.Myrient.PlatformPaths = map[string]string{"nes": "x/"}
 
-		results := SearchMyrient(reg, "game", "nes")
+		results := SearchMyrient(context.Background(), reg, "game", "nes")
 		if results != nil {
 			t.Errorf("expected nil results when DNS fails, got %d", len(results))
 		}
@@ -97,7 +98,7 @@ func TestRegistryFlow(t *testing.T) {
 		// Force a recognized platform so the system param is set.
 		reg.Vimm.PlatformSystems = map[string]string{"nes": "NES"}
 
-		_ = SearchVimm(reg, "game", "nes")
+		_ = SearchVimm(context.Background(), reg, "game", "nes")
 		if !srv.hit() {
 			t.Fatalf("Vimm did not call the registry URL")
 		}
@@ -116,7 +117,7 @@ func TestRegistryFlow(t *testing.T) {
 		reg.Vimm.BaseURL = srv.URL + "/"
 		reg.Vimm.PlatformSystems = map[string]string{"nes": "NES"}
 
-		results := SearchVimm(reg, "game", "nes")
+		results := SearchVimm(context.Background(), reg, "game", "nes")
 		if len(results) == 0 {
 			t.Fatal("expected at least one parsed result")
 		}

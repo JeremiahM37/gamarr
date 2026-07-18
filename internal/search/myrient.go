@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -54,7 +55,7 @@ func ClearMyrientCache() {
 	slog.Info("Myrient directory cache cleared")
 }
 
-func getMyrientListing(reg *sources.Registry, slug string) []dirEntry {
+func getMyrientListing(ctx context.Context, reg *sources.Registry, slug string) []dirEntry {
 	dirCacheMu.RLock()
 	if entries, ok := dirCache[slug]; ok && time.Since(dirCacheTime[slug]) < dirCacheTTL {
 		dirCacheMu.RUnlock()
@@ -69,7 +70,7 @@ func getMyrientListing(reg *sources.Registry, slug string) []dirEntry {
 
 	listURL := reg.Myrient.BaseURL + path
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, _ := http.NewRequest("GET", listURL, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", listURL, nil)
 	req.Header.Set("User-Agent", "Gamarr/1.0")
 
 	resp, err := client.Do(req)
@@ -113,8 +114,9 @@ func getMyrientListing(reg *sources.Registry, slug string) []dirEntry {
 	return entries
 }
 
-// SearchMyrient searches Myrient ROM archives.
-func SearchMyrient(reg *sources.Registry, query string, platformSlug string) []*models.SearchResult {
+// SearchMyrient searches Myrient ROM archives. ctx cancels the directory
+// listing fetch.
+func SearchMyrient(ctx context.Context, reg *sources.Registry, query string, platformSlug string) []*models.SearchResult {
 	if IsCircuitOpen("myrient") {
 		slog.Warn("myrient circuit open, skipping search")
 		return nil
@@ -141,7 +143,7 @@ func SearchMyrient(reg *sources.Registry, query string, platformSlug string) []*
 
 	var results []*models.SearchResult
 	for _, slug := range slugs {
-		files := getMyrientListing(reg, slug)
+		files := getMyrientListing(ctx, reg, slug)
 		for _, f := range files {
 			fWords := extractWords(f.Name)
 			overlap := countOverlap(qWords, fWords)

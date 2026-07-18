@@ -3,6 +3,7 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -21,8 +22,9 @@ var pcRepackRe = regexp.MustCompile(
 		`tinyiso|darksiders|delusional|masquerade)\b`,
 )
 
-// SearchProwlarr searches Prowlarr indexers for games.
-func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*models.SearchResult {
+// SearchProwlarr searches Prowlarr indexers for games. ctx cancels the
+// per-indexer HTTP requests.
+func SearchProwlarr(ctx context.Context, cfg *config.Config, query string, platformSlug string) []*models.SearchResult {
 	if !cfg.HasProwlarr() {
 		return nil
 	}
@@ -48,7 +50,7 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 	for _, indexerID := range cfg.ProwlarrGameIndexers {
 		reqURL := fmt.Sprintf("%s/api/v1/search?query=%s&indexerIds=%d&type=search&limit=50",
 			cfg.ProwlarrURL, url.QueryEscape(query), indexerID)
-		req, _ := http.NewRequest("GET", reqURL, nil)
+		req, _ := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 		req.Header.Set("X-Api-Key", cfg.ProwlarrAPIKey)
 
 		resp, err := client.Do(req)

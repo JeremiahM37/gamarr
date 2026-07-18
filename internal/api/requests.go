@@ -219,6 +219,7 @@ func (s *Server) handleSearchRequest(w http.ResponseWriter, r *http.Request) {
 	query := req.Title
 	platformFilter := req.PlatformSlug
 
+	ctx := r.Context()
 	var allResults []*models.SearchResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -226,21 +227,21 @@ func (s *Server) handleSearchRequest(w http.ResponseWriter, r *http.Request) {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		results := search.SearchProwlarr(s.cfg, query, platformFilter)
+		results := search.SearchProwlarr(ctx, s.cfg, query, platformFilter)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
 	}()
 	go func() {
 		defer wg.Done()
-		results := search.SearchMyrient(s.cfg.Sources, query, platformFilter)
+		results := search.SearchMyrient(ctx, s.cfg.Sources, query, platformFilter)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
 	}()
 	go func() {
 		defer wg.Done()
-		results := search.SearchVimm(s.cfg.Sources, query, platformFilter)
+		results := search.SearchVimm(ctx, s.cfg.Sources, query, platformFilter)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()

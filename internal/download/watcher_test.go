@@ -1,6 +1,7 @@
 package download
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func newTestWatcher(t *testing.T, qm *qbitMock) (*Watcher, *Manager) {
 	cfg := newTestConfig(t)
 	cfg.QBURL = "configured"
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, qm.client())
+	m := New(context.Background(), cfg, jobs, qm.client())
 	return NewWatcher(cfg, m), m
 }
 
@@ -32,7 +33,7 @@ func TestWatcherStartDisabled(t *testing.T) {
 		cfg := newTestConfig(t)
 		cfg.WatcherEnabled = true
 		cfg.QBURL = ""
-		m := New(cfg, newTestJobs(t), nil)
+		m := New(context.Background(), cfg, newTestJobs(t), nil)
 		w := NewWatcher(cfg, m)
 		w.Start()
 		w.Stop()

@@ -2,6 +2,7 @@ package download
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -36,7 +37,7 @@ func TestNewManager(t *testing.T) {
 	t.Run("no optional clients", func(t *testing.T) {
 		cfg := newTestConfig(t)
 		jobs := newTestJobs(t)
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		if m.Transmission() != nil {
 			t.Error("Transmission client should be nil when not configured")
 		}
@@ -53,7 +54,7 @@ func TestNewManager(t *testing.T) {
 		cfg.TransmissionURL = "http://127.0.0.1:1"
 		cfg.DelugeURL = "http://127.0.0.1:1"
 		qb := qbit.New("http://127.0.0.1:1", "u", "p")
-		m := New(cfg, newTestJobs(t), qb)
+		m := New(context.Background(), cfg, newTestJobs(t), qb)
 		if m.Transmission() == nil {
 			t.Error("Transmission client should be initialized")
 		}
@@ -68,7 +69,7 @@ func TestNewManager(t *testing.T) {
 
 func TestDownloadTorrentValidation(t *testing.T) {
 	cfg := newTestConfig(t)
-	m := New(cfg, newTestJobs(t), nil)
+	m := New(context.Background(), cfg, newTestJobs(t), nil)
 	if _, err := m.DownloadTorrent("", "Title", "PC", "", true); err == nil {
 		t.Fatal("empty URL should return an error")
 	}
@@ -78,7 +79,7 @@ func TestDownloadTorrentNoClientAvailable(t *testing.T) {
 	// No qBittorrent, Transmission, or Deluge configured: the job errors.
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 
 	jobID, err := m.DownloadTorrent("magnet:x", "Some Game", "PC", "", true)
 	if err == nil {
@@ -116,7 +117,7 @@ func TestDownloadTorrentQBitFullFlow(t *testing.T) {
 		ContentPath: content,
 	}})
 
-	m := New(cfg, jobs, qm.client())
+	m := New(context.Background(), cfg, jobs, qm.client())
 	jobID, err := m.DownloadTorrent("magnet:x", "Super Game (USA)", "SNES", "snes", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -162,7 +163,7 @@ func TestDownloadTorrentBlocksDangerousFiles(t *testing.T) {
 		Progress: 0.5, // metadata available, still downloading
 	}})
 
-	m := New(cfg, jobs, qm.client())
+	m := New(context.Background(), cfg, jobs, qm.client())
 	jobID, err := m.DownloadTorrent("magnet:x", "Evil Game", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -198,7 +199,7 @@ func TestDownloadTorrentFallbacks(t *testing.T) {
 		defer trSrv.Close()
 		cfg.TransmissionURL = trSrv.URL
 
-		m := New(cfg, jobs, qm.client())
+		m := New(context.Background(), cfg, jobs, qm.client())
 		jobID, err := m.DownloadTorrent("magnet:x", "Fallback Game", "PC", "", true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -227,7 +228,7 @@ func TestDownloadTorrentFallbacks(t *testing.T) {
 		defer dlSrv.Close()
 		cfg.DelugeURL = dlSrv.URL
 
-		m := New(cfg, jobs, qm.client())
+		m := New(context.Background(), cfg, jobs, qm.client())
 		jobID, err := m.DownloadTorrent("magnet:x", "Fallback Game 2", "PC", "", true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -249,7 +250,7 @@ func TestDownloadTorrentFallbacks(t *testing.T) {
 		cfg.TransmissionURL = deadSrv.URL
 		cfg.DelugeURL = deadSrv.URL
 
-		m := New(cfg, jobs, qm.client())
+		m := New(context.Background(), cfg, jobs, qm.client())
 		jobID, err := m.DownloadTorrent("magnet:x", "Doomed Game", "PC", "", true)
 		if err == nil {
 			t.Fatal("expected an error when every client fails")
@@ -265,7 +266,7 @@ func TestOrganizeTorrent(t *testing.T) {
 	t.Run("not found", func(t *testing.T) {
 		cfg := newTestConfig(t)
 		qm := newQbitMock(t)
-		m := New(cfg, newTestJobs(t), qm.client())
+		m := New(context.Background(), cfg, newTestJobs(t), qm.client())
 		if _, err := m.OrganizeTorrent("missing-hash", "PC", "", true); err == nil || !strings.Contains(err.Error(), "not found") {
 			t.Fatalf("err = %v, want not found", err)
 		}
@@ -275,7 +276,7 @@ func TestOrganizeTorrent(t *testing.T) {
 		cfg := newTestConfig(t)
 		qm := newQbitMock(t)
 		qm.setTorrents([]qbit.Torrent{{Name: "G", Hash: "h1", Progress: 0.4}})
-		m := New(cfg, newTestJobs(t), qm.client())
+		m := New(context.Background(), cfg, newTestJobs(t), qm.client())
 		if _, err := m.OrganizeTorrent("h1", "PC", "", true); err == nil || !strings.Contains(err.Error(), "not yet complete") {
 			t.Fatalf("err = %v, want not yet complete", err)
 		}
@@ -291,7 +292,7 @@ func TestOrganizeTorrent(t *testing.T) {
 		qm.setTorrents([]qbit.Torrent{{
 			Name: "Cool.Game-FitGirl", Hash: "h2", Progress: 1.0, ContentPath: content,
 		}})
-		m := New(cfg, jobs, qm.client())
+		m := New(context.Background(), cfg, jobs, qm.client())
 
 		jobID, err := m.OrganizeTorrent("h2", "PC", "", true)
 		if err != nil {
@@ -316,7 +317,7 @@ func setupOrganizeJob(t *testing.T) (*Manager, *qbitMock, string) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
 	qm := newQbitMock(t)
-	m := New(cfg, jobs, qm.client())
+	m := New(context.Background(), cfg, jobs, qm.client())
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{
 		"status": "organizing", "title": "T", "error": nil, "detail": "",
@@ -442,7 +443,7 @@ func TestDownloadDDL(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		jobID := m.DownloadDDL(srv.URL+"/dl", "", "Mario World", "SNES", "snes", false)
 
 		waitFor(t, 10*time.Second, "library tracking", func() bool {
@@ -470,7 +471,7 @@ func TestDownloadDDL(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		jobID := m.DownloadDDL(srv.URL+"/gone", "", "Missing Game", "PC", "", true)
 		job := waitJobStatus(t, jobs, jobID, "error", 5*time.Second)
 		errMsg, _ := job["error"].(string)
@@ -496,7 +497,7 @@ func TestDownloadDDL(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		jobID := m.DownloadDDL(srv.URL+"/dl", "", "Blocked Game", "PC", "", true)
 		job := waitJobStatus(t, jobs, jobID, "error", 5*time.Second)
 		errMsg, _ := job["error"].(string)
@@ -511,7 +512,7 @@ func TestDownloadDDL(t *testing.T) {
 	t.Run("no url and no vimm id fails", func(t *testing.T) {
 		cfg := newTestConfig(t)
 		jobs := newTestJobs(t)
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		jobID := m.DownloadDDL("", "", "Nothing", "PC", "", true)
 		waitJobStatus(t, jobs, jobID, "error", 5*time.Second)
 	})
@@ -525,7 +526,7 @@ func TestDownloadDDLFilenameFromURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
 
@@ -549,7 +550,7 @@ func TestDownloadDDLCreateFileFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
 
@@ -580,7 +581,7 @@ func TestDownloadDDLTruncatedDownloadIsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := New(cfg, jobs, nil)
+	m := New(context.Background(), cfg, jobs, nil)
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
 
@@ -602,7 +603,7 @@ func TestOrganizeDDLFile(t *testing.T) {
 	newFixture := func(t *testing.T) (*Manager, string, string) {
 		cfg := newTestConfig(t)
 		jobs := newTestJobs(t)
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		jobID := newJobID()
 		jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 		src := filepath.Join(t.TempDir(), "game-file.bin")
@@ -667,7 +668,7 @@ func TestRecoverOrphanedTorrents(t *testing.T) {
 		{Name: "Totally Mysterious Thing", Hash: "h3", Progress: 1.0},
 	})
 
-	m := New(cfg, jobs, qm.client())
+	m := New(context.Background(), cfg, jobs, qm.client())
 	m.RecoverOrphanedTorrents()
 
 	byTitle := map[string]map[string]interface{}{}
@@ -813,7 +814,7 @@ func TestWriteMetadataSidecar(t *testing.T) {
 
 func TestSettingsRoundTrip(t *testing.T) {
 	cfg := newTestConfig(t)
-	m := New(cfg, newTestJobs(t), nil)
+	m := New(context.Background(), cfg, newTestJobs(t), nil)
 
 	t.Run("defaults when no file", func(t *testing.T) {
 		s := m.LoadSettings()
@@ -841,7 +842,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 func TestDDLSourcesRoundTrip(t *testing.T) {
 	cfg := newTestConfig(t)
-	m := New(cfg, newTestJobs(t), nil)
+	m := New(context.Background(), cfg, newTestJobs(t), nil)
 
 	if got := m.LoadDDLSources(); got != nil {
 		t.Errorf("LoadDDLSources with no file = %v, want nil", got)
@@ -924,7 +925,7 @@ func TestMaybeExtractArchives(t *testing.T) {
 	t.Run("disabled is a no-op", func(t *testing.T) {
 		cfg := newTestConfig(t)
 		jobs := newTestJobs(t)
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		dir := t.TempDir()
 		writeFileT(t, filepath.Join(dir, "a.zip"), []byte("junk"))
 		jobID := newJobID()
@@ -941,7 +942,7 @@ func TestMaybeExtractArchives(t *testing.T) {
 	t.Run("enabled with missing dest returns", func(t *testing.T) {
 		cfg := newTestConfig(t)
 		jobs := newTestJobs(t)
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		m.SaveSettings(&Settings{ExtractArchives: true})
 		m.maybeExtractArchives("nojob", filepath.Join(t.TempDir(), "ghost"))
 	})
@@ -949,7 +950,7 @@ func TestMaybeExtractArchives(t *testing.T) {
 	t.Run("enabled with file dest scans parent dir", func(t *testing.T) {
 		cfg := newTestConfig(t)
 		jobs := newTestJobs(t)
-		m := New(cfg, jobs, nil)
+		m := New(context.Background(), cfg, jobs, nil)
 		m.SaveSettings(&Settings{ExtractArchives: true})
 		dir := t.TempDir()
 		fp := filepath.Join(dir, "rom.sfc")

@@ -1,6 +1,7 @@
 package download
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,7 +72,7 @@ func TestDownloadDDLTraversalFilename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(newTestConfig(t), newTestJobs(t), nil)
+	m := New(context.Background(), newTestConfig(t), newTestJobs(t), nil)
 	fp, err := m.downloadDDL(srv.URL+"/x.zip", staging, "job-traversal")
 	if err != nil {
 		t.Fatalf("download failed: %v", err)
