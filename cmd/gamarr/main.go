@@ -52,11 +52,17 @@ func main() {
 	// Load config
 	cfg := config.Load()
 
-	// Ensure directories exist
-	for _, dir := range []string{cfg.DataDir, cfg.QBSavePath, cfg.GamesVaultPath, cfg.GamesRomsPath} {
+	// Ensure directories exist. DataDir holds the database, so the binary
+	// cannot run without it. The download/library paths default to /data/*
+	// volume mounts that only exist in the Docker deployment — downloads and
+	// organizing fail loudly later if they're missing, so a warning suffices.
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		slog.Error("failed to create data directory", "dir", cfg.DataDir, "error", err)
+		os.Exit(1)
+	}
+	for _, dir := range []string{cfg.QBSavePath, cfg.GamesVaultPath, cfg.GamesRomsPath} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			slog.Error("failed to create directory", "dir", dir, "error", err)
-			os.Exit(1)
+			slog.Warn("could not create directory (downloads/organizing to it will fail)", "dir", dir, "error", err)
 		}
 	}
 
