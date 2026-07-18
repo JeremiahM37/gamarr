@@ -91,8 +91,9 @@ func (c *Client) ensureAuth() {
 	}
 }
 
-// AddTorrent adds a torrent to qBittorrent.
-func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
+// AddTorrent adds a torrent to qBittorrent. A nil return means qBittorrent
+// acknowledged the torrent ("Ok."); any other outcome is reported as an error.
+func (c *Client) AddTorrent(torrentURL, title, savePath, category string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureAuth()
@@ -104,22 +105,29 @@ func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
 	}
 	resp, err := c.client.PostForm(c.baseURL+"/api/v2/torrents/add", data)
 	if err != nil {
-		slog.Error("qBittorrent add torrent failed", "error", err)
-		return false
+		return fmt.Errorf("qbittorrent add torrent: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 403 {
 		c.login()
 		resp2, err := c.client.PostForm(c.baseURL+"/api/v2/torrents/add", data)
 		if err != nil {
-			return false
+			return fmt.Errorf("qbittorrent add torrent after re-auth: %w", err)
 		}
 		defer resp2.Body.Close()
-		body, _ := io.ReadAll(resp2.Body)
-		return string(body) == "Ok."
+		return checkAddResponse(resp2)
 	}
+	return checkAddResponse(resp)
+}
+
+// checkAddResponse verifies the "Ok." acknowledgment of /torrents/add.
+func checkAddResponse(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
-	return string(body) == "Ok."
+	if string(body) == "Ok." {
+		return nil
+	}
+	return fmt.Errorf("qbittorrent rejected torrent (HTTP %d: %s)",
+		resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 // GetTorrents returns torrents, optionally filtered by category.

@@ -5,6 +5,7 @@ package download
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -93,16 +94,17 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 
 	added := false
 	clientUsed := ""
+	var clientErrs []string
 
 	// Try qBittorrent first.
 	if m.cfg.HasQBittorrent() {
 		m.jobs.Update(jobID, "detail", "Sending to qBittorrent...")
-		ok := m.qb.AddTorrent(url, title, m.cfg.QBSavePath, m.cfg.QBCategory)
-		if ok {
+		if err := m.qb.AddTorrent(url, title, m.cfg.QBSavePath, m.cfg.QBCategory); err == nil {
 			added = true
 			clientUsed = "qBittorrent"
 		} else {
-			slog.Warn("qBittorrent add failed, trying fallback clients", "title", title)
+			slog.Warn("qBittorrent add failed, trying fallback clients", "title", title, "error", err)
+			clientErrs = append(clientErrs, fmt.Sprintf("qBittorrent: %v", err))
 		}
 	}
 
@@ -115,6 +117,7 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 			clientUsed = "Transmission"
 		} else {
 			slog.Warn("Transmission add failed", "title", title, "error", err)
+			clientErrs = append(clientErrs, fmt.Sprintf("Transmission: %v", err))
 		}
 	}
 
@@ -130,15 +133,22 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 			clientUsed = "Deluge"
 		} else {
 			slog.Warn("Deluge add failed", "title", title, "error", err)
+			clientErrs = append(clientErrs, fmt.Sprintf("Deluge: %v", err))
 		}
 	}
 
 	if !added {
+		errMsg := "Failed to add torrent to any download client"
+		if len(clientErrs) > 0 {
+			errMsg = fmt.Sprintf("%s (%s)", errMsg, strings.Join(clientErrs, "; "))
+		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "error",
-			"error":  "Failed to add torrent to any download client",
+			"error":  errMsg,
 		})
-		return jobID, nil
+		// Return the job ID alongside the error: the job exists (in error
+		// state) so callers can surface both the failure and its record.
+		return jobID, errors.New(errMsg)
 	}
 
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloading via %s...", clientUsed))
@@ -505,7 +515,7 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	f, err := os.Create(fp)
 	if err != nil {
 		slog.Error("DDL cannot create file", "path", sanitizeLog(fp), "error", err)
-		return "", fmt.Errorf("cannot create file %s: %v", fp, err)
+		return "", fmt.Errorf("cannot create file %s: %w", fp, err)
 	}
 	defer f.Close()
 

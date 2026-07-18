@@ -653,6 +653,15 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	jobID, err := s.mgr.DownloadTorrent(url, req.Title, req.Platform, req.PlatformSlug, req.IsPC)
 	if err != nil {
+		if jobID != "" {
+			// The job record exists (marked error): every download client
+			// refused the torrent. That's an upstream failure, not a bad
+			// request — report 502 and include the job for inspection.
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+				"success": false, "error": err.Error(), "job_id": jobID,
+			})
+			return
+		}
 		writeError(w, 400, err.Error())
 		return
 	}

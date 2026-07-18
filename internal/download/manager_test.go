@@ -81,8 +81,8 @@ func TestDownloadTorrentNoClientAvailable(t *testing.T) {
 	m := New(cfg, jobs, nil)
 
 	jobID, err := m.DownloadTorrent("magnet:x", "Some Game", "PC", "", true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected an error when no download client accepts the torrent")
 	}
 	job, ok := jobs.Get(jobID)
 	if !ok {
@@ -251,8 +251,8 @@ func TestDownloadTorrentFallbacks(t *testing.T) {
 
 		m := New(cfg, jobs, qm.client())
 		jobID, err := m.DownloadTorrent("magnet:x", "Doomed Game", "PC", "", true)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil {
+			t.Fatal("expected an error when every client fails")
 		}
 		job, _ := jobs.Get(jobID)
 		if status, _ := job["status"].(string); status != "error" {

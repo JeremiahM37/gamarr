@@ -86,9 +86,8 @@ func TestAddTorrent_Success(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "admin", "pass")
-	ok := c.AddTorrent("magnet:?xt=urn:btih:abc", "Test", "/downloads", "games")
-	if !ok {
-		t.Error("expected AddTorrent to succeed")
+	if err := c.AddTorrent("magnet:?xt=urn:btih:abc", "Test", "/downloads", "games"); err != nil {
+		t.Errorf("expected AddTorrent to succeed, got %v", err)
 	}
 }
 
@@ -113,9 +112,8 @@ func TestAddTorrent_ReauthOn403(t *testing.T) {
 
 	c := New(srv.URL, "admin", "pass")
 	c.authenticated = true
-	ok := c.AddTorrent("magnet:?xt=urn:btih:abc", "Test", "/downloads", "games")
-	if !ok {
-		t.Error("expected AddTorrent to succeed after reauth")
+	if err := c.AddTorrent("magnet:?xt=urn:btih:abc", "Test", "/downloads", "games"); err != nil {
+		t.Errorf("expected AddTorrent to succeed after reauth, got %v", err)
 	}
 }
 
