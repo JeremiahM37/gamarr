@@ -75,12 +75,49 @@ func (c *Client) login() bool {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	// qBittorrent replies 200 with "Ok." on success and 200 with "Fails." on
-	// bad credentials, so a bare 2xx status is not proof of authentication.
-	// Some setups return 204 with an empty body on success; accept that too.
+	// qBittorrent <= 5.1 replies 200 with "Ok." on success and 200 with
+	// "Fails." on bad credentials, so a bare 2xx status is not proof of
+	// authentication. qBittorrent >= 5.2 replies 204 with an empty body on
+	// success and 401 on bad credentials.
 	c.authenticated = string(body) == "Ok." ||
 		(resp.StatusCode == http.StatusNoContent && len(body) == 0)
 	return c.authenticated
+}
+
+// is2xx reports whether an HTTP status code indicates success. qBittorrent
+// >= 5.2 returns 204 instead of 200 for responses with no body, so exact
+// comparisons against 200 break against newer versions.
+func is2xx(code int) bool {
+	return code >= 200 && code < 300
+}
+
+// addAccepted reports whether a torrents/add response indicates the torrent
+// was accepted. qBittorrent <= 5.1 replies 200 with a plain "Ok." body
+// ("Fails." on error); qBittorrent >= 5.2 replies with a JSON body like
+// {"added_torrent_ids":[...],"success_count":1,"pending_count":0,
+// "failure_count":0} and uses 409 for rejected requests.
+func addAccepted(statusCode int, body []byte) bool {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "Ok." {
+		return true
+	}
+	if !is2xx(statusCode) {
+		return false
+	}
+	var result struct {
+		SuccessCount *int `json:"success_count"`
+		PendingCount *int `json:"pending_count"`
+	}
+	if err := json.Unmarshal(body, &result); err == nil && result.SuccessCount != nil {
+		accepted := *result.SuccessCount
+		if result.PendingCount != nil {
+			accepted += *result.PendingCount
+		}
+		return accepted > 0
+	}
+	// 2xx with an empty non-JSON body (e.g. a bare 204): nothing indicates
+	// failure, so treat it as accepted.
+	return trimmed == ""
 }
 
 func (c *Client) ensureAuth() {
@@ -114,10 +151,10 @@ func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
 		}
 		defer resp2.Body.Close()
 		body, _ := io.ReadAll(resp2.Body)
-		return string(body) == "Ok."
+		return addAccepted(resp2.StatusCode, body)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	return string(body) == "Ok."
+	return addAccepted(resp.StatusCode, body)
 }
 
 // GetTorrents returns torrents, optionally filtered by category.
@@ -157,14 +194,14 @@ func (c *Client) GetTorrentFiles(hash string) []TorrentFile {
 			return nil
 		}
 		defer resp2.Body.Close()
-		if resp2.StatusCode != 200 {
+		if !is2xx(resp2.StatusCode) {
 			return nil
 		}
 		var files []TorrentFile
 		json.NewDecoder(resp2.Body).Decode(&files)
 		return files
 	}
-	if resp.StatusCode != 200 {
+	if !is2xx(resp.StatusCode) {
 		return nil
 	}
 	var files []TorrentFile
@@ -198,9 +235,9 @@ func (c *Client) DeleteTorrent(hash string, deleteFiles bool) bool {
 			return false
 		}
 		defer resp2.Body.Close()
-		return resp2.StatusCode == 200
+		return is2xx(resp2.StatusCode)
 	}
-	return resp.StatusCode == 200
+	return is2xx(resp.StatusCode)
 }
 
 func (c *Client) doGet(u string) (*http.Response, error) {
@@ -225,14 +262,14 @@ func (c *Client) doGetJSON(u string) ([]Torrent, error) {
 			return nil, err
 		}
 		defer resp2.Body.Close()
-		if resp2.StatusCode != 200 {
+		if !is2xx(resp2.StatusCode) {
 			return nil, fmt.Errorf("HTTP %d", resp2.StatusCode)
 		}
 		var torrents []Torrent
 		err = json.NewDecoder(resp2.Body).Decode(&torrents)
 		return torrents, err
 	}
-	if resp.StatusCode != 200 {
+	if !is2xx(resp.StatusCode) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var torrents []Torrent

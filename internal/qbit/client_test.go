@@ -250,3 +250,108 @@ func TestDeleteTorrent_ReauthOn403(t *testing.T) {
 		t.Error("expected DeleteTorrent to succeed after reauth")
 	}
 }
+
+// ── qBittorrent >= 5.2 WebAPI responses (issue #11) ────────────────────────────
+// qBittorrent 5.2.0 changed the WebAPI to send 204 for responses with no
+// body: login success became 204/empty (was 200 "Ok."), bad credentials
+// became 401 (was 200 "Fails."), torrents/add success became 200 with a JSON
+// body (was 200 "Ok."), and rejected adds became 409. Response shapes below
+// were captured verbatim from qBittorrent 5.2.3.
+
+func qbit52Server(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			if r.FormValue("password") == "goodpass" {
+				w.WriteHeader(http.StatusNoContent)
+			} else {
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte("Unauthorized"))
+			}
+		case "/api/v2/torrents/add":
+			if r.FormValue("urls") == "" {
+				w.WriteHeader(http.StatusConflict)
+				w.Write([]byte("Conflict"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"added_torrent_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"failure_count":0,"pending_count":0,"success_count":1}`))
+		case "/api/v2/torrents/delete":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+}
+
+func TestLogin_QBit52_Success(t *testing.T) {
+	srv := qbit52Server(t)
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "goodpass")
+	if !c.Login() {
+		t.Error("expected login to succeed on 5.2-style 204 response")
+	}
+}
+
+func TestLogin_QBit52_BadCredentials(t *testing.T) {
+	srv := qbit52Server(t)
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "wrongpass")
+	if c.Login() {
+		t.Error("expected login to fail on 5.2-style 401 response")
+	}
+}
+
+func TestAddTorrent_QBit52_JSONResponse(t *testing.T) {
+	srv := qbit52Server(t)
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "goodpass")
+	if !c.AddTorrent("magnet:?xt=urn:btih:abc", "Test", "/downloads", "games") {
+		t.Error("expected AddTorrent to succeed on 5.2-style JSON response")
+	}
+}
+
+func TestAddTorrent_QBit52_Rejected409(t *testing.T) {
+	srv := qbit52Server(t)
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "goodpass")
+	if c.AddTorrent("", "Test", "/downloads", "games") {
+		t.Error("expected AddTorrent to fail on 5.2-style 409 response")
+	}
+}
+
+func TestDeleteTorrent_QBit52_NoContent(t *testing.T) {
+	srv := qbit52Server(t)
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "goodpass")
+	if !c.DeleteTorrent("abc123", true) {
+		t.Error("expected DeleteTorrent to succeed on a 204 response")
+	}
+}
+
+func TestAddAccepted(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"legacy Ok", 200, "Ok.", true},
+		{"legacy Fails", 200, "Fails.", false},
+		{"52 json success", 200, `{"added_torrent_ids":["a"],"failure_count":0,"pending_count":0,"success_count":1}`, true},
+		{"52 json pending", 200, `{"added_torrent_ids":[],"failure_count":0,"pending_count":1,"success_count":0}`, true},
+		{"52 json all failed", 200, `{"added_torrent_ids":[],"failure_count":1,"pending_count":0,"success_count":0}`, false},
+		{"52 conflict", 409, "Conflict", false},
+		{"bare 204", 204, "", true},
+		{"server error", 500, "", false},
+	}
+	for _, tc := range cases {
+		if got := addAccepted(tc.status, []byte(tc.body)); got != tc.want {
+			t.Errorf("%s: addAccepted(%d, %q)=%v, want %v", tc.name, tc.status, tc.body, got, tc.want)
+		}
+	}
+}
