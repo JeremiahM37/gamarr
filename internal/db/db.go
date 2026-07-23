@@ -29,7 +29,12 @@ func New(dbPath string) (*JobStore, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=10000")
+	// modernc.org/sqlite takes pragmas as _pragma=name(value) DSN params.
+	// The mattn/go-sqlite3 style (_journal_mode=WAL&_busy_timeout=10000) is
+	// silently ignored by this driver, which left the store on the default
+	// rollback journal with busy_timeout=0 — any reader/writer overlap made
+	// writes fail instantly with SQLITE_BUSY instead of waiting.
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)")
 	if err != nil {
 		return nil, err
 	}
