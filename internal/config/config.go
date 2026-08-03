@@ -3,10 +3,12 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 
+	"gamarr/internal/fileops"
 	"gamarr/internal/sources"
 )
 
@@ -39,6 +41,13 @@ type Config struct {
 	ClamAVContainer string
 	ClamAVSocket    string
 	DockerSocket    string
+
+	// Import behavior. ImportMode decides whether a finished download is
+	// moved into the library or preserved in place (hardlink/symlink/copy)
+	// so a torrent can keep seeding. ImportHardlinkFallback applies when a
+	// hardlink import turns out to cross a filesystem boundary.
+	ImportMode             fileops.Mode
+	ImportHardlinkFallback fileops.Fallback
 
 	// Experimental
 	ExtractArchives bool
@@ -164,6 +173,9 @@ func Load() *Config {
 		ClamAVContainer: envStr("CLAMAV_CONTAINER", "clamav"),
 		ClamAVSocket:    envStr("CLAMAV_SOCKET", "/run/clamav/clamd.sock"),
 		DockerSocket:    envStr("DOCKER_SOCKET", "/var/run/docker.sock"),
+
+		ImportMode:             envImportMode("IMPORT_MODE"),
+		ImportHardlinkFallback: envHardlinkFallback("IMPORT_HARDLINK_FALLBACK"),
 
 		ExtractArchives: envBool("EXTRACT_ARCHIVES", false),
 
@@ -315,6 +327,26 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// envImportMode reads an import mode, falling back to the default (move) with
+// a warning rather than refusing to boot on a typo.
+func envImportMode(key string) fileops.Mode {
+	mode, err := fileops.ParseMode(strings.ToLower(strings.TrimSpace(os.Getenv(key))))
+	if err != nil {
+		slog.Warn("invalid import mode, using default", "var", key, "error", err, "default", string(fileops.ModeMove))
+		return fileops.ModeMove
+	}
+	return mode
+}
+
+func envHardlinkFallback(key string) fileops.Fallback {
+	fb, err := fileops.ParseFallback(strings.ToLower(strings.TrimSpace(os.Getenv(key))))
+	if err != nil {
+		slog.Warn("invalid hardlink fallback, using default", "var", key, "error", err, "default", string(fileops.FallbackError))
+		return fileops.FallbackError
+	}
+	return fb
 }
 
 func envBool(key string, fallback bool) bool {

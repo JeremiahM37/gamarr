@@ -395,6 +395,54 @@ func TestSettingsGetAndUpdate(t *testing.T) {
 	}
 }
 
+func TestSettingsImportMode(t *testing.T) {
+	env := newTestEnv(t, nil)
+
+	// The default is reported, not an empty string, so the UI can show the
+	// mode imports will actually use.
+	rr := env.do("GET", "/api/settings", "")
+	wantStatus(t, rr, 200)
+	if m := decodeMap(t, rr); m["import_mode"] != "move" {
+		t.Errorf("import_mode = %v, want move", m["import_mode"])
+	}
+
+	for _, mode := range []string{"hardlink", "symlink", "copy", "move"} {
+		rr = env.do("PUT", "/api/settings", `{"import_mode":"`+mode+`"}`)
+		wantStatus(t, rr, 200)
+		if m := decodeMap(t, rr); m["import_mode"] != mode {
+			t.Errorf("import_mode after update = %v, want %v", m["import_mode"], mode)
+		}
+	}
+
+	// Persisted across reads.
+	env.do("PUT", "/api/settings", `{"import_mode":"hardlink"}`)
+	rr = env.do("GET", "/api/settings", "")
+	if m := decodeMap(t, rr); m["import_mode"] != "hardlink" {
+		t.Errorf("import_mode after reload = %v, want hardlink", m["import_mode"])
+	}
+
+	// Updating an unrelated setting must not reset the import mode.
+	env.do("PUT", "/api/settings", `{"extract_archives":true}`)
+	rr = env.do("GET", "/api/settings", "")
+	if m := decodeMap(t, rr); m["import_mode"] != "hardlink" {
+		t.Errorf("import_mode after an unrelated update = %v, want hardlink", m["import_mode"])
+	}
+}
+
+func TestSettingsImportModeRejectsUnknownValue(t *testing.T) {
+	env := newTestEnv(t, nil)
+	env.do("PUT", "/api/settings", `{"import_mode":"hardlink"}`)
+
+	rr := env.do("PUT", "/api/settings", `{"import_mode":"teleport"}`)
+	wantStatus(t, rr, 400)
+
+	// A rejected update must not have changed the stored mode.
+	rr = env.do("GET", "/api/settings", "")
+	if m := decodeMap(t, rr); m["import_mode"] != "hardlink" {
+		t.Errorf("import_mode after a rejected update = %v, want hardlink", m["import_mode"])
+	}
+}
+
 // ── Import / Export ────────────────────────────────────────────────────────────
 
 func TestLibraryExportImportRoundTrip(t *testing.T) {

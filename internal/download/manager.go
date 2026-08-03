@@ -18,6 +18,7 @@ import (
 
 	"gamarr/internal/config"
 	"gamarr/internal/db"
+	"gamarr/internal/fileops"
 	"gamarr/internal/nzbget"
 	"gamarr/internal/platform"
 	"gamarr/internal/qbit"
@@ -330,16 +331,19 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		}
 	}
 
+	var importMode fileops.Mode
 	if isPC {
 		dest := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(contentPath)))
-		if err := moveContent(contentPath, dest); err != nil {
+		mode, err := m.importContent(contentPath, dest)
+		importMode = mode
+		if err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			})
 			return
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": "Moved to GameVault",
+			"status": "completed", "detail": importDetail(mode, "GameVault"),
 		})
 		writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
 		m.TrackInLibrary(torrentName, platf, platSlug, isPC, dest, 0, "torrent", "prowlarr", "torrent:"+torrentHash)
@@ -351,14 +355,16 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, sanitizeFilename(filepath.Base(contentPath)))
-		if err := moveContent(contentPath, dest); err != nil {
+		mode, err := m.importContent(contentPath, dest)
+		importMode = mode
+		if err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			})
 			return
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed", "detail": fmt.Sprintf("Moved to RomM (%s)", platf),
+			"status": "completed", "detail": importDetail(mode, fmt.Sprintf("RomM (%s)", platf)),
 		})
 		writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
 		m.TrackInLibrary(torrentName, platf, platSlug, isPC, dest, 0, "torrent", "prowlarr", "torrent:"+torrentHash)
@@ -375,7 +381,41 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		return // Don't delete torrent
 	}
 
-	m.qb.DeleteTorrent(torrentHash, true)
+	m.finishTorrent(torrentHash, torrentName, importMode)
+}
+
+// finishTorrent decides what happens to the torrent once its content is in the
+// library. Under a move import the data is gone from the download directory
+// anyway, so the torrent goes with it. Under a source-preserving import the
+// torrent is still seedable — removing it (or its files) would throw away the
+// ratio the user imported this way to keep, so it is left alone unless
+// REMOVE_TORRENT_AFTER_IMPORT asks otherwise, and even then the files stay.
+func (m *Manager) finishTorrent(hash, name string, mode fileops.Mode) {
+	if !mode.PreservesSource() {
+		m.qb.DeleteTorrent(hash, true)
+		return
+	}
+	if m.cfg.RemoveAfterImport {
+		m.qb.DeleteTorrent(hash, false)
+		slog.Info("removed torrent after import, files kept", "name", sanitizeLog(name), "mode", string(mode))
+		return
+	}
+	slog.Info("torrent left seeding after import", "name", sanitizeLog(name), "mode", string(mode))
+}
+
+// importDetail describes a finished import for the job feed, so the UI does
+// not claim content was "moved" when it was hardlinked in place.
+func importDetail(mode fileops.Mode, target string) string {
+	verb := "Moved to"
+	switch mode {
+	case fileops.ModeHardlink:
+		verb = "Hardlinked to"
+	case fileops.ModeSymlink:
+		verb = "Symlinked to"
+	case fileops.ModeCopy:
+		verb = "Copied to"
+	}
+	return fmt.Sprintf("%s %s", verb, target)
 }
 
 func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, platSlug string, isPC bool) {
@@ -965,68 +1005,35 @@ func writeMetadataSidecar(destPath, title, platf, platSlug string, isPC bool, so
 }
 
 // moveFile moves a file, falling back to copy+delete for cross-device moves.
-func moveFile(src, dest string) error {
-	err := os.Rename(src, dest)
-	if err == nil {
-		return nil
+func moveFile(src, dest string) error { return fileops.MoveFile(src, dest) }
+
+// moveContent moves a file or directory tree. Content Gamarr fetched itself
+// (DDL, Usenet) always moves: nothing is seeding it, so leaving the staging
+// copy behind would just leak disk. Torrent content goes through
+// Manager.importContent, which honors the configured import mode.
+func moveContent(src, dest string) error { return fileops.MoveContent(src, dest) }
+
+func copyFile(src, dest string) error { return fileops.CopyFile(src, dest) }
+
+// importOptions resolves the import strategy for a torrent import. The
+// runtime setting wins so the mode can be changed from the UI without a
+// restart; the environment default applies when it is unset.
+func (m *Manager) importOptions() fileops.Options {
+	mode := m.effectiveImportMode()
+	if s := m.LoadSettings(); s != nil {
+		if parsed, err := fileops.ParseMode(s.ImportMode); err == nil && parsed.Valid() {
+			mode = parsed
+		}
 	}
-	// Cross-device link — copy and delete
-	if err := copyFile(src, dest); err != nil {
-		return err
-	}
-	return os.Remove(src)
+	return fileops.Options{Mode: mode, HardlinkFallback: m.cfg.ImportHardlinkFallback}
 }
 
-func moveContent(src, dest string) error {
-	fi, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if fi.IsDir() {
-		if err := os.Rename(src, dest); err == nil {
-			return nil
-		}
-		if err := copyDir(src, dest); err != nil {
-			return err
-		}
-		return os.RemoveAll(src)
-	}
-	return moveFile(src, dest)
-}
-
-func copyDir(src, dest string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return fmt.Errorf("path %q escapes source dir", path)
-		}
-		target, err := safeChild(dest, rel)
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-		return copyFile(path, target)
-	})
-}
-
-func copyFile(src, dest string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+// importContent places completed torrent content into the library and returns
+// the mode it used, so the caller knows whether the source survived — that is,
+// whether the torrent can be left seeding.
+func (m *Manager) importContent(src, dest string) (fileops.Mode, error) {
+	opt := m.importOptions()
+	return opt.Mode, fileops.Import(src, dest, opt)
 }
 
 func pathExists(p string) bool {
@@ -1034,18 +1041,41 @@ func pathExists(p string) bool {
 	return err == nil
 }
 
-// LoadSettings loads settings from disk.
+// LoadSettings loads settings from disk. Fields the stored file does not
+// carry — including settings written before import modes existed — fall back
+// to the environment configuration, so the API always reports the mode that
+// imports will actually use.
 func (m *Manager) LoadSettings() *Settings {
+	defaults := func() *Settings {
+		return &Settings{
+			ExtractArchives: m.cfg.ExtractArchives,
+			ImportMode:      string(m.effectiveImportMode()),
+		}
+	}
 	settingsFile := filepath.Join(m.cfg.DataDir, "settings.json")
 	data, err := os.ReadFile(settingsFile)
 	if err != nil {
-		return &Settings{ExtractArchives: m.cfg.ExtractArchives}
+		return defaults()
 	}
 	var s Settings
 	if err := json.Unmarshal(data, &s); err != nil {
-		return &Settings{ExtractArchives: m.cfg.ExtractArchives}
+		return defaults()
+	}
+	if mode, err := fileops.ParseMode(s.ImportMode); err != nil || s.ImportMode == "" {
+		s.ImportMode = string(m.effectiveImportMode())
+	} else {
+		s.ImportMode = string(mode)
 	}
 	return &s
+}
+
+// effectiveImportMode is the configured default, guarding against a zero
+// value on a hand-built Config.
+func (m *Manager) effectiveImportMode() fileops.Mode {
+	if m.cfg.ImportMode.Valid() {
+		return m.cfg.ImportMode
+	}
+	return fileops.ModeMove
 }
 
 // SaveSettings saves settings to disk.
@@ -1058,6 +1088,9 @@ func (m *Manager) SaveSettings(s *Settings) {
 // Settings for download behavior.
 type Settings struct {
 	ExtractArchives bool `json:"extract_archives"`
+	// ImportMode overrides IMPORT_MODE at runtime. Empty means "follow the
+	// environment default".
+	ImportMode string `json:"import_mode"`
 }
 
 // DDL source management
