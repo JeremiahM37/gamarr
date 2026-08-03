@@ -143,6 +143,16 @@
             <input type="checkbox" id="setting-extract" data-action-change="saveExtractSetting" class="accent-indigo-500 w-4 h-4">
             <div><div class="text-sm text-white">Extract archives after download</div><div class="text-xs text-slate-500">Auto-extract RAR/ZIP/7z in ROM downloads</div></div>
           </label>
+          <div class="mt-5">
+            <label for="setting-import-mode" class="block text-sm text-white mb-1">Import mode</label>
+            <select id="setting-import-mode" data-action-change="saveImportMode" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+              <option value="move">Move (default)</option>
+              <option value="hardlink">Hardlink — keep seeding</option>
+              <option value="symlink">Symlink — keep seeding</option>
+              <option value="copy">Copy — keep seeding</option>
+            </select>
+            <div id="import-mode-hint" class="text-xs text-slate-500 mt-1"></div>
+          </div>
         </div>
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
           <div class="flex items-center justify-between mb-4">

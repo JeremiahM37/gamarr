@@ -237,9 +237,48 @@ Configure either SABnzbd or NZBGet for NZB downloads. If both are configured, SA
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `IMPORT_MODE` | `move` | How finished torrents enter the library: `move`, `hardlink`, `symlink`, `copy` (see [Import modes](#import-modes)) |
+| `IMPORT_HARDLINK_FALLBACK` | `error` | What a hardlink import does when source and library are on different filesystems: `error`, `copy`, `symlink`, `move` |
+| `REMOVE_TORRENT_AFTER_IMPORT` | `false` | Remove the torrent from the client once imported (never deletes the data under a source-preserving mode) |
 | `EXTRACT_ARCHIVES` | `false` | Auto-extract downloaded archives |
 | `MAX_RETRIES` | `2` | Download retry attempts |
 | `RETRY_BACKOFF_SECONDS` | `60` | Seconds between retries |
+
+### Import modes
+
+By default Gamarr **moves** finished content into the library. That empties the
+download client's completed directory, so the torrent stops seeding — on a
+private tracker that costs ratio and can earn a hit-and-run penalty.
+
+Set `IMPORT_MODE` (or change it under **Settings → Options** at runtime) to keep
+seeding:
+
+| Mode | Library entry | Source | Extra disk |
+|------|---------------|--------|-----------|
+| `move` (default) | the files themselves | gone — seeding stops | none |
+| `hardlink` | a second name for the same data | untouched, keeps seeding | none |
+| `symlink` | a link to the download | untouched, keeps seeding | none |
+| `copy` | an independent copy | untouched, keeps seeding | 2× the release |
+
+**Hardlink is the one to pick.** It costs no extra disk, and the library entry
+survives even after the torrent is removed from the client. Its one requirement
+is that the download directory and the library live on the **same filesystem** —
+the usual "single mount point" advice from the *arr apps. Mount them under one
+volume (for example `/data/incoming` and `/data/vault` on the same `/data`
+mount) rather than as two separate Docker volumes.
+
+If they are not on one filesystem, a hardlink import fails with a message
+naming the two paths instead of silently doing something else. Set
+`IMPORT_HARDLINK_FALLBACK=copy` (or `symlink`, or `move`) if you would rather it
+degrade automatically.
+
+Under a source-preserving mode Gamarr leaves the torrent in the client so it
+keeps seeding. `REMOVE_TORRENT_AFTER_IMPORT=true` still removes it if you want
+that, but never deletes the data the library points at.
+
+Two paths always move, whatever the mode is set to: direct downloads and Usenet
+downloads. Gamarr fetched those itself and nothing is seeding them, so leaving a
+staging copy behind would only leak disk.
 
 ### AI Monitor (optional)
 

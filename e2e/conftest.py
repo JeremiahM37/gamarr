@@ -67,6 +67,13 @@ PROWLARR_RELEASES = [
 ]
 
 
+# Torrents the stub client is "seeding", plus every delete gamarr asked for.
+# Tests arm these through /stub/* so the watcher sees a real completed torrent.
+TORRENTS: list[dict] = []
+DELETE_CALLS: list[dict] = []
+SWARM_LOCK = threading.Lock()
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -93,13 +100,43 @@ class _StubHandler(BaseHTTPRequestHandler):
 
     # ── qBittorrent ────────────────────────────────────────────────────────
     def do_POST(self):  # noqa: N802 (http.server API)
-        self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
         path = self.path.split("?")[0]
         if path == "/api/v2/auth/login":
             # Real qBittorrent 5.x behavior: HTTP 200 + "Ok." on success.
             self._send(200, b"Ok.", "text/plain")
         elif path == "/api/v2/torrents/add":
             self._send(200, b"Ok.", "text/plain")
+        elif path == "/api/v2/torrents/delete":
+            # Record what gamarr asked for. "deleteFiles=true" is the call that
+            # destroys seeded data; a seed-safe import must not make it.
+            form = urllib.parse.parse_qs(body.decode())
+            hashes = form.get("hashes", [""])[0]
+            with SWARM_LOCK:
+                DELETE_CALLS.append(
+                    {"hash": hashes, "delete_files": form.get("deleteFiles", [""])[0] == "true"}
+                )
+                TORRENTS[:] = [t for t in TORRENTS if t["hash"] != hashes]
+            self._send(200, b"", "text/plain")
+        # ── harness control: arm a completed torrent in the client ─────────
+        elif path == "/stub/torrents":
+            t = json.loads(body.decode())
+            with SWARM_LOCK:
+                TORRENTS.append({
+                    "name": t["name"],
+                    "hash": t["hash"],
+                    "progress": 1.0,
+                    "state": "stoppedUP",
+                    "total_size": t.get("total_size", 1024),
+                    "save_path": t["save_path"],
+                    "content_path": t["content_path"],
+                })
+            self._send(200, b'{"ok":true}', "application/json")
+        elif path == "/stub/reset":
+            with SWARM_LOCK:
+                TORRENTS.clear()
+                DELETE_CALLS.clear()
+            self._send(200, b'{"ok":true}', "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -108,7 +145,20 @@ class _StubHandler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
 
         if path == "/api/v2/torrents/info":
+            with SWARM_LOCK:
+                body = json.dumps(list(TORRENTS)).encode()
+            self._send(200, body, "application/json")
+        elif path == "/api/v2/torrents/files":
             self._send(200, b"[]", "application/json")
+        # ── harness control: what did gamarr do to the swarm? ──────────────
+        elif path == "/stub/deletes":
+            with SWARM_LOCK:
+                body = json.dumps(list(DELETE_CALLS)).encode()
+            self._send(200, body, "application/json")
+        elif path == "/stub/torrents":
+            with SWARM_LOCK:
+                body = json.dumps(list(TORRENTS)).encode()
+            self._send(200, body, "application/json")
         # ── Prowlarr ──────────────────────────────────────────────────────
         elif path == "/api/v1/search":
             q = ""
@@ -201,6 +251,10 @@ def app(stub_server, gamarr_binary, tmp_path_factory):
         # DDL staging dir — defaults to /data/incoming/ which won't exist on
         # a dev box; without this the pipeline dies as a bare "Download failed".
         "QB_SAVE_PATH": str(incoming),
+        # Poll the (stubbed) client often enough that an armed torrent gets
+        # auto-imported inside a test's patience. 10s is the floor gamarr
+        # accepts before it clamps back to 30s.
+        "WATCHER_INTERVAL": "10",
         "PROWLARR_URL": stub_server,
         "PROWLARR_API_KEY": "e2e-stub-key",
     }
@@ -222,7 +276,10 @@ def app(stub_server, gamarr_binary, tmp_path_factory):
         proc.kill()
         raise RuntimeError("gamarr did not become healthy within 30s")
 
-    yield {"base": base, "data": data, "roms_dir": roms, "vault_dir": vault}
+    yield {
+        "base": base, "data": data, "roms_dir": roms,
+        "vault_dir": vault, "incoming_dir": incoming,
+    }
 
     proc.terminate()
     try:
@@ -230,6 +287,50 @@ def app(stub_server, gamarr_binary, tmp_path_factory):
     except subprocess.TimeoutExpired:
         proc.kill()
     log.close()
+
+
+class _Swarm:
+    """The stubbed download client, as a test sees it: arm a completed torrent,
+    then ask what gamarr did to it."""
+
+    def __init__(self, base: str):
+        self.base = base
+
+    def _post(self, path: str, payload: dict) -> None:
+        req = urllib.request.Request(
+            f"{self.base}{path}", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5).read()
+
+    def _get(self, path: str):
+        return json.loads(urllib.request.urlopen(f"{self.base}{path}", timeout=5).read())
+
+    def seed(self, name: str, content_path, save_path) -> str:
+        """Arm a finished torrent whose data is already on disk."""
+        digest = f"{abs(hash(name)):x}".ljust(40, "0")[:40]
+        self._post("/stub/torrents", {
+            "name": name, "hash": digest,
+            "content_path": str(content_path), "save_path": str(save_path),
+        })
+        return digest
+
+    def torrents(self):
+        return self._get("/stub/torrents")
+
+    def deletes(self):
+        return self._get("/stub/deletes")
+
+    def reset(self):
+        self._post("/stub/reset", {})
+
+
+@pytest.fixture()
+def swarm(stub_server):
+    s = _Swarm(stub_server)
+    s.reset()
+    yield s
+    s.reset()
 
 
 @pytest.fixture()

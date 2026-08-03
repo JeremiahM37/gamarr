@@ -65,6 +65,15 @@ type qbitMock struct {
 	addOK    bool
 	addCalls int
 	deleted  []string
+	deletes  []deleteCall
+}
+
+// deleteCall records a /torrents/delete request, including whether the client
+// asked qBittorrent to delete the data — the difference between "stop seeding
+// but keep the files" and "throw the seeded data away".
+type deleteCall struct {
+	hash        string
+	deleteFiles bool
 }
 
 func newQbitMock(t *testing.T) *qbitMock {
@@ -110,6 +119,10 @@ func newQbitMock(t *testing.T) *qbitMock {
 		r.ParseForm()
 		q.mu.Lock()
 		q.deleted = append(q.deleted, r.Form.Get("hashes"))
+		q.deletes = append(q.deletes, deleteCall{
+			hash:        r.Form.Get("hashes"),
+			deleteFiles: r.Form.Get("deleteFiles") == "true",
+		})
 		q.mu.Unlock()
 		w.WriteHeader(200)
 	})
@@ -132,6 +145,14 @@ func (q *qbitMock) setFiles(fs []qbit.TorrentFile) {
 	q.mu.Lock()
 	q.files = fs
 	q.mu.Unlock()
+}
+
+func (q *qbitMock) deleteCalls() []deleteCall {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]deleteCall, len(q.deletes))
+	copy(out, q.deletes)
+	return out
 }
 
 func (q *qbitMock) deletedHashes() []string {

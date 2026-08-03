@@ -4,7 +4,6 @@ package organize
 
 import (
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 	"strings"
 
 	"gamarr/internal/config"
+	"gamarr/internal/fileops"
 )
 
 // Pipeline handles post-download game file organization.
@@ -72,7 +72,7 @@ func (p *Pipeline) organizePC(sourcePath string) (string, error) {
 		return dest, fmt.Errorf("already exists at destination: %s", dest)
 	}
 
-	if err := moveContent(sourcePath, dest); err != nil {
+	if err := p.importContent(sourcePath, dest); err != nil {
 		return sourcePath, err
 	}
 
@@ -94,7 +94,7 @@ func (p *Pipeline) organizeROM(sourcePath, platformSlug string) (string, error) 
 		return dest, fmt.Errorf("already exists at destination: %s", dest)
 	}
 
-	if err := moveContent(sourcePath, dest); err != nil {
+	if err := p.importContent(sourcePath, dest); err != nil {
 		return sourcePath, err
 	}
 
@@ -268,63 +268,19 @@ func DuplicateCheck(destPath string) (bool, error) {
 
 // ── File operations ──────────────────────────────────────────────────────────
 
-func moveContent(src, dest string) error {
-	fi, err := os.Stat(src)
-	if err != nil {
-		return err
+// importContent places source content into the library using the configured
+// import mode. A manual import is often pointed at a directory that is still
+// seeding, so the source-preserving modes matter here just as much as on the
+// automatic torrent path.
+func (p *Pipeline) importContent(src, dest string) error {
+	mode := p.cfg.ImportMode
+	if !mode.Valid() {
+		mode = fileops.ModeMove
 	}
-	if fi.IsDir() {
-		if err := os.Rename(src, dest); err == nil {
-			return nil
-		}
-		if err := copyDir(src, dest); err != nil {
-			return err
-		}
-		return os.RemoveAll(src)
-	}
-	return moveFile(src, dest)
-}
-
-func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-	// Fall back to copy + delete (cross-device).
-	if err := copyFile(src, dst); err != nil {
-		return err
-	}
-	return os.Remove(src)
-}
-
-func copyDir(src, dest string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dest, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-		return copyFile(path, target)
+	return fileops.Import(src, dest, fileops.Options{
+		Mode:             mode,
+		HardlinkFallback: p.cfg.ImportHardlinkFallback,
 	})
-}
-
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
 }
 
 func pathExists(p string) bool {

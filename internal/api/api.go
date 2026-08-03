@@ -20,6 +20,7 @@ import (
 
 	"gamarr/internal/config"
 	"gamarr/internal/download"
+	"gamarr/internal/fileops"
 	"gamarr/internal/models"
 	"gamarr/internal/monitor"
 	"gamarr/internal/platform"
@@ -862,6 +863,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	settings := s.mgr.LoadSettings()
 	if v, ok := req["extract_archives"].(bool); ok {
 		settings.ExtractArchives = v
+	}
+	if v, ok := req["import_mode"].(string); ok {
+		mode, err := fileops.ParseMode(strings.ToLower(strings.TrimSpace(v)))
+		if err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		settings.ImportMode = string(mode)
 	}
 	s.mgr.SaveSettings(settings)
 	writeJSON(w, 200, settings)

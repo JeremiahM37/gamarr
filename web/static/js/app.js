@@ -225,8 +225,53 @@ async function addWishlist() {
 async function deleteWishlist(id) { await fetch(`/api/wishlist/${id}`, {method:'DELETE'}); loadWishlist(); }
 function wishSearch(title) { document.getElementById('search-input').value = title; switchTab('search'); doSearch(); }
 
-async function loadSettings() { try { const d = await (await fetch('/api/settings')).json(); document.getElementById('setting-extract').checked = !!d.extract_archives; } catch(e) {} }
-async function saveSetting(key, value) { await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({[key]: value})}); }
+// A save issued while a settings GET is still in flight is newer than whatever
+// that GET answers with; without this counter a quick change to a control
+// snaps back to the stale value the moment the load resolves.
+let settingsSaveSeq = 0;
+async function loadSettings() {
+  const seq = settingsSaveSeq;
+  try {
+    const d = await (await fetch('/api/settings')).json();
+    if (seq !== settingsSaveSeq) return;
+    applySettings(d);
+  } catch(e) {}
+}
+function applySettings(d) {
+  document.getElementById('setting-extract').checked = !!d.extract_archives;
+  const sel = document.getElementById('setting-import-mode');
+  if (sel && d.import_mode) sel.value = d.import_mode;
+  showImportModeHint(d.import_mode);
+}
+async function saveSetting(key, value) {
+  settingsSaveSeq++;
+  await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({[key]: value})});
+}
+
+// Import mode decides whether a finished torrent survives its import, so the
+// hint spells out the seeding consequence rather than leaving it to the docs.
+const IMPORT_MODE_HINTS = {
+  move: 'Files leave the download folder. Torrents stop seeding.',
+  hardlink: 'Links files into the library. Torrents keep seeding, no extra disk. Needs one filesystem for downloads and library.',
+  symlink: 'Links the library entry to the download. Torrents keep seeding, but the entry breaks if the download is deleted.',
+  copy: 'Duplicates the files. Torrents keep seeding, at double the disk usage.',
+};
+function showImportModeHint(mode) {
+  const hint = document.getElementById('import-mode-hint');
+  if (!hint) return;
+  hint.textContent = IMPORT_MODE_HINTS[mode] || '';
+  // The attribute reflects the mode the server confirmed, which is what the
+  // e2e suite waits on rather than guessing at request timing.
+  hint.dataset.mode = mode || '';
+}
+async function saveImportMode(el) {
+  settingsSaveSeq++;
+  const r = await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({import_mode: el.value})});
+  if (!r.ok) { toast('Could not save import mode', 'error'); loadSettings(); return; }
+  const d = await r.json();
+  applySettings(d);
+  toast(`Import mode: ${d.import_mode}`, 'success');
+}
 async function loadSources() {
   try {
     const d = await (await fetch('/api/sources')).json();
@@ -345,6 +390,7 @@ document.addEventListener('click', e => {
 const CHANGE_ACTIONS = {
   loadLibrary: () => loadLibrary(),
   saveExtractSetting: el => saveSetting('extract_archives', el.checked),
+  saveImportMode: el => saveImportMode(el),
 };
 
 document.addEventListener('change', e => {
