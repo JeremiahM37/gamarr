@@ -508,9 +508,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	elapsed := int(time.Since(start).Milliseconds())
 
-	// Source metadata
+	// Source metadata. The Prowlarr entry carries the indexers that were
+	// actually queried: without it, a search that consulted the wrong trackers
+	// is indistinguishable from one where the game genuinely isn't available.
+	prowlarrIndexers := []search.Indexer{}
+	if s.cfg.HasProwlarr() {
+		prowlarrIndexers = append(prowlarrIndexers, search.GameIndexers(s.cfg)...)
+	}
 	sourceMeta := []map[string]interface{}{
-		{"name": "prowlarr", "label": "Prowlarr", "color": "#f97316", "source_type": "torrent", "enabled": s.cfg.HasProwlarr()},
+		{"name": "prowlarr", "label": "Prowlarr", "color": "#f97316", "source_type": "torrent", "enabled": s.cfg.HasProwlarr(), "indexers": prowlarrIndexers},
 		{"name": "myrient", "label": "Myrient", "color": "#10b981", "source_type": "ddl", "enabled": true},
 		{"name": "vimm", "label": "Vimm's Lair", "color": "#6366f1", "source_type": "ddl", "enabled": true},
 	}

@@ -46,7 +46,14 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 	var allItems []map[string]interface{}
 	hadError := false
 
-	for _, indexerID := range cfg.ProwlarrGameIndexers {
+	indexers := GameIndexers(cfg)
+	if len(indexers) == 0 {
+		slog.Warn("no Prowlarr game indexers to search", "url", cfg.ProwlarrURL)
+		return nil
+	}
+
+	for _, indexer := range indexers {
+		indexerID := indexer.ID
 		reqURL := fmt.Sprintf("%s/api/v1/search?query=%s&indexerIds=%d&type=search&limit=50",
 			cfg.ProwlarrURL, url.QueryEscape(query), indexerID)
 		req, _ := http.NewRequest("GET", reqURL, nil)

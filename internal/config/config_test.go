@@ -41,15 +41,11 @@ func TestLoad_Defaults(t *testing.T) {
 		t.Error("ExtractArchives should default to false")
 	}
 
-	// Default indexers
-	expected := []int{7, 5, 15, 9, 8, 3, 4}
-	if len(cfg.ProwlarrGameIndexers) != len(expected) {
-		t.Fatalf("ProwlarrGameIndexers len=%d, want %d", len(cfg.ProwlarrGameIndexers), len(expected))
-	}
-	for i, v := range expected {
-		if cfg.ProwlarrGameIndexers[i] != v {
-			t.Errorf("ProwlarrGameIndexers[%d]=%d, want %d", i, cfg.ProwlarrGameIndexers[i], v)
-		}
+	// No default indexer IDs: Prowlarr numbers indexers per install, so any
+	// hardcoded list points at a different set of trackers on every one.
+	// Empty means the indexers get discovered from Prowlarr's capabilities.
+	if len(cfg.ProwlarrGameIndexers) != 0 {
+		t.Errorf("ProwlarrGameIndexers=%v, want empty so discovery runs", cfg.ProwlarrGameIndexers)
 	}
 }
 

@@ -191,8 +191,25 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 |----------|---------|-------------|
 | `PROWLARR_URL` | `http://prowlarr:9696` | Prowlarr URL |
 | `PROWLARR_API_KEY` | | Prowlarr API key |
-| `PROWLARR_GAME_INDEXERS` | `7,5,15,9,8,3,4` | Comma-separated indexer IDs to search |
+| `PROWLARR_GAME_INDEXERS` | *(auto)* | Comma-separated indexer IDs to search. Unset means every enabled indexer that advertises game categories (see [Prowlarr indexers](#prowlarr-indexers)) |
 | `RAWG_API_KEY` | | RAWG.io API key (enables metadata, calendar) |
+
+#### Prowlarr indexers
+
+Gamarr asks Prowlarr which of its indexers carry games — every enabled one
+advertising a category in the Newznab game ranges (1000–1999 Console, 4000–4999
+PC, including subcategories) — and searches those. Nothing to configure.
+
+Set `PROWLARR_GAME_INDEXERS` to a comma-separated list of indexer IDs only to
+narrow that set: to skip a slow tracker, or one you would rather query by hand.
+IDs in the list that the instance does not have are logged and skipped rather
+than searched, because Prowlarr numbers indexers in the order each user added
+them — an ID copied from another install points at a different tracker, or at
+none, and a search of an indexer that does not exist returns HTTP 200 with an
+empty list rather than an error.
+
+Search results name the indexers that were queried, so an empty result set
+shows whether the right trackers were consulted.
 
 ### Download Clients
 
