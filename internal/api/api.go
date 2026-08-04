@@ -136,6 +136,7 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	// Settings & config (admin only)
 	r.Get("/api/settings", requireAdmin(s.handleGetSettings))
 	r.Put("/api/settings", requireAdmin(s.handleUpdateSettings))
+	r.Get("/api/settings/import-check", requireAdmin(s.handleImportCheck))
 	r.Get("/api/config", s.handleConfig)
 	r.Get("/api/stats", s.handleStats)
 	r.Get("/api/health", s.handleHealth)

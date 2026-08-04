@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"gamarr/internal/db"
+	"gamarr/internal/fileops"
 	"gamarr/internal/search"
 )
 
@@ -146,6 +147,64 @@ func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "jobID")
 	ok, msg := s.mgr.RetryJob(jobID)
 	writeJSON(w, 200, map[string]interface{}{"success": ok, "message": msg})
+}
+
+// ── Import preflight ───────────────────────────────────────────────────────────
+
+// importCheck is one download-directory → library-directory pair, and whether
+// a hardlink import between them actually works.
+type importCheck struct {
+	Target      string `json:"target"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	OK          bool   `json:"ok"`
+	Error       string `json:"error,omitempty"`
+}
+
+// handleImportCheck answers whether the configured hardlink import can work,
+// by really linking into each library directory.
+//
+// Without this the answer only arrives at import time, hours after the setting
+// was chosen, as a failed job — and the usual cause (a compose file that mounts
+// the download directory and the library as two separate volumes) looks like a
+// Gamarr bug rather than a layout to fix.
+func (s *Server) handleImportCheck(w http.ResponseWriter, r *http.Request) {
+	mode := fileops.ModeMove
+	if settings := s.mgr.LoadSettings(); settings != nil {
+		if parsed, err := fileops.ParseMode(settings.ImportMode); err == nil {
+			mode = parsed
+		}
+	}
+
+	resp := map[string]interface{}{
+		"import_mode": string(mode),
+		// Only hardlink imports can fail on a filesystem boundary; the other
+		// modes work across any layout, so there is nothing to preflight.
+		"applies": mode == fileops.ModeHardlink,
+	}
+	if mode != fileops.ModeHardlink {
+		resp["checks"] = []importCheck{}
+		writeJSON(w, 200, resp)
+		return
+	}
+
+	targets := []struct{ name, dest string }{
+		{"library", s.cfg.GamesVaultPath},
+		{"roms", s.cfg.GamesRomsPath},
+	}
+	checks := make([]importCheck, 0, len(targets))
+	for _, t := range targets {
+		if t.dest == "" {
+			continue
+		}
+		c := importCheck{Target: t.name, Source: s.cfg.QBSavePath, Destination: t.dest, OK: true}
+		if err := fileops.CheckHardlink(s.cfg.QBSavePath, t.dest); err != nil {
+			c.OK, c.Error = false, err.Error()
+		}
+		checks = append(checks, c)
+	}
+	resp["checks"] = checks
+	writeJSON(w, 200, resp)
 }
 
 // ── Connection Tests ───────────────────────────────────────────────────────────

@@ -190,9 +190,7 @@ func Import(src, dest string, opt Options) error {
 		return fmt.Errorf("unknown hardlink fallback %q", fallback)
 	}
 	if fallback == FallbackError {
-		return fmt.Errorf("%w: %s and %s are on different mounts — put the download "+
-			"directory and the library on one filesystem, or set IMPORT_HARDLINK_FALLBACK "+
-			"to copy, symlink or move: %w", ErrCrossDevice, src, dest, err)
+		return crossDeviceError(src, dest, err)
 	}
 
 	slog.Warn("hardlink import crossed a filesystem boundary, using fallback",
@@ -205,6 +203,24 @@ func Import(src, dest string, opt Options) error {
 	default:
 		return MoveContent(src, dest)
 	}
+}
+
+// crossDeviceError builds the failure a hardlink import reports when it cannot
+// span the boundary between src and dest.
+//
+// It names both paths and leads with the cause people actually hit: separate
+// Docker bind mounts of one filesystem. That layout looks like it should work —
+// the two paths are on the same disk, and even report the same device — so
+// without the hint the error reads as a Gamarr bug rather than a compose file
+// that needs one volume instead of two.
+func crossDeviceError(src, dest string, err error) error {
+	return fmt.Errorf("%w: %s and %s are on different mounts — if both are on the "+
+		"same filesystem, check they are not separate Docker bind mounts, which the "+
+		"kernel refuses to link across (mount their common parent once, for example "+
+		"-v /data:/data, instead of one volume per directory); otherwise put the "+
+		"download directory and the library on one filesystem, or set "+
+		"IMPORT_HARDLINK_FALLBACK to copy, symlink or move: %w",
+		ErrCrossDevice, src, dest, err)
 }
 
 // isCrossDevice reports whether err is the kernel refusing to link or rename

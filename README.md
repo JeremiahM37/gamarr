@@ -123,9 +123,12 @@ services:
     ports:
       - "5001:5001"
     volumes:
-      - ./data:/data/gamarr
-      - /path/to/games/vault:/data/vault
-      - /path/to/roms:/data/roms
+      # One mount spanning the download directory and the library, so hardlink
+      # imports work. Gamarr's defaults live under /data: the database in
+      # /data/gamarr, downloads in /data/incoming, the library in /data/vault
+      # and /data/roms. See "Hardlink import: volume layout" below before
+      # splitting this into a volume per directory.
+      - /srv/gamarr:/data
     environment:
       - PROWLARR_URL=http://prowlarr:9696
       - PROWLARR_API_KEY=your-prowlarr-api-key
@@ -199,7 +202,7 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `QB_USER` | `admin` | qBittorrent username |
 | `QB_PASS` | | qBittorrent password |
 | `QB_SAVE_PATH` | `/data/incoming/` | Download save path |
-| `QB_CATEGORY` | `games` | Torrent category |
+| `QB_CATEGORY` | `games` | Torrent category. Gamarr only ever enumerates torrents in this category, so a dedicated one keeps it clear of everything else in the client |
 | `TRANSMISSION_URL` | | Transmission RPC URL |
 | `TRANSMISSION_USER` | | Transmission username |
 | `TRANSMISSION_PASS` | | Transmission password |
@@ -262,15 +265,51 @@ seeding:
 
 **Hardlink is the one to pick.** It costs no extra disk, and the library entry
 survives even after the torrent is removed from the client. Its one requirement
-is that the download directory and the library live on the **same filesystem** —
-the usual "single mount point" advice from the *arr apps. Mount them under one
-volume (for example `/data/incoming` and `/data/vault` on the same `/data`
-mount) rather than as two separate Docker volumes.
+is that the download directory and the library be reachable through the **same
+mount** — see the volume layout section below, because in Docker "same
+filesystem" is not enough.
 
-If they are not on one filesystem, a hardlink import fails with a message
-naming the two paths instead of silently doing something else. Set
-`IMPORT_HARDLINK_FALLBACK=copy` (or `symlink`, or `move`) if you would rather it
-degrade automatically.
+If they are not, a hardlink import fails with a message naming the two paths
+instead of silently doing something else. Set `IMPORT_HARDLINK_FALLBACK=copy`
+(or `symlink`, or `move`) if you would rather it degrade automatically.
+
+#### Hardlink import: volume layout
+
+Selecting `hardlink` in **Settings → Options** runs a real trial link between
+the download directory and the library and reports the result underneath the
+setting, so a layout that cannot hardlink is visible immediately rather than at
+import time. The same check runs at startup and logs a warning.
+
+Two things have to be true, and Docker's usual volume layout breaks both.
+
+**1. One mount, not two.** This looks correct and does not work:
+
+```yaml
+volumes:
+  - /data/downloads/games:/data/incoming    # separate mount
+  - /data/games/library:/data/vault         # separate mount
+```
+
+Both paths can be on one filesystem — the same disk, the same pool, `stat`
+even reports the same device for each — and `ln` still fails with
+`Cross-device link`. The kernel refuses hardlinks across *mount points*, which
+two bind mounts are, however they are backed. Mount the common parent once
+instead:
+
+```yaml
+volumes:
+  - /data:/data          # one mount spanning downloads and library
+```
+
+**2. Gamarr's paths must match the download client's.** There is no remote path
+mapping (the equivalent of Sonarr/Radarr's Remote Path Mappings). Whatever
+qBittorrent reports as a torrent's content path is used verbatim, so it has to
+resolve to the same content inside the Gamarr container — mount the same parent
+at the same place in both containers. Mounting the download directory at
+`/data/incoming` in Gamarr while the client calls it `/data/downloads/games`
+breaks imports even before hardlinks enter into it.
+
+The single-parent layout above satisfies both at once.
 
 Under a source-preserving mode Gamarr leaves the torrent in the client so it
 keeps seeding. `REMOVE_TORRENT_AFTER_IMPORT=true` still removes it if you want
