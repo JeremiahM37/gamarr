@@ -243,7 +243,10 @@ func Load() *Config {
 		MetricsEnabled: envBool("METRICS_ENABLED", true),
 		TorznabAPIKey:  envStr("TORZNAB_API_KEY", ""),
 
-		ProwlarrGameIndexers: envIntSlice("PROWLARR_GAME_INDEXERS", []int{7, 5, 15, 9, 8, 3, 4}),
+		// Empty by default: Prowlarr numbers indexers per install, so a
+		// hardcoded list addresses a different set of trackers on every one.
+		// Unset means "discover them from Prowlarr's capabilities".
+		ProwlarrGameIndexers: envIntSlice("PROWLARR_GAME_INDEXERS", nil),
 
 		RenameEnabled: envBool("RENAME_ENABLED", false),
 		RenamePattern: envStr("RENAME_PATTERN", "{title} ({platform}).{ext}"),

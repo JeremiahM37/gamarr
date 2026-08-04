@@ -67,6 +67,29 @@ PROWLARR_RELEASES = [
 ]
 
 
+# The stub Prowlarr's indexers, shaped like the instance in issue #17: the one
+# tracker that carries games sits at a high ID no hardcoded default would guess,
+# beside a books-only tracker and a disabled games tracker. Only ID 16 answers
+# searches, so a run that queries the wrong indexers comes back empty.
+PROWLARR_INDEXERS = [
+    {
+        "id": 3, "name": "BooksOnly", "enable": True,
+        "capabilities": {"categories": [{"id": 7000, "name": "Books"}]},
+    },
+    {
+        "id": 9, "name": "RetiredGames", "enable": False,
+        "capabilities": {"categories": [{"id": 4000, "name": "PC"}]},
+    },
+    {
+        "id": 16, "name": "GamesTracker", "enable": True,
+        "capabilities": {"categories": [
+            {"id": 4000, "name": "PC", "subCategories": [{"id": 4050, "name": "PC/Games"}]},
+        ]},
+    },
+]
+GAME_INDEXER_ID = 16
+
+
 # Torrents the stub client is "seeding", plus every delete gamarr asked for.
 # Tests arm these through /stub/* so the watcher sees a real completed torrent.
 TORRENTS: list[dict] = []
@@ -161,14 +184,21 @@ class _StubHandler(BaseHTTPRequestHandler):
             self._send(200, body, "application/json")
         # ── Prowlarr ──────────────────────────────────────────────────────
         elif path == "/api/v1/search":
-            q = ""
+            q, indexer_ids = "", ""
             if "?" in self.path:
                 from urllib.parse import parse_qs, urlparse
-                q = parse_qs(urlparse(self.path).query).get("query", [""])[0].lower()
+                params = parse_qs(urlparse(self.path).query)
+                q = params.get("query", [""])[0].lower()
+                indexer_ids = params.get("indexerIds", [""])[0]
+            # Real Prowlarr behavior: an indexer that carries nothing (or does
+            # not exist) answers HTTP 200 with an empty list, not an error.
+            if indexer_ids != str(GAME_INDEXER_ID):
+                self._send(200, b"[]", "application/json")
+                return
             hits = [r for r in PROWLARR_RELEASES if q and q.split()[0] in r["title"].lower()]
             self._send(200, json.dumps(hits).encode(), "application/json")
         elif path == "/api/v1/indexer":
-            self._send(200, b"[]", "application/json")
+            self._send(200, json.dumps(PROWLARR_INDEXERS).encode(), "application/json")
         # ── Myrient directory listing + ROM files ─────────────────────────
         elif path == "/files/gb/":
             rows = "".join(

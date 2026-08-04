@@ -54,9 +54,24 @@ async function doSearch() {
     const d = await (await fetch(`/api/search?q=${encodeURIComponent(q)}&platform=${platform}`)).json();
     searchResults = d.results || [];
     document.getElementById('search-info').textContent = `${searchResults.length} results in ${d.search_time_ms}ms`;
+    showSearchedIndexers((d.sources || []).find(s => s.name === 'prowlarr'));
     renderResults();
   } catch(e) { document.getElementById('search-info').textContent = 'Search failed'; toast('Search failed', 'error'); }
   finally { btn.disabled = false; btn.textContent = 'Search'; }
+}
+
+// Naming the indexers that were queried is what separates "this game isn't on
+// your trackers" from "your trackers were never asked" — the two look identical
+// in an empty result list.
+function showSearchedIndexers(prowlarr) {
+  const el = document.getElementById('search-indexers');
+  if (!el) return;
+  const indexers = (prowlarr && prowlarr.indexers) || [];
+  el.dataset.count = prowlarr && prowlarr.enabled ? String(indexers.length) : '';
+  if (!prowlarr || !prowlarr.enabled) { el.textContent = ''; return; }
+  el.textContent = indexers.length
+    ? `Prowlarr searched: ${indexers.map(i => i.name).join(', ')}`
+    : 'Prowlarr searched no indexers — none are enabled with game categories.';
 }
 
 function renderResults() {

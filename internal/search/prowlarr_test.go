@@ -10,6 +10,38 @@ import (
 	"gamarr/internal/config"
 )
 
+// gameIndexerJSON is a Prowlarr indexer definition that advertises PC games,
+// which is what capability discovery looks for.
+func gameIndexerJSON(id int, name string) map[string]interface{} {
+	return map[string]interface{}{
+		"id": id, "name": name, "enable": true,
+		"capabilities": map[string]interface{}{
+			"categories": []map[string]interface{}{{"id": 4000, "name": "PC"}},
+		},
+	}
+}
+
+// stubProwlarr serves the two endpoints a game search uses: the indexer list
+// that resolves which indexers to query, and the search itself. The cached
+// indexer list is dropped around the test so instances do not leak between them.
+func stubProwlarr(t *testing.T, items []map[string]interface{}) *httptest.Server {
+	t.Helper()
+	ClearIndexerCache()
+	t.Cleanup(ClearIndexerCache)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") == "" {
+			t.Error("expected API key header")
+		}
+		if r.URL.Path == "/api/v1/indexer" {
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				gameIndexerJSON(1, "TestIndexer"),
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(items)
+	}))
+}
+
 func TestSearchProwlarr_NoProwlarr(t *testing.T) {
 	cfg := &config.Config{ProwlarrURL: "", ProwlarrAPIKey: ""}
 	results := SearchProwlarr(cfg, "zelda", "")
@@ -35,12 +67,7 @@ func TestSearchProwlarr_ParsesResults(t *testing.T) {
 			"age":         float64(5),
 		},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Api-Key") != "testkey" {
-			t.Error("expected API key header")
-		}
-		json.NewEncoder(w).Encode(items)
-	}))
+	srv := stubProwlarr(t, items)
 	defer srv.Close()
 
 	cfg := &config.Config{
@@ -83,9 +110,7 @@ func TestSearchProwlarr_MapsUsenetProtocol(t *testing.T) {
 			"categories":  []interface{}{float64(100082)},
 		},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(items)
-	}))
+	srv := stubProwlarr(t, items)
 	defer srv.Close()
 
 	cfg := &config.Config{
@@ -114,9 +139,7 @@ func TestSearchProwlarr_PCRepackFallback(t *testing.T) {
 			"categories": []interface{}{float64(99999)}, // unknown category
 		},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(items)
-	}))
+	srv := stubProwlarr(t, items)
 	defer srv.Close()
 
 	cfg := &config.Config{
@@ -151,9 +174,7 @@ func TestSearchProwlarr_CategoryFilter(t *testing.T) {
 			"categories": []interface{}{float64(4000)},
 		},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(items)
-	}))
+	srv := stubProwlarr(t, items)
 	defer srv.Close()
 
 	cfg := &config.Config{
