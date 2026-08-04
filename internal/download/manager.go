@@ -301,9 +301,15 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	}
 
 	if !pathExists(contentPath) {
+		// The path comes from the download client. Gamarr has no remote path
+		// mapping, so the client's paths have to resolve identically inside
+		// this container — the usual cause of a path that exists for the
+		// client and not for Gamarr.
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "error",
-			"error":  fmt.Sprintf("Cannot find downloaded files at %s", contentPath),
+			"error": fmt.Sprintf("Cannot find downloaded files at %s — this is the path "+
+				"the download client reported; Gamarr must see it at the same path, so "+
+				"check the two are mounted the same way", contentPath),
 		})
 		slog.Error("content path not found", "path", contentPath)
 		return

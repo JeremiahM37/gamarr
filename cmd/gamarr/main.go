@@ -15,6 +15,7 @@ import (
 	"gamarr/internal/config"
 	"gamarr/internal/db"
 	"gamarr/internal/download"
+	"gamarr/internal/fileops"
 	"gamarr/internal/models"
 	"gamarr/internal/monitor"
 	"gamarr/internal/qbit"
@@ -40,6 +41,30 @@ func enabledWebhooks(database *db.JobStore, cfg *config.Config) []webhook.Webhoo
 		})
 	}
 	return configs
+}
+
+// warnIfHardlinkImportCannotWork probes the configured library paths at boot
+// when hardlink imports are selected, so a layout that cannot link is reported
+// once at startup instead of as a failed job the first time something finishes
+// downloading — possibly days later.
+func warnIfHardlinkImportCannotWork(cfg *config.Config, mgr *download.Manager) {
+	settings := mgr.LoadSettings()
+	if settings == nil {
+		return
+	}
+	mode, err := fileops.ParseMode(settings.ImportMode)
+	if err != nil || mode != fileops.ModeHardlink {
+		return
+	}
+	for _, dest := range []string{cfg.GamesVaultPath, cfg.GamesRomsPath} {
+		if dest == "" {
+			continue
+		}
+		if err := fileops.CheckHardlink(cfg.QBSavePath, dest); err != nil {
+			slog.Warn("hardlink import will fail with this layout",
+				"downloads", cfg.QBSavePath, "library", dest, "error", err)
+		}
+	}
 }
 
 func main() {
@@ -86,6 +111,8 @@ func main() {
 
 	// Initialize download manager
 	mgr := download.New(cfg, database, qb)
+
+	warnIfHardlinkImportCannotWork(cfg, mgr)
 
 	// Initialize AI monitor
 	mon := monitor.New(cfg, monitor.Callbacks{

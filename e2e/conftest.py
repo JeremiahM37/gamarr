@@ -213,11 +213,13 @@ def gamarr_binary(tmp_path_factory) -> Path:
     return out
 
 
-@pytest.fixture(scope="session")
-def app(stub_server, gamarr_binary, tmp_path_factory):
-    """Boot gamarr with an injected registry: Myrient -> stub, Vimm -> dead
-    port that refuses connections instantly."""
-    data = tmp_path_factory.mktemp("data")
+def _boot_gamarr(stub_server, gamarr_binary, data, env_overrides: dict) -> dict:
+    """Boot one gamarr with an injected registry: Myrient -> stub, Vimm -> dead
+    port that refuses connections instantly.
+
+    env_overrides let a test represent a deployment the defaults cannot — a
+    library on a second filesystem, say — without a second harness.
+    """
     dead = "http://127.0.0.1:1/"
     registry = {
         "version": 1,
@@ -234,9 +236,9 @@ def app(stub_server, gamarr_binary, tmp_path_factory):
     vault = data / "vault"
     roms = data / "roms"
     incoming = data / "incoming"
-    vault.mkdir()
-    roms.mkdir()
-    incoming.mkdir()
+    vault.mkdir(exist_ok=True)
+    roms.mkdir(exist_ok=True)
+    incoming.mkdir(exist_ok=True)
 
     env = {
         **os.environ,
@@ -257,6 +259,7 @@ def app(stub_server, gamarr_binary, tmp_path_factory):
         "WATCHER_INTERVAL": "10",
         "PROWLARR_URL": stub_server,
         "PROWLARR_API_KEY": "e2e-stub-key",
+        **env_overrides,
     }
     log = open(data / "gamarr.log", "w")
     proc = subprocess.Popen([str(gamarr_binary)], env=env, stdout=log, stderr=log)
@@ -276,17 +279,41 @@ def app(stub_server, gamarr_binary, tmp_path_factory):
         proc.kill()
         raise RuntimeError("gamarr did not become healthy within 30s")
 
-    yield {
+    return {
         "base": base, "data": data, "roms_dir": roms,
         "vault_dir": vault, "incoming_dir": incoming,
+        "log_path": data / "gamarr.log", "_proc": proc, "_log": log,
     }
 
-    proc.terminate()
+
+def _stop_gamarr(inst: dict) -> None:
+    inst["_proc"].terminate()
     try:
-        proc.wait(timeout=5)
+        inst["_proc"].wait(timeout=5)
     except subprocess.TimeoutExpired:
-        proc.kill()
-    log.close()
+        inst["_proc"].kill()
+    inst["_log"].close()
+
+
+@pytest.fixture(scope="session")
+def gamarr_factory(stub_server, gamarr_binary, tmp_path_factory):
+    """Boot extra gamarr instances with custom env, cleaned up at session end."""
+    started: list[dict] = []
+
+    def boot(name: str, **env_overrides) -> dict:
+        data = tmp_path_factory.mktemp(name)
+        inst = _boot_gamarr(stub_server, gamarr_binary, data, env_overrides)
+        started.append(inst)
+        return inst
+
+    yield boot
+    for inst in started:
+        _stop_gamarr(inst)
+
+
+@pytest.fixture(scope="session")
+def app(gamarr_factory):
+    return gamarr_factory("data")
 
 
 class _Swarm:

@@ -252,7 +252,7 @@ async function saveSetting(key, value) {
 // hint spells out the seeding consequence rather than leaving it to the docs.
 const IMPORT_MODE_HINTS = {
   move: 'Files leave the download folder. Torrents stop seeding.',
-  hardlink: 'Links files into the library. Torrents keep seeding, no extra disk. Needs one filesystem for downloads and library.',
+  hardlink: 'Links files into the library. Torrents keep seeding, no extra disk. Needs downloads and library under one mount.',
   symlink: 'Links the library entry to the download. Torrents keep seeding, but the entry breaks if the download is deleted.',
   copy: 'Duplicates the files. Torrents keep seeding, at double the disk usage.',
 };
@@ -263,6 +263,33 @@ function showImportModeHint(mode) {
   // The attribute reflects the mode the server confirmed, which is what the
   // e2e suite waits on rather than guessing at request timing.
   hint.dataset.mode = mode || '';
+  refreshImportCheck(mode);
+}
+
+// "Needs one filesystem" is advice the user cannot check by looking — two
+// Docker bind mounts of one disk satisfy it on paper and still refuse to link.
+// So the server tries a real link and reports what happened, here, rather than
+// leaving it to be discovered as a failed import days later.
+async function refreshImportCheck(mode) {
+  const el = document.getElementById('hardlink-check');
+  if (!el) return;
+  const set = (status, cls, text) => {
+    el.dataset.status = status;
+    el.className = `text-xs mt-1 ${cls}`;
+    el.textContent = text;
+  };
+  if (mode !== 'hardlink') { set('', 'text-slate-500', ''); return; }
+  set('checking', 'text-slate-500', 'Checking that hardlinks work…');
+  try {
+    const d = await (await fetch('/api/settings/import-check')).json();
+    const checks = d.checks || [];
+    const failed = checks.filter(c => !c.ok);
+    if (!checks.length) { set('', 'text-slate-500', ''); return; }
+    if (failed.length) { set('failed', 'text-red-400', failed[0].error); return; }
+    set('ok', 'text-emerald-400', `Verified: hardlinks work from ${checks[0].source} into the library.`);
+  } catch (e) {
+    set('', 'text-slate-500', '');
+  }
 }
 async function saveImportMode(el) {
   settingsSaveSeq++;
