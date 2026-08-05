@@ -5,7 +5,10 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
-    ldflags: [-s, -w]
+    # -X injects the tag so the binary reports its real version. Without it
+    # the hardcoded default below ships unchanged, which is why v1.1.0 and
+    # v1.2.0 both reported 1.0.0.
+    ldflags: [-s, -w, -X, 'main.Version={{.Version}}']
 archives:
   - formats: ['tar.gz']
     format_overrides:

@@ -25,7 +25,9 @@ import (
 	"gamarr/internal/webhook"
 )
 
-var Version = "1.0.0"
+// Version is overridden at release time via -ldflags -X main.Version.
+// The literal is the fallback for builds from source.
+var Version = "1.3.0"
 
 // enabledWebhooks returns the enabled webhook configs stored in the database,
 // plus the env-configured default webhook (WEBHOOK_URL) if one is set.
