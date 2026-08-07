@@ -1,6 +1,14 @@
-FROM golang:1.25-alpine AS builder
+# Pin the builder to the BUILD platform and cross-compile from it. Go does this
+# natively, so a multi-platform build emulates only the small runtime stage
+# below rather than running the whole compile under QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG VERSION=1.0.0
+
+# Supplied automatically by BuildKit; the defaults keep a plain
+# `docker build` (no buildx) working exactly as before.
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 WORKDIR /build
 
@@ -8,7 +16,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /gamarr ./cmd/gamarr/
 
