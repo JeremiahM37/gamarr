@@ -36,11 +36,17 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - id: version
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      # cache-from only, deliberately. This job runs on a tag ref, and the GHA
+      # cache scopes a tag as its own branch: a cache written under refs/tags/v1
+      # is unreadable from refs/tags/v2 (sibling scopes), so cache-to here would
+      # only ever be written, never read. Restoring from the default branch IS
+      # allowed, so the entries come from the multi-arch build in test.yml.
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
           tags: |
             ghcr.io/${{ steps.owner.outputs.name }}/gamarr:${{ steps.version.outputs.tag }}
             ghcr.io/${{ steps.owner.outputs.name }}/gamarr:latest

@@ -71,8 +71,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: docker build
+      # QEMU is needed only for the arm64 runtime stage (apk add / adduser) --
+      # the Go compile cross-compiles on the native runner. See the Dockerfile.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # The plain path a user gets with `docker build`, no buildx involved.
+      - name: docker build (native)
         run: docker build -t gamarr:ci .
+
+      # Release publishes linux/amd64 + linux/arm64. Build both here so an
+      # arm64-breaking change fails on the PR instead of at `git tag`.
+      # cache-to seeds the gha cache that the release job restores from.
+      - name: docker build (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A green multi-arch build does NOT prove the binary is arm64: if the
+      # TARGETARCH plumbing regressed, the arm64 image would still build, with an
+      # amd64 binary inside, and only fail at `exec` on a real arm64 host. So
+      # look at the binary itself.
+      #
+      # This exports the built filesystem straight to disk rather than loading an
+      # image and copying out of a container. `--load` + `docker cp` would route
+      # the answer through the daemon's image store, and on a containerd-store
+      # daemon that resolves to the HOST platform -- which silently turns this
+      # into an amd64-vs-amd64 comparison that can never fail.
+      - name: arm64 image contains an arm64 binary
+        run: |
+          docker buildx build --platform linux/arm64 \
+            --cache-from type=gha \
+            --output type=local,dest=/tmp/arm64-rootfs .
+          file /tmp/arm64-rootfs/usr/local/bin/gamarr
+          file /tmp/arm64-rootfs/usr/local/bin/gamarr | grep -q 'ARM aarch64' || {
+            echo "::error::/usr/local/bin/gamarr in the linux/arm64 image is not an aarch64 binary"
+            exit 1
+          }
 
   e2e:
     runs-on: ubuntu-latest
