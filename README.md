@@ -69,7 +69,8 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 
 ### Administration
 
-- **Multi-user auth** -- session-based login with API key support (`X-Api-Key` header)
+- **Multi-user auth** -- session-based login with API key support (`X-Api-Key` header), TOTP, and OIDC/SSO
+- **Sign-in UI** -- the web UI prompts for credentials whenever auth is configured, and re-prompts when a session expires
 - **Admin dashboard** -- system overview, user management, connection tests
 - **Rate limiting** -- per-category limits (login, search, download, general API)
 - **Security headers** -- request size limits, CORS, standard hardening
@@ -173,6 +174,15 @@ All configuration is via environment variables.
 | `METRICS_ENABLED` | `true` | Enable Prometheus metrics endpoint |
 | `AUTH_USERNAME` | | Admin username (enables auth when set) |
 | `AUTH_PASSWORD` | | Admin password |
+| `API_KEY` | | API key for programmatic access (`X-Api-Key` header or `?apikey=`) |
+
+Auth is off until one of `AUTH_USERNAME`/`AUTH_PASSWORD`, `API_KEY`, or a registered
+user exists. With any of them set, the UI shows a sign-in form on load.
+
+On an instance that is already protected this way, creating the **first** user
+account requires credentials — an admin session or the API key. Only a wholly
+unconfigured instance can be claimed anonymously. To move from `AUTH_USERNAME`
+to multi-user accounts, sign in with the legacy password first, then register.
 
 ### Sources Registry
 

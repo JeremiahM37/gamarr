@@ -169,6 +169,27 @@ var exemptPaths = map[string]bool{
 	"/api/openapi.json":  true, // public API schema for AI/tooling discovery
 }
 
+// authIsEnforced reports whether protected routes reject an anonymous caller.
+// Any one of the three mechanisms — DB users, legacy credentials, API key —
+// turns the middleware on for everyone.
+func authIsEnforced(cfg *config.Config, userCount int) bool {
+	return userCount > 0 || cfg.HasAuth() || cfg.HasAPIKey()
+}
+
+// canBootstrapFirstUser reports whether an anonymous caller may claim this
+// instance by registering its first user.
+//
+// Open bootstrap is only correct on an instance nobody has claimed yet. Once
+// legacy credentials or an API key are configured, the operator has already
+// declared who owns it, and an anonymous first registration would hand admin
+// to whoever reached the port first — /api/register is exempt from the auth
+// middleware, so on those instances the request has to carry a session or key.
+// Migrating legacy -> multi-user still works: log in with the legacy password,
+// then register from that session.
+func canBootstrapFirstUser(cfg *config.Config, userCount int) bool {
+	return userCount == 0 && !cfg.HasAuth() && !cfg.HasAPIKey()
+}
+
 // isExempt returns true if the path does not require auth.
 func isExempt(path string) bool {
 	if exemptPaths[path] {
@@ -246,7 +267,7 @@ func authMiddleware(cfg *config.Config, database *db.JobStore, sessions *Session
 		multiUser := userCount > 0
 
 		// If no multi-user and no legacy auth and no API key, pass through as admin.
-		if !multiUser && !cfg.HasAuth() && !cfg.HasAPIKey() {
+		if !authIsEnforced(cfg, userCount) {
 			ctx := context.WithValue(r.Context(), ctxUserRole, "admin")
 			ctx = context.WithValue(ctx, ctxUsername, "anonymous")
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -414,7 +435,7 @@ func handleLogin(cfg *config.Config, database *db.JobStore, sessions *SessionSto
 
 // handleRegister handles POST /api/register. First user becomes admin.
 // Supports invite codes: non-admin users can register with a valid invite code.
-func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerFunc {
+func handleRegister(cfg *config.Config, database *db.JobStore, sessions *SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Username   string `json:"username"`
@@ -442,6 +463,19 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 
 		userCount, _ := database.CountUsers()
 		isFirstUser := userCount == 0
+
+		// On an instance that already has legacy credentials or an API key,
+		// claiming the first user requires proving you are the operator.
+		if isFirstUser && !canBootstrapFirstUser(cfg, userCount) {
+			callerRole, _ := r.Context().Value(ctxUserRole).(string)
+			if callerRole != "admin" {
+				writeJSON(w, http.StatusForbidden, map[string]interface{}{
+					"success": false,
+					"error":   "Authentication required to create the first user on a protected instance",
+				})
+				return
+			}
+		}
 
 		var inviteRole string
 		if !isFirstUser {
@@ -540,6 +574,12 @@ func handleRegister(database *db.JobStore, sessions *SessionStore) http.HandlerF
 }
 
 // handleAuthStatus returns the current auth state.
+//
+// The three booleans below are what the frontend needs to decide what to draw
+// before it fires a single protected request. "has_users" alone cannot answer
+// it: a legacy single-user instance has no DB users, so an unauthenticated
+// visitor there looks identical to a wide-open instance, and the UI has no way
+// to tell "just load the app" from "ask for a password first".
 func handleAuthStatus(database *db.JobStore, sessions *SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userCount, _ := database.CountUsers()
@@ -549,6 +589,13 @@ func handleAuthStatus(database *db.JobStore, sessions *SessionStore, cfg *config
 			"authenticated": false,
 			"oidc_enabled":  cfg.HasOIDC(),
 			"oidc_provider": cfg.OIDCProviderName,
+			// Protected routes will 401 an anonymous caller.
+			"auth_required": authIsEnforced(cfg, userCount),
+			// POST /api/login can actually mint a session. False on an
+			// API-key-only instance, where a password form would be a dead end.
+			"login_available": userCount > 0 || cfg.HasAuth(),
+			// This instance is unclaimed, so the first-run signup form applies.
+			"can_register": canBootstrapFirstUser(cfg, userCount),
 		}
 
 		cookie, err := r.Cookie("gamarr_session")

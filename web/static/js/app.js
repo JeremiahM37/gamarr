@@ -4,7 +4,264 @@
 const HOST = location.hostname;
 let searchResults = [], allPlatforms = [], currentTab = 'search', dlPollTimer = null, libPage = 1;
 
-document.addEventListener('DOMContentLoaded', () => { loadPlatforms(); loadConfig(); startBgPoll(); });
+// ============================================================
+// AUTH
+// ============================================================
+// The app must not fire a protected request before it knows whether this
+// instance wants a password: on a configured instance every one of them 401s,
+// and because each caller swallows its own error the result is a UI that looks
+// fine and does nothing. So boot resolves /api/auth/status first and draws
+// either the app or the sign-in gate — never both, never neither.
+
+let authState = null;         // last /api/auth/status response
+let bgPollTimer = null;       // download-badge poll; only runs while signed in
+let pendingTOTPToken = null;  // set between password step and 2FA step
+let gateVisible = false;
+
+document.addEventListener('DOMContentLoaded', boot);
+
+async function boot() {
+  authState = await fetchAuthStatus();
+  // A status call that fails outright (server down mid-boot) is not a reason
+  // to lock the user out — start the app and let the 401 interceptor put the
+  // gate up if the requests that follow turn out to need one.
+  if (authState && authState.auth_required && !authState.authenticated) {
+    showAuthGate();
+    return;
+  }
+  startApp();
+}
+
+async function fetchAuthStatus() {
+  try {
+    const r = await fetch('/api/auth/status');
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+// api() is fetch for every protected endpoint. It never throws on 401 — it
+// raises the gate and hands the response back, so callers keep their existing
+// error handling and a stale session can't turn into an unhandled rejection.
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) handleUnauthorized();
+  return r;
+}
+
+async function handleUnauthorized() {
+  // Claimed before the await so the handful of requests that 401 together on
+  // a page's worth of panels raise exactly one gate.
+  if (gateVisible) return;
+  gateVisible = true;
+  stopPolling();
+  authState = (await fetchAuthStatus()) || authState;
+  showAuthGate('Your session expired. Please sign in again.');
+}
+
+function stopPolling() {
+  if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTimer = null; }
+  if (bgPollTimer) { clearInterval(bgPollTimer); bgPollTimer = null; }
+}
+
+function show(id, visible) { document.getElementById(id).classList.toggle('hidden', !visible); }
+
+function showAuthGate(message) {
+  gateVisible = true;
+  show('auth-loading', false);
+  show('app-root', false);
+  show('auth-gate', true);
+
+  const oidc = authState && authState.oidc_enabled;
+  show('oidc-block', !!oidc);
+  if (oidc) {
+    document.getElementById('oidc-btn').textContent = `Sign in with ${authState.oidc_provider || 'SSO'}`;
+  }
+
+  // Only a multi-user instance can accept a signup at the gate (with an invite
+  // code). Legacy single-user and API-key instances cannot, so offering the
+  // form there would just produce a 403.
+  const canSignUp = !!(authState && (authState.has_users || authState.can_register));
+  const toggle = document.getElementById('switch-auth-mode');
+  toggle.classList.toggle('hidden', !canSignUp);
+
+  // An API-key-only instance has no password to type. Say so.
+  const loginAvailable = !authState || authState.login_available;
+  show('login-form', loginAvailable);
+  if (!loginAvailable) {
+    setNotice('This instance is protected by an API key. Browser sign-in is not available — ' +
+      'call the API with an X-Api-Key header, or configure AUTH_USERNAME/AUTH_PASSWORD to enable a login.');
+  } else {
+    setNotice('');
+  }
+
+  showAuthMode('login');
+  setAuthError(message || '');
+  const u = document.getElementById('login-username');
+  if (loginAvailable && u) u.focus();
+}
+
+function setNotice(text) {
+  const el = document.getElementById('auth-notice');
+  el.textContent = text;
+  el.classList.toggle('hidden', !text);
+}
+
+function setAuthError(text) {
+  const el = document.getElementById('auth-error');
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+}
+
+// One of 'login' | 'totp' | 'register' is visible at a time.
+function showAuthMode(mode) {
+  const loginAvailable = !authState || authState.login_available;
+  show('login-form', mode === 'login' && loginAvailable);
+  show('totp-form', mode === 'totp');
+  show('register-form', mode === 'register');
+  const toggle = document.getElementById('switch-auth-mode');
+  if (mode === 'totp') { toggle.classList.add('hidden'); return; }
+  toggle.textContent = mode === 'register' ? 'Back to sign in' : 'Have an invite code? Create an account';
+  // A first, unclaimed instance needs no invite code and mints an admin.
+  const first = !!(authState && authState.can_register);
+  show('invite-block', !first);
+  document.getElementById('register-heading').textContent = first ? 'Create admin account' : 'Create account';
+  document.getElementById('register-hint').textContent = first
+    ? 'This instance has no users yet. The account you create becomes the administrator.'
+    : 'Registration on this instance requires an invite code from an administrator.';
+}
+
+function switchAuthMode() {
+  const registering = !document.getElementById('register-form').classList.contains('hidden');
+  setAuthError('');
+  showAuthMode(registering ? 'login' : 'register');
+}
+
+function oidcLogin() { window.location.href = '/api/oidc/login'; }
+
+async function submitLogin() {
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!username || !password) { setAuthError('Enter a username and password.'); return; }
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  setAuthError('');
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username, password}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 429) { setAuthError('Too many attempts. Wait a moment and try again.'); return; }
+    if (!r.ok || d.success === false) { setAuthError(d.error || 'Sign in failed.'); return; }
+    if (d.needs_totp) {
+      pendingTOTPToken = d.session_pending;
+      showAuthMode('totp');
+      document.getElementById('totp-code').focus();
+      return;
+    }
+    document.getElementById('login-password').value = '';
+    await onAuthenticated();
+  } catch (e) {
+    setAuthError('Could not reach the server.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Sign in';
+  }
+}
+
+async function submitTOTP() {
+  const code = document.getElementById('totp-code').value.trim();
+  if (!code) { setAuthError('Enter your authentication code.'); return; }
+  const btn = document.getElementById('totp-btn');
+  btn.disabled = true; btn.textContent = 'Verifying…';
+  setAuthError('');
+  try {
+    const r = await fetch('/api/login/totp', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_pending: pendingTOTPToken, code}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.success === false) { setAuthError(d.error || 'Verification failed.'); return; }
+    pendingTOTPToken = null;
+    document.getElementById('totp-code').value = '';
+    document.getElementById('login-password').value = '';
+    await onAuthenticated();
+  } catch (e) {
+    setAuthError('Could not reach the server.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Verify';
+  }
+}
+
+function cancelTOTP() {
+  pendingTOTPToken = null;
+  document.getElementById('totp-code').value = '';
+  setAuthError('');
+  showAuthMode('login');
+}
+
+async function submitRegister() {
+  const username = document.getElementById('register-username').value.trim();
+  const password = document.getElementById('register-password').value;
+  const invite = document.getElementById('register-invite').value.trim();
+  if (!username || !password) { setAuthError('Enter a username and password.'); return; }
+  const btn = document.getElementById('register-btn');
+  btn.disabled = true; btn.textContent = 'Creating…';
+  setAuthError('');
+  try {
+    const body = {username, password};
+    if (invite) body.invite_code = invite;
+    const r = await fetch('/api/register', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.success === false) { setAuthError(d.error || 'Could not create the account.'); return; }
+    document.getElementById('register-password').value = '';
+    // Only the first user is auto-logged-in; an invited user still signs in.
+    if (d.token) { await onAuthenticated(); return; }
+    showAuthMode('login');
+    document.getElementById('login-username').value = username;
+    setNotice('Account created. Sign in to continue.');
+  } catch (e) {
+    setAuthError('Could not reach the server.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Create account';
+  }
+}
+
+async function onAuthenticated() {
+  authState = await fetchAuthStatus();
+  setAuthError(''); setNotice('');
+  startApp();
+}
+
+async function logout() {
+  stopPolling();
+  try { await fetch('/api/logout', {method: 'POST'}); } catch (e) {}
+  authState = await fetchAuthStatus();
+  showAuthGate('You have been signed out.');
+}
+
+function startApp() {
+  gateVisible = false;
+  show('auth-loading', false);
+  show('auth-gate', false);
+  show('app-root', true);
+
+  const chip = document.getElementById('user-chip');
+  const named = authState && authState.authenticated && authState.username;
+  chip.classList.toggle('hidden', !named);
+  chip.classList.toggle('flex', !!named);
+  if (named) document.getElementById('user-name').textContent = authState.username;
+
+  loadPlatforms();
+  loadConfig();
+  startBgPoll();
+  // Re-run the active tab's loaders: after a re-login the panels on screen are
+  // whatever the expired session managed to render, which is usually nothing.
+  switchTab(currentTab);
+}
 
 function switchTab(tab) {
   closeMobileNav();
@@ -21,11 +278,14 @@ function switchTab(tab) {
   if (tab === 'settings') { loadSettings(); loadSources(); loadStats(); loadActivity(); loadMonitor(); }
 }
 
-function startBgPoll() { setInterval(updateBadge, 15000); }
+function startBgPoll() {
+  if (bgPollTimer) clearInterval(bgPollTimer);
+  bgPollTimer = setInterval(updateBadge, 15000);
+}
 
 async function loadConfig() {
   try {
-    const d = await (await fetch('/api/config')).json();
+    const d = await (await api('/api/config')).json();
     document.getElementById('romm-link').href = d.romm_url || `http://${HOST}:8086`;
     document.getElementById('gamevault-link').href = d.gamevault_url || `http://${HOST}:8087`;
   } catch(e) {}
@@ -33,7 +293,7 @@ async function loadConfig() {
 
 async function loadPlatforms() {
   try {
-    const d = await (await fetch('/api/platforms')).json();
+    const d = await (await api('/api/platforms')).json();
     allPlatforms = d.platforms;
     const opts = allPlatforms.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
     document.getElementById('platform-filter').innerHTML = opts;
@@ -51,7 +311,7 @@ async function doSearch() {
   document.getElementById('results').innerHTML = Array(6).fill('<div class="skeleton rounded-xl h-32"></div>').join('');
   document.getElementById('search-info').textContent = '';
   try {
-    const d = await (await fetch(`/api/search?q=${encodeURIComponent(q)}&platform=${platform}`)).json();
+    const d = await (await api(`/api/search?q=${encodeURIComponent(q)}&platform=${platform}`)).json();
     searchResults = d.results || [];
     document.getElementById('search-info').textContent = `${searchResults.length} results in ${d.search_time_ms}ms`;
     showSearchedIndexers((d.sources || []).find(s => s.name === 'prowlarr'));
@@ -112,7 +372,7 @@ async function dlGame(idx) {
   const r = searchResults[idx]; const btn = document.getElementById('dl-btn-' + idx);
   btn.disabled = true; btn.textContent = '...';
   try {
-    const d = await (await fetch('/api/download', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(r) })).json();
+    const d = await (await api('/api/download', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(r) })).json();
     if (d.success) { toast(`Downloading: ${r.title}`, 'success'); btn.textContent = 'Sent'; updateBadge(); }
     else { toast(d.error || 'Failed', 'error'); btn.disabled = false; btn.textContent = 'DL'; }
   } catch(e) { toast('Failed', 'error'); btn.disabled = false; btn.textContent = 'DL'; }
@@ -123,7 +383,7 @@ async function loadLibrary(page) {
   const q = document.getElementById('lib-search').value.trim();
   const plat = document.getElementById('lib-platform').value;
   try {
-    const d = await (await fetch(`/api/library?page=${libPage}&q=${encodeURIComponent(q)}&platform=${plat}`)).json();
+    const d = await (await api(`/api/library?page=${libPage}&q=${encodeURIComponent(q)}&platform=${plat}`)).json();
     document.getElementById('lib-stats').textContent = `${d.total} items (page ${d.page} of ${d.total_pages || 1})`;
     const grid = document.getElementById('library-grid');
     if (!d.items || !d.items.length) {
@@ -161,11 +421,11 @@ async function loadLibrary(page) {
 }
 
 async function pollDownloads() {
-  try { const d = await (await fetch('/api/downloads')).json(); renderDownloads(d.downloads || []); } catch(e) {}
+  try { const d = await (await api('/api/downloads')).json(); renderDownloads(d.downloads || []); } catch(e) {}
 }
 async function updateBadge() {
   try {
-    const d = await (await fetch('/api/downloads')).json();
+    const d = await (await api('/api/downloads')).json();
     const active = (d.downloads || []).filter(x => ['downloading','stalled','metadata','organizing','scanning','queued'].includes(x.status)).length;
     const badge = document.getElementById('dl-badge');
     if (active > 0) { badge.classList.remove('hidden'); badge.textContent = active; } else badge.classList.add('hidden');
@@ -201,16 +461,16 @@ function renderDownloads(downloads) {
     </div>`;
   }).join('');
 }
-async function retryJob(id) { await fetch(`/api/downloads/${id}/retry`, {method:'POST'}); pollDownloads(); toast('Retrying...', 'success'); }
-async function removeTorrent(h) { await fetch(`/api/downloads/torrent/${h}`, {method:'DELETE'}); pollDownloads(); }
-async function removeJob(id) { await fetch(`/api/downloads/${id}`, {method:'DELETE'}); pollDownloads(); }
-async function clearFinished() { await fetch('/api/downloads/clear', {method:'POST'}); pollDownloads(); toast('Cleared', 'success'); }
+async function retryJob(id) { await api(`/api/downloads/${id}/retry`, {method:'POST'}); pollDownloads(); toast('Retrying...', 'success'); }
+async function removeTorrent(h) { await api(`/api/downloads/torrent/${h}`, {method:'DELETE'}); pollDownloads(); }
+async function removeJob(id) { await api(`/api/downloads/${id}`, {method:'DELETE'}); pollDownloads(); }
+async function clearFinished() { await api('/api/downloads/clear', {method:'POST'}); pollDownloads(); toast('Cleared', 'success'); }
 async function organizeTorrent(hash, jobId) {
   const plat = prompt('Platform? (pc, switch, ps2, ps3, psp, nds, 3ds, wii, ngc, dc, psx, gba, n64, snes, nes, gb, genesis, saturn, xbox, xbox360)', 'pc');
   if (!plat) return;
   const isPC = plat === 'pc';
   try {
-    const d = await (await fetch(`/api/downloads/organize/${hash}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({platform: isPC ? 'PC' : plat.toUpperCase(), platform_slug: isPC ? '' : plat, is_pc: isPC})})).json();
+    const d = await (await api(`/api/downloads/organize/${hash}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({platform: isPC ? 'PC' : plat.toUpperCase(), platform_slug: isPC ? '' : plat, is_pc: isPC})})).json();
     if (d.success) { if (jobId) removeJob(jobId); toast('Organizing...', 'success'); } else toast(d.error || 'Failed', 'error');
   } catch(e) { toast('Failed', 'error'); }
   pollDownloads();
@@ -218,7 +478,7 @@ async function organizeTorrent(hash, jobId) {
 
 async function loadWishlist() {
   try {
-    const d = await (await fetch('/api/wishlist')).json();
+    const d = await (await api('/api/wishlist')).json();
     const items = d.items || [];
     const c = document.getElementById('wishlist');
     if (!items.length) { c.innerHTML = '<div class="text-center py-16 text-slate-500"><div class="text-4xl mb-3">&#10084;&#65039;</div>Wishlist is empty</div>'; return; }
@@ -233,11 +493,11 @@ async function addWishlist() {
   const title = document.getElementById('wish-title').value.trim();
   const sel = document.getElementById('wish-platform');
   if (!title) { toast('Title required', 'error'); return; }
-  await fetch('/api/wishlist', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title, platform: sel.options[sel.selectedIndex].text, platform_slug: sel.value})});
+  await api('/api/wishlist', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title, platform: sel.options[sel.selectedIndex].text, platform_slug: sel.value})});
   document.getElementById('wish-title').value = '';
   loadWishlist(); toast('Added to wishlist', 'success');
 }
-async function deleteWishlist(id) { await fetch(`/api/wishlist/${id}`, {method:'DELETE'}); loadWishlist(); }
+async function deleteWishlist(id) { await api(`/api/wishlist/${id}`, {method:'DELETE'}); loadWishlist(); }
 function wishSearch(title) { document.getElementById('search-input').value = title; switchTab('search'); doSearch(); }
 
 // A save issued while a settings GET is still in flight is newer than whatever
@@ -247,7 +507,7 @@ let settingsSaveSeq = 0;
 async function loadSettings() {
   const seq = settingsSaveSeq;
   try {
-    const d = await (await fetch('/api/settings')).json();
+    const d = await (await api('/api/settings')).json();
     if (seq !== settingsSaveSeq) return;
     applySettings(d);
   } catch(e) {}
@@ -260,7 +520,7 @@ function applySettings(d) {
 }
 async function saveSetting(key, value) {
   settingsSaveSeq++;
-  await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({[key]: value})});
+  await api('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({[key]: value})});
 }
 
 // Import mode decides whether a finished torrent survives its import, so the
@@ -296,7 +556,7 @@ async function refreshImportCheck(mode) {
   if (mode !== 'hardlink') { set('', 'text-slate-500', ''); return; }
   set('checking', 'text-slate-500', 'Checking that hardlinks work…');
   try {
-    const d = await (await fetch('/api/settings/import-check')).json();
+    const d = await (await api('/api/settings/import-check')).json();
     const checks = d.checks || [];
     const failed = checks.filter(c => !c.ok);
     if (!checks.length) { set('', 'text-slate-500', ''); return; }
@@ -308,7 +568,7 @@ async function refreshImportCheck(mode) {
 }
 async function saveImportMode(el) {
   settingsSaveSeq++;
-  const r = await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({import_mode: el.value})});
+  const r = await api('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({import_mode: el.value})});
   if (!r.ok) { toast('Could not save import mode', 'error'); loadSettings(); return; }
   const d = await r.json();
   applySettings(d);
@@ -316,7 +576,7 @@ async function saveImportMode(el) {
 }
 async function loadSources() {
   try {
-    const d = await (await fetch('/api/sources')).json();
+    const d = await (await api('/api/sources')).json();
     document.getElementById('settings-sources').innerHTML = (d.sources||[]).map(s => {
       const dot = s.enabled ? 'bg-emerald-500' : 'bg-slate-600';
       const srcColor = s.source_type === 'torrent' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400';
@@ -326,7 +586,7 @@ async function loadSources() {
 }
 async function loadStats() {
   try {
-    const d = await (await fetch('/api/stats')).json();
+    const d = await (await api('/api/stats')).json();
     const plats = d.platforms || {};
     const maxVal = Math.max(1, ...Object.values(plats));
     document.getElementById('header-stats').textContent = `${d.library_total || 0} games`;
@@ -339,7 +599,7 @@ async function loadStats() {
 }
 async function loadActivity() {
   try {
-    const d = await (await fetch('/api/activity')).json();
+    const d = await (await api('/api/activity')).json();
     const entries = d.entries || [];
     const c = document.getElementById('activity-log');
     if (!entries.length) { c.innerHTML = '<div class="text-sm text-slate-500">No activity yet</div>'; return; }
@@ -351,7 +611,7 @@ async function loadActivity() {
 }
 async function loadMonitor() {
   try {
-    const d = await (await fetch('/api/monitor/status')).json();
+    const d = await (await api('/api/monitor/status')).json();
     const c = document.getElementById('monitor-info');
     const dotColor = d.enabled ? 'bg-emerald-500' : 'bg-slate-600';
     const statusText = d.enabled ? `Active &middot; ${esc(d.provider)} (${esc(d.model)})` : 'Disabled';
@@ -359,12 +619,12 @@ async function loadMonitor() {
       <div class="text-sm text-slate-400 bg-slate-800 rounded-lg p-3">${esc(d.diagnosis || '—')}</div>`;
   } catch(e) {}
 }
-async function triggerAnalysis() { await fetch('/api/monitor/analyze', {method:'POST'}); setTimeout(loadMonitor, 500); toast('Analysis triggered', 'success'); }
+async function triggerAnalysis() { await api('/api/monitor/analyze', {method:'POST'}); setTimeout(loadMonitor, 500); toast('Analysis triggered', 'success'); }
 async function testConn(service) {
   const el = document.getElementById(`test-${service}-status`);
   el.textContent = 'Testing...'; el.className = 'text-xs text-yellow-400 mt-1';
   try {
-    const d = await (await fetch(`/api/test/${service}`, {method:'POST'})).json();
+    const d = await (await api(`/api/test/${service}`, {method:'POST'})).json();
     if (d.success) { el.textContent = 'Connected'; el.className = 'text-xs text-emerald-400 mt-1'; }
     else { el.textContent = d.error || 'Failed'; el.className = 'text-xs text-red-400 mt-1'; }
   } catch(e) { el.textContent = 'Error'; el.className = 'text-xs text-red-400 mt-1'; }
@@ -400,6 +660,11 @@ function formatSize(bytes) { if (!bytes) return ''; const u = ['B','KB','MB','GB
 // data-action="..."; this explicit whitelist maps it to code — markup can
 // never invoke anything that isn't registered here.
 const CLICK_ACTIONS = {
+  // Auth gate:
+  logout: () => logout(),
+  oidcLogin: () => oidcLogin(),
+  switchAuthMode: () => switchAuthMode(),
+  cancelTOTP: () => cancelTOTP(),
   // Static chrome:
   switchTab: el => switchTab(el.dataset.tab),
   toggleMobileNav: () => toggleMobileNav(),
@@ -439,6 +704,22 @@ document.addEventListener('change', e => {
   const el = e.target.closest('[data-action-change]');
   if (!el) return;
   const fn = CHANGE_ACTIONS[el.dataset.actionChange];
+  if (fn) fn(el, e);
+});
+
+// Real <form> elements carry the auth flows so browsers offer password
+// autofill and Enter submits; the same whitelist pattern maps them to code.
+const SUBMIT_ACTIONS = {
+  submitLogin: () => submitLogin(),
+  submitTOTP: () => submitTOTP(),
+  submitRegister: () => submitRegister(),
+};
+
+document.addEventListener('submit', e => {
+  const el = e.target.closest('[data-action-submit]');
+  if (!el) return;
+  e.preventDefault();
+  const fn = SUBMIT_ACTIONS[el.dataset.actionSubmit];
   if (fn) fn(el, e);
 });
 

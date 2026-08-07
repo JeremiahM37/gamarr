@@ -15,8 +15,90 @@
 <!-- Toast Container -->
 <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm"></div>
 
+<!-- Boot splash. Shown until /api/auth/status says whether to draw the app or
+     the login gate, so a protected instance never flashes its UI first. -->
+<div id="auth-loading" class="min-h-screen flex items-center justify-center">
+  <div class="flex items-center gap-3 text-slate-500 text-sm">
+    <span class="w-4 h-4 border-2 border-slate-600 border-t-indigo-500 rounded-full spinner"></span>
+    Loading…
+  </div>
+</div>
+
+<!-- Auth Gate -->
+<div id="auth-gate" class="hidden min-h-screen flex items-center justify-center px-4">
+  <div class="w-full max-w-sm">
+    <div class="flex items-center gap-3 mb-6 justify-center">
+      <div class="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/></svg>
+      </div>
+      <h1 class="text-2xl font-bold text-white">Gamarr</h1>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+      <!-- Sign in -->
+      <form id="login-form" data-action-submit="submitLogin" class="space-y-4">
+        <h2 id="login-heading" class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Sign in</h2>
+        <div>
+          <label for="login-username" class="block text-xs text-slate-400 mb-1">Username</label>
+          <input type="text" id="login-username" name="username" autocomplete="username" autofocus class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label for="login-password" class="block text-xs text-slate-400 mb-1">Password</label>
+          <input type="password" id="login-password" name="password" autocomplete="current-password" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <button type="submit" id="login-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2.5 rounded-lg transition-colors">Sign in</button>
+      </form>
+
+      <!-- Two-factor step (shown only when the account has TOTP enabled) -->
+      <form id="totp-form" data-action-submit="submitTOTP" class="hidden space-y-4">
+        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Two-factor code</h2>
+        <p class="text-xs text-slate-500">Enter the 6-digit code from your authenticator app, or one of your backup codes.</p>
+        <div>
+          <label for="totp-code" class="block text-xs text-slate-400 mb-1">Code</label>
+          <input type="text" id="totp-code" name="code" autocomplete="one-time-code" inputmode="numeric" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white tracking-widest focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <button type="submit" id="totp-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2.5 rounded-lg transition-colors">Verify</button>
+        <button type="button" data-action="cancelTOTP" class="w-full text-xs text-slate-500 hover:text-slate-300">Back to sign in</button>
+      </form>
+
+      <!-- Signup. An invited user on a multi-user instance has no other way in;
+           on an unclaimed instance the first account created becomes admin. -->
+      <form id="register-form" data-action-submit="submitRegister" class="hidden space-y-4">
+        <h2 id="register-heading" class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Create account</h2>
+        <p id="register-hint" class="text-xs text-slate-500"></p>
+        <div>
+          <label for="register-username" class="block text-xs text-slate-400 mb-1">Username</label>
+          <input type="text" id="register-username" name="username" autocomplete="username" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label for="register-password" class="block text-xs text-slate-400 mb-1">Password</label>
+          <input type="password" id="register-password" name="password" autocomplete="new-password" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+          <p class="text-xs text-slate-600 mt-1">At least 6 characters.</p>
+        </div>
+        <div id="invite-block">
+          <label for="register-invite" class="block text-xs text-slate-400 mb-1">Invite code</label>
+          <input type="text" id="register-invite" name="invite_code" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <button type="submit" id="register-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2.5 rounded-lg transition-colors">Create account</button>
+      </form>
+
+      <div id="auth-error" class="hidden mt-4 text-sm text-red-400"></div>
+
+      <!-- A password form is a dead end when only an API key is configured, so
+           say what the instance actually wants instead of failing silently. -->
+      <div id="auth-notice" class="hidden mt-4 text-sm text-slate-400"></div>
+
+      <div id="oidc-block" class="hidden mt-5 pt-5 border-t border-slate-800">
+        <button type="button" id="oidc-btn" data-action="oidcLogin" class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium px-4 py-2.5 rounded-lg transition-colors">Sign in with SSO</button>
+      </div>
+
+      <button type="button" id="switch-auth-mode" data-action="switchAuthMode" class="hidden w-full mt-4 text-xs text-indigo-400 hover:text-indigo-300"></button>
+    </div>
+  </div>
+</div>
+
 <!-- Main App -->
-<div class="min-h-screen flex flex-col">
+<div id="app-root" class="hidden min-h-screen flex flex-col">
 
   <!-- Header -->
   <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-30">
@@ -30,8 +112,14 @@
           <p class="text-xs text-slate-400 hidden sm:block">Game Search &amp; Download</p>
         </div>
       </div>
-      <span id="header-stats" class="text-xs text-slate-500 hidden sm:block"></span>
-      <div class="hamburger sm:hidden" id="hamburger-btn" data-action="toggleMobileNav"><span></span></div>
+      <div class="flex items-center gap-3">
+        <span id="header-stats" class="text-xs text-slate-500 hidden sm:block"></span>
+        <div id="user-chip" class="hidden items-center gap-2">
+          <span id="user-name" class="text-xs text-slate-400"></span>
+          <button data-action="logout" id="logout-btn" class="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 px-2.5 py-1 rounded-lg transition-colors">Sign out</button>
+        </div>
+        <div class="hamburger sm:hidden" id="hamburger-btn" data-action="toggleMobileNav"><span></span></div>
+      </div>
     </div>
     <div class="nav-overlay" id="nav-overlay" data-action="toggleMobileNav"></div>
     <div class="max-w-7xl mx-auto px-4 sm:px-6 relative">
