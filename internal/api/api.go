@@ -76,7 +76,7 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Post("/api/login", handleLogin(cfg, mgr.Jobs(), sessions))
 	r.Post("/api/login/totp", handleLoginTOTP(mgr.Jobs(), sessions))
 	r.Post("/api/logout", handleLogout(sessions, mgr.Jobs()))
-	r.Post("/api/register", handleRegister(mgr.Jobs(), sessions))
+	r.Post("/api/register", handleRegister(cfg, mgr.Jobs(), sessions))
 	r.Get("/api/auth/status", handleAuthStatus(mgr.Jobs(), sessions, cfg))
 
 	// OIDC/SSO routes (exempt from auth middleware).

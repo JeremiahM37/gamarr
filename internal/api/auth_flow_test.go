@@ -331,9 +331,11 @@ func TestAdminRegisterOnExemptPath(t *testing.T) {
 	t.Run("admin API key can register a user without invite", func(t *testing.T) {
 		env := newTestEnv(t, func(c *config.Config) { c.APIKey = "agent-key" })
 
-		// Anonymous first-user registration still works with an API key
-		// configured and zero users in the DB.
-		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+		// Claiming an API-key-protected instance takes the key; anonymous
+		// bootstrap is refused (see
+		// TestFirstUserBootstrapRequiresCredentialsOnProtectedInstance).
+		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`,
+			withHeader("X-Api-Key", "agent-key"))
 		wantStatus(t, rr, 201)
 		if m := decodeMap(t, rr); m["role"] != "admin" {
 			t.Errorf("first user role = %v, want admin", m["role"])
@@ -370,14 +372,24 @@ func TestAdminRegisterOnExemptPath(t *testing.T) {
 		wantStatus(t, rr, 403)
 	})
 
-	t.Run("anonymous first-user registration works on empty DB", func(t *testing.T) {
+	t.Run("legacy instance with zero users answers from the handler", func(t *testing.T) {
 		env := newTestEnv(t, func(c *config.Config) {
 			// Legacy auth configured → no unconditional admin pass-through,
 			// so this exercises the exempt path with zero users.
 			c.AuthUsername = "legacy"
 			c.AuthPassword = "legacy-pass"
 		})
+		// 403 (the handler's own refusal), never 401 — the middleware must
+		// keep letting the exempt path through so the handler decides.
 		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+		wantStatus(t, rr, 403)
+
+		// The legacy operator's session is what authorizes the bootstrap.
+		rr = env.do("POST", "/api/login", `{"username":"legacy","password":"legacy-pass"}`)
+		wantStatus(t, rr, 200)
+		token, _ := decodeMap(t, rr)["token"].(string)
+
+		rr = env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`, withSession(token))
 		wantStatus(t, rr, 201)
 		if m := decodeMap(t, rr); m["role"] != "admin" {
 			t.Errorf("first user role = %v, want admin", m["role"])
@@ -388,7 +400,10 @@ func TestAdminRegisterOnExemptPath(t *testing.T) {
 func TestAPIKeyStillWorksInMultiUserMode(t *testing.T) {
 	env := newTestEnv(t, func(c *config.Config) { c.APIKey = "agent-key" })
 
-	rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+	// The key is what authorizes claiming an already-protected instance — see
+	// TestFirstUserBootstrapRequiresCredentialsOnProtectedInstance.
+	rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`,
+		withHeader("X-Api-Key", "agent-key"))
 	wantStatus(t, rr, 201)
 
 	rr = env.do("GET", "/api/settings", "", withHeader("X-Api-Key", "agent-key"))
@@ -439,4 +454,176 @@ func TestOIDCStatusUnconfigured(t *testing.T) {
 
 	rr = env.do("GET", "/api/oidc/login", "")
 	wantStatus(t, rr, 404)
+}
+
+// ── /api/auth/status: what the frontend needs before it draws anything ────────
+
+// The login UI reads these three booleans to choose between "load the app",
+// "ask for a password" and "say why a password won't help" (issue #21). The
+// combinations below are the four deployments gamarr actually ships in.
+func TestAuthStatusDescribesTheDeployment(t *testing.T) {
+	cases := []struct {
+		name           string
+		mutate         func(*config.Config)
+		register       bool // create a DB user first (multi-user mode)
+		authRequired   bool
+		loginAvailable bool
+		canRegister    bool
+		hasUsers       bool
+	}{
+		{
+			name:           "unconfigured instance is open",
+			authRequired:   false,
+			loginAvailable: false,
+			canRegister:    true,
+		},
+		{
+			name: "legacy single-user needs a password",
+			mutate: func(c *config.Config) {
+				c.AuthUsername = "admin"
+				c.AuthPassword = "hunter22"
+			},
+			authRequired:   true,
+			loginAvailable: true,
+			canRegister:    false,
+		},
+		{
+			name:           "api-key-only has no browser login",
+			mutate:         func(c *config.Config) { c.APIKey = "sekrit-key-123" },
+			authRequired:   true,
+			loginAvailable: false,
+			canRegister:    false,
+		},
+		{
+			name:           "multi-user needs a password",
+			register:       true,
+			authRequired:   true,
+			loginAvailable: true,
+			canRegister:    false,
+			hasUsers:       true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t, tc.mutate)
+			if tc.register {
+				rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+				wantStatus(t, rr, 201)
+			}
+
+			rr := env.do("GET", "/api/auth/status", "")
+			wantStatus(t, rr, 200)
+			m := decodeMap(t, rr)
+
+			for _, f := range []struct {
+				key  string
+				want bool
+			}{
+				{"auth_required", tc.authRequired},
+				{"login_available", tc.loginAvailable},
+				{"can_register", tc.canRegister},
+				{"has_users", tc.hasUsers},
+				{"authenticated", false},
+			} {
+				if m[f.key] != f.want {
+					t.Errorf("%s = %v, want %v (full status: %v)", f.key, m[f.key], f.want, m)
+				}
+			}
+		})
+	}
+}
+
+// A 401 must not be the frontend's first hint that auth exists: the status
+// endpoint itself stays reachable and honest without credentials.
+func TestAuthStatusIsReachableWithoutCredentials(t *testing.T) {
+	env := newTestEnv(t, func(c *config.Config) {
+		c.AuthUsername = "admin"
+		c.AuthPassword = "hunter22"
+	})
+
+	// Protected route rejects…
+	wantStatus(t, env.do("GET", "/api/platforms", ""), 401)
+	// …while the status route answers, so the UI can render a login form.
+	rr := env.do("GET", "/api/auth/status", "")
+	wantStatus(t, rr, 200)
+	if m := decodeMap(t, rr); m["auth_required"] != true || m["login_available"] != true {
+		t.Errorf("status = %v, want auth_required+login_available true", m)
+	}
+}
+
+func TestAuthStatusReflectsLegacySession(t *testing.T) {
+	env := newTestEnv(t, func(c *config.Config) {
+		c.AuthUsername = "admin"
+		c.AuthPassword = "hunter22"
+	})
+
+	rr := env.do("POST", "/api/login", `{"username":"admin","password":"hunter22"}`)
+	wantStatus(t, rr, 200)
+	token, _ := decodeMap(t, rr)["token"].(string)
+
+	rr = env.do("GET", "/api/auth/status", "", withSession(token))
+	wantStatus(t, rr, 200)
+	m := decodeMap(t, rr)
+	if m["authenticated"] != true || m["username"] != "admin" {
+		t.Errorf("status = %v, want authenticated admin", m)
+	}
+}
+
+// ── First-user bootstrap on an already-protected instance ─────────────────────
+
+// /api/register is exempt from the auth middleware so a fresh instance can be
+// claimed. On an instance that already declares an owner — legacy credentials
+// or an API key — that exemption would otherwise hand admin to any anonymous
+// caller who reached the port, which the new sign-up UI would have advertised.
+func TestFirstUserBootstrapRequiresCredentialsOnProtectedInstance(t *testing.T) {
+	const body = `{"username":"mallory","password":"secret123"}`
+
+	t.Run("legacy instance rejects anonymous bootstrap", func(t *testing.T) {
+		env := newTestEnv(t, func(c *config.Config) {
+			c.AuthUsername = "admin"
+			c.AuthPassword = "hunter22"
+		})
+		wantStatus(t, env.do("POST", "/api/register", body), 403)
+
+		// No user was created, so the instance is still legacy-only.
+		rr := env.do("GET", "/api/auth/status", "")
+		if m := decodeMap(t, rr); m["has_users"] != false {
+			t.Errorf("has_users = %v, want false after a rejected bootstrap", m["has_users"])
+		}
+	})
+
+	t.Run("legacy admin can migrate to multi-user", func(t *testing.T) {
+		env := newTestEnv(t, func(c *config.Config) {
+			c.AuthUsername = "admin"
+			c.AuthPassword = "hunter22"
+		})
+		rr := env.do("POST", "/api/login", `{"username":"admin","password":"hunter22"}`)
+		wantStatus(t, rr, 200)
+		token, _ := decodeMap(t, rr)["token"].(string)
+
+		rr = env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`, withSession(token))
+		wantStatus(t, rr, 201)
+		if m := decodeMap(t, rr); m["role"] != "admin" {
+			t.Errorf("migrated first user role = %v, want admin", m["role"])
+		}
+	})
+
+	t.Run("api-key instance rejects anonymous bootstrap", func(t *testing.T) {
+		env := newTestEnv(t, func(c *config.Config) { c.APIKey = "sekrit-key-123" })
+		wantStatus(t, env.do("POST", "/api/register", body), 403)
+	})
+
+	t.Run("api key authorizes bootstrap", func(t *testing.T) {
+		env := newTestEnv(t, func(c *config.Config) { c.APIKey = "sekrit-key-123" })
+		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`,
+			withHeader("X-Api-Key", "sekrit-key-123"))
+		wantStatus(t, rr, 201)
+	})
+
+	t.Run("unclaimed instance still bootstraps freely", func(t *testing.T) {
+		env := newTestEnv(t, nil)
+		rr := env.do("POST", "/api/register", `{"username":"alice","password":"secret123"}`)
+		wantStatus(t, rr, 201)
+	})
 }

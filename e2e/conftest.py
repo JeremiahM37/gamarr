@@ -390,11 +390,18 @@ def swarm(stub_server):
     s.reset()
 
 
-@pytest.fixture()
-def ui(app, page):
-    """A page on the gamarr UI that records every JS error. Tests assert the
-    journey stays error-free (the strongest 'the frontend works' invariant)."""
+def watch_page(page) -> dict:
+    """Attach the recorders every UI test asserts on: JS errors, and rejected
+    API responses.
+
+    The 401 list exists because a swallowed 401 is invisible from the DOM —
+    gamarr's frontend catches its own fetch errors, so an unauthenticated app
+    renders a complete, entirely inert UI (issue #21). Watching the wire is the
+    only way a test can tell that apart from a working page.
+    """
     errors: list[str] = []
+    unauthorized: list[str] = []
+
     page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
     page.on(
         "console",
@@ -402,6 +409,22 @@ def ui(app, page):
         if m.type == "error" and "Failed to load resource" not in m.text
         else None,
     )
+    page.on(
+        "response",
+        lambda r: unauthorized.append(f"{r.status} {r.url}") if r.status == 401 else None,
+    )
+    return {"errors": errors, "unauthorized": unauthorized}
+
+
+@pytest.fixture()
+def ui(app, page):
+    """A page on the gamarr UI that records every JS error. Tests assert the
+    journey stays error-free (the strongest 'the frontend works' invariant)."""
+    watched = watch_page(page)
     page.goto(app["base"], wait_until="networkidle")
-    yield {"page": page, "errors": errors, **app}
-    assert errors == [], f"JS errors during journey: {errors}"
+    yield {"page": page, **watched, **app}
+    assert watched["errors"] == [], f"JS errors during journey: {watched['errors']}"
+    # This instance is unauthenticated by design, so nothing should ever 401.
+    # A test suite that tolerates 401s cannot see an auth regression at all.
+    assert watched["unauthorized"] == [], (
+        f"unexpected 401s during journey: {watched['unauthorized']}")
