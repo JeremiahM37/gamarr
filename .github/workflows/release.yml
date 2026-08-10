@@ -34,8 +34,15 @@ jobs:
       # multi-platform output -- the default docker driver cannot produce it.
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+      # tag keeps the leading v for the image tag (:v1.3.0); number drops it to
+      # match what goreleaser stamps into the binaries ({{.Version}} is the tag
+      # without the v), so `gamarr` reports the same string however it was
+      # installed.
       - id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          echo "tag=${tag}" >> $GITHUB_OUTPUT
+          echo "number=${tag#v}" >> $GITHUB_OUTPUT
       # cache-from only, deliberately. This job runs on a tag ref, and the GHA
       # cache scopes a tag as its own branch: a cache written under refs/tags/v1
       # is unreadable from refs/tags/v2 (sibling scopes), so cache-to here would
@@ -47,6 +54,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
+          build-args: VERSION=${{ steps.version.outputs.number }}
           tags: |
             ghcr.io/${{ steps.owner.outputs.name }}/gamarr:${{ steps.version.outputs.tag }}
             ghcr.io/${{ steps.owner.outputs.name }}/gamarr:latest

@@ -80,7 +80,7 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 ### Technical
 
 - **Single static binary** -- ~17 MB on disk, ~9 MB RSS idle, zero CGO, pure-Go SQLite (`modernc.org/sqlite`)
-- **Docker-ready** -- minimal Alpine image with p7zip, runs as non-root user
+- **Prebuilt Docker image** -- minimal Alpine image with p7zip, published to GHCR for `linux/amd64` and `linux/arm64`; no local build required
 - **Mobile-responsive UI** -- Tailwind CSS, dark theme, platform filters
 - **43 automated end-to-end tests**
 
@@ -120,7 +120,8 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 ```yaml
 services:
   gamarr:
-    build: .
+    image: ghcr.io/jeremiahm37/gamarr:latest
+    container_name: gamarr
     ports:
       - "5001:5001"
     volumes:
@@ -141,6 +142,40 @@ services:
 
 ```bash
 docker compose up -d
+```
+
+Open `http://localhost:5001`.
+
+#### Docker images
+
+Images are published to the GitHub Container Registry at
+[`ghcr.io/jeremiahm37/gamarr`](https://github.com/JeremiahM37/gamarr/pkgs/container/gamarr).
+The registry is public — pulling needs no login.
+
+| Tag | Points at | Use it when |
+|-----|-----------|-------------|
+| `latest` | the newest release | you want the current stable build |
+| `vX.Y.Z` | that release, forever | you want a pin that never moves |
+| `edge` | the current `main` | you want unreleased fixes and can take churn |
+
+```bash
+docker pull ghcr.io/jeremiahm37/gamarr:latest
+```
+
+Every image is a multi-arch manifest covering `linux/amd64` and `linux/arm64`,
+so the same tag works on x86 hosts and on a Raspberry Pi 4/5 or Apple-silicon
+Docker Desktop — the daemon picks the right one. (Releases up to and including
+`v1.3.0` predate multi-arch support and are amd64-only. `edge` and every release
+after `v1.3.0` carry both architectures.)
+
+#### Building from source instead
+
+The prebuilt image is the supported path; build locally only if you are
+modifying Gamarr. Swap the `image:` line above for `build: .` from a clone of
+this repo, or:
+
+```bash
+docker build -t gamarr:local .
 ```
 
 ### Binary

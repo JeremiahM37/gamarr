@@ -32,6 +32,12 @@ import (
 	"gamarr/web"
 )
 
+// Version is the running Gamarr version, as reported by /api/health,
+// /api/config and the admin stats endpoint. main sets it at startup from its
+// own Version, which the release build injects via -ldflags. The fallback
+// matters only for tests that exercise this package without a main.
+var Version = "dev"
+
 // Server holds all API dependencies.
 type Server struct {
 	cfg       *config.Config
@@ -918,7 +924,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]interface{}{"status": "ok", "version": "1.0.0"})
+	writeJSON(w, 200, map[string]interface{}{"status": "ok", "version": Version})
 }
 
 func (s *Server) handleMonitorStatus(w http.ResponseWriter, r *http.Request) {

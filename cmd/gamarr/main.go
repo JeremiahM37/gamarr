@@ -270,7 +270,9 @@ func main() {
 		}
 	}()
 
-	// Create HTTP router
+	// Create HTTP router. The API reports this over /api/health and /api/config,
+	// so an image pulled from the registry can say which build it is.
+	api.Version = Version
 	router := api.NewRouter(cfg, mgr, mon, sab, sched)
 
 	// Start HTTP server

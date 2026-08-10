@@ -3,7 +3,11 @@
 # below rather than running the whole compile under QEMU.
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
-ARG VERSION=1.0.0
+# Empty by default, and the -X below is applied only when it is set, so an
+# unset VERSION falls through to the default compiled into main.go. A literal
+# default here would be a second place to bump on release -- and when it went
+# stale, every published image reported that stale number.
+ARG VERSION=
 
 # Supplied automatically by BuildKit; the defaults keep a plain
 # `docker build` (no buildx) working exactly as before.
@@ -17,7 +21,7 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-    -ldflags="-s -w -X main.Version=${VERSION}" \
+    -ldflags="-s -w ${VERSION:+-X main.Version=$VERSION}" \
     -o /gamarr ./cmd/gamarr/
 
 FROM alpine:3.21

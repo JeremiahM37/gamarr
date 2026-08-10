@@ -69,6 +69,7 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    permissions: {contents: read, packages: write}
     steps:
       - uses: actions/checkout@v4
       # QEMU is needed only for the arm64 runtime stage (apk add / adduser) --
@@ -83,12 +84,45 @@ jobs:
       # Release publishes linux/amd64 + linux/arm64. Build both here so an
       # arm64-breaking change fails on the PR instead of at `git tag`.
       # cache-to seeds the gha cache that the release job restores from.
+      #
+      # Exactly one of the two build steps below runs per event: PRs validate
+      # the build, pushes to main publish it as :edge. They are separate steps
+      # rather than one step with a conditional `outputs:` because `--push` and
+      # `--output type=cacheonly` are mutually exclusive on the same build.
       - name: docker build (multi-arch)
+        if: github.ref != 'refs/heads/main'
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Fork PRs get a read-only GITHUB_TOKEN, so login is gated on main too --
+      # not just for correctness, but because a failed login would fail the job.
+      - name: Lowercase owner
+        if: github.ref == 'refs/heads/main'
+        id: owner
+        run: echo "name=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+      - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main'
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+
+      # :edge tracks main. Releases move :latest and add an immutable :vX.Y.Z;
+      # this gives people who want unreleased fixes a prebuilt image instead of
+      # a local `docker build`, on both architectures.
+      - name: docker build (multi-arch) and publish :edge
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          # Stamped so `/api/health` on an edge image names the commit it came
+          # from -- "1.3.0" on a moving tag is not a bug report anyone can act on.
+          build-args: VERSION=edge-${{ github.sha }}
+          tags: ghcr.io/${{ steps.owner.outputs.name }}/gamarr:edge
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
