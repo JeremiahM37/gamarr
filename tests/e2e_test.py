@@ -54,16 +54,20 @@ def test(name, fn):
 # ═══════════════════════════════════════════════════════════════════════════════
 print("=== 1. HEALTH & CONFIG ===")
 
+# The version is injected at build time, so assert its shape rather than a
+# literal -- a hardcoded number here is what let every published image report
+# a stale 1.0.0 unnoticed.
 def t_health():
     d = get("/api/health")
-    assert d["status"] == "ok" and d["version"] == "1.0.0"
+    assert d["status"] == "ok"
+    assert isinstance(d["version"], str) and d["version"] not in ("", "dev")
 test("GET /api/health", t_health)
 
 def t_config():
     d = get("/api/config")
     assert d["prowlarr"]["configured"] == True
     assert d["qbittorrent"]["configured"] == True
-    assert d["version"] == "1.0.0"
+    assert d["version"] == get("/api/health")["version"]
 test("GET /api/config", t_config)
 
 # ═══════════════════════════════════════════════════════════════════════════════

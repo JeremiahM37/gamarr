@@ -312,7 +312,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		},
 		"gamevault_url": s.cfg.GameVaultURL,
 		"romm_url":      s.cfg.RomMURL,
-		"version":       "1.0.0",
+		"version":       Version,
 	})
 }
 

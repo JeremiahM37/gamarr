@@ -11,6 +11,8 @@ import (
 	"gamarr/internal/db"
 )
 
+// Schema version of the export payloads below, deliberately independent of the
+// application version -- it moves only when the export format changes.
 const gamarrVersion = "1.0.0"
 
 // ── Export Types ──────────────────────────────────────────────────────────────
