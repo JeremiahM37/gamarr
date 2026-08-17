@@ -612,7 +612,6 @@ var vimmActionRe = regexp.MustCompile(`action="([^"]+)"`)
 var vimmMediaRe = regexp.MustCompile(`name="mediaId"\s+value="(\d+)"`)
 var vimmJSMediaRe = regexp.MustCompile(`"ID":(\d+)`)
 var vimmDLRe = regexp.MustCompile(`(//dl\d*\.vimm\.net/[^"']*)`)
-var vimmDLNumRe = regexp.MustCompile(`dl(\d+)`)
 var vimmCDFilenameRe = regexp.MustCompile(`filename="?([^";\n]+)"?`)
 
 // vimmDownloadPause is the courtesy delay between fetching the vault page and
@@ -672,6 +671,10 @@ func vimmGETURL(actionURL, mediaID string) string {
 	q.Set("mediaId", mediaID)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+func vimmDownloadURLs(actionURL, mediaID string) []string {
+	return []string{vimmGETURL(actionURL, mediaID)}
 }
 
 func vimmVaultURL(m *Manager, gameID string) string {
@@ -755,10 +758,8 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 
 	// Current Vimm serves the file on GET ?mediaId=; POST returns 400.
-	dlURLs := []string{vimmGETURL(actionURL, mediaID)}
-	if n := vimmDLNumRe.FindStringSubmatch(actionURL); n != nil {
-		dlURLs = append(dlURLs, fmt.Sprintf("https://download%s.vimm.net/download/?mediaId=%s", n[1], url.QueryEscape(mediaID)))
-	}
+	// Use the form action host only — downloadN.vimm.net is not a real hostname.
+	dlURLs := vimmDownloadURLs(actionURL, mediaID)
 
 	streamClient := &http.Client{
 		Timeout:   10 * time.Minute,

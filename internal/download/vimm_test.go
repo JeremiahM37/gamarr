@@ -42,6 +42,18 @@ func TestVimmDownloadGETURL(t *testing.T) {
 	}
 }
 
+func TestVimmDownloadURLs_UsesFormHostOnly(t *testing.T) {
+	got := vimmDownloadURLs("https://dl3.vimm.net/", "1624")
+	if len(got) != 1 || got[0] != "https://dl3.vimm.net/?mediaId=1624" {
+		t.Fatalf("got %v, want only the form-action GET", got)
+	}
+	for _, u := range got {
+		if strings.Contains(u, "download3.vimm.net") || strings.Contains(u, "download") {
+			t.Errorf("invented host in %q — downloadN.vimm.net is not a real Vimm hostname", u)
+		}
+	}
+}
+
 func TestVimmLooksLikeFile(t *testing.T) {
 	html := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/html; charset=UTF-8"}}}
 	if vimmLooksLikeFile(html) {
