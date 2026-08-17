@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -611,17 +613,100 @@ var vimmMediaRe = regexp.MustCompile(`name="mediaId"\s+value="(\d+)"`)
 var vimmJSMediaRe = regexp.MustCompile(`"ID":(\d+)`)
 var vimmDLRe = regexp.MustCompile(`(//dl\d*\.vimm\.net/[^"']*)`)
 var vimmDLNumRe = regexp.MustCompile(`dl(\d+)`)
+var vimmCDFilenameRe = regexp.MustCompile(`filename="?([^";\n]+)"?`)
+
+// vimmDownloadPause is the courtesy delay between fetching the vault page and
+// hitting the download host. Tests set it to 0.
+var vimmDownloadPause = 3 * time.Second
+
+func parseVimmDownloadForm(pageText string) (actionURL, mediaID string) {
+	if formTag := vimmFormRe.FindString(pageText); formTag != "" {
+		if m := vimmActionRe.FindStringSubmatch(formTag); m != nil {
+			actionURL = m[1]
+		}
+	}
+	if m := vimmMediaRe.FindStringSubmatch(pageText); m != nil {
+		mediaID = m[1]
+	}
+	if mediaID == "" {
+		if m := vimmJSMediaRe.FindStringSubmatch(pageText); m != nil {
+			mediaID = m[1]
+		}
+	}
+	if actionURL == "" {
+		if m := vimmDLRe.FindStringSubmatch(pageText); m != nil && mediaID != "" {
+			actionURL = m[1]
+		}
+	}
+	return actionURL, mediaID
+}
+
+func resolveVimmAction(gameURL, action string) string {
+	if action == "" {
+		return ""
+	}
+	if strings.HasPrefix(action, "//") {
+		scheme := "https:"
+		if u, err := url.Parse(gameURL); err == nil && u.Scheme != "" {
+			scheme = u.Scheme + ":"
+		}
+		return scheme + action
+	}
+	base, err := url.Parse(gameURL)
+	if err != nil {
+		return action
+	}
+	ref, err := url.Parse(action)
+	if err != nil {
+		return action
+	}
+	return base.ResolveReference(ref).String()
+}
+
+func vimmGETURL(actionURL, mediaID string) string {
+	u, err := url.Parse(actionURL)
+	if err != nil {
+		return actionURL
+	}
+	q := u.Query()
+	q.Set("mediaId", mediaID)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func vimmVaultURL(m *Manager, gameID string) string {
+	base := "https://vimm.net/vault/"
+	if m.cfg != nil && m.cfg.Sources != nil && m.cfg.Sources.Vimm.BaseURL != "" {
+		base = m.cfg.Sources.Vimm.BaseURL
+	}
+	if !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+	return base + gameID
+}
+
+func vimmOrigin(gameURL string) string {
+	u, err := url.Parse(gameURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "https://vimm.net"
+	}
+	return u.Scheme + "://" + u.Host
+}
 
 func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
+	jar, _ := cookiejar.New(nil)
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 	client := &http.Client{
-		Timeout: 60 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
+		Timeout:   60 * time.Second,
+		Transport: transport,
+		Jar:       jar,
 	}
 	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-	gameURL := fmt.Sprintf("https://vimm.net/vault/%s", gameID)
+	gameURL := vimmVaultURL(m, gameID)
+	origin := vimmOrigin(gameURL)
 	m.jobs.Update(jobID, "detail", "Fetching game page...")
 
 	req, _ := http.NewRequest("GET", gameURL, nil)
@@ -631,8 +716,8 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 		slog.Error("Vimm fetch failed", "error", err)
 		return ""
 	}
-	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
 	pageText := string(body)
 
 	if strings.Contains(pageText, "unavailable at the request of") {
@@ -642,32 +727,11 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 		return ""
 	}
 
-	// Extract form action and mediaId
-	formTag := vimmFormRe.FindString(pageText)
-	var actionURL, mediaID string
-
-	if formTag != "" {
-		if m := vimmActionRe.FindStringSubmatch(formTag); m != nil {
-			actionURL = m[1]
-		}
+	actionURL, mediaID := parseVimmDownloadForm(pageText)
+	if mediaID == "0" {
+		mediaID = ""
 	}
-	if m := vimmMediaRe.FindStringSubmatch(pageText); m != nil {
-		mediaID = m[1]
-	}
-
-	// Fallbacks
-	if mediaID == "" {
-		if m := vimmJSMediaRe.FindStringSubmatch(pageText); m != nil {
-			mediaID = m[1]
-			slog.Info("Vimm: found mediaId from JS", "id", mediaID)
-		}
-	}
-	if actionURL == "" {
-		if m := vimmDLRe.FindStringSubmatch(pageText); m != nil && mediaID != "" {
-			actionURL = m[1]
-			slog.Info("Vimm: found dl URL from page", "url", actionURL)
-		}
-	}
+	actionURL = resolveVimmAction(gameURL, actionURL)
 
 	if actionURL == "" || mediaID == "" {
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -675,43 +739,38 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 		})
 		return ""
 	}
-
-	if strings.HasPrefix(actionURL, "//") {
-		actionURL = "https:" + actionURL
-	}
 	slog.Info("Vimm download", "action", actionURL, "mediaId", mediaID)
 
 	m.jobs.Update(jobID, "detail", "Starting download from Vimm...")
-	time.Sleep(3 * time.Second) // Respectful delay
+	if vimmDownloadPause > 0 {
+		time.Sleep(vimmDownloadPause)
+	}
 
-	// Try action URL and alternates
-	dlURLs := []string{actionURL}
+	// Current Vimm serves the file on GET ?mediaId=; POST returns 400.
+	dlURLs := []string{vimmGETURL(actionURL, mediaID)}
 	if n := vimmDLNumRe.FindStringSubmatch(actionURL); n != nil {
-		dlURLs = append(dlURLs, fmt.Sprintf("https://download%s.vimm.net/download/", n[1]))
+		dlURLs = append(dlURLs, fmt.Sprintf("https://download%s.vimm.net/download/?mediaId=%s", n[1], url.QueryEscape(mediaID)))
+	}
+
+	streamClient := &http.Client{
+		Timeout:   10 * time.Minute,
+		Transport: transport,
+		Jar:       jar,
 	}
 
 	var dlResp *http.Response
 	for _, dlURL := range dlURLs {
-		form := strings.NewReader(fmt.Sprintf("mediaId=%s", mediaID))
-		req, _ := http.NewRequest("POST", dlURL, form)
+		req, _ := http.NewRequest(http.MethodGet, dlURL, nil)
 		req.Header.Set("User-Agent", ua)
 		req.Header.Set("Referer", gameURL)
-		req.Header.Set("Origin", "https://vimm.net")
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-		streamClient := &http.Client{
-			Timeout: 10 * time.Minute,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
+		req.Header.Set("Origin", origin)
 		r, err := streamClient.Do(req)
 		if err != nil {
 			slog.Warn("Vimm download failed", "url", dlURL, "error", err)
 			continue
 		}
-		if r.StatusCode == 200 {
-			slog.Info("Vimm download started", "url", dlURL)
+		if r.StatusCode == 200 || r.StatusCode == 206 {
+			slog.Info("Vimm download started", "url", dlURL, "status", r.StatusCode)
 			dlResp = r
 			break
 		}
@@ -728,11 +787,18 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 	defer dlResp.Body.Close()
 
+	ct := strings.ToLower(dlResp.Header.Get("Content-Type"))
+	if strings.Contains(ct, "text/html") {
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error", "error": "Vimm returned a web page instead of a file",
+		})
+		return ""
+	}
+
 	total := dlResp.ContentLength
 	cd := dlResp.Header.Get("Content-Disposition")
-	fnRe := regexp.MustCompile(`filename="?([^";\n]+)"?`)
 	filename := fmt.Sprintf("%s.7z", gameID)
-	if fm := fnRe.FindStringSubmatch(cd); fm != nil {
+	if fm := vimmCDFilenameRe.FindStringSubmatch(cd); fm != nil {
 		filename = strings.TrimSpace(fm[1])
 	}
 	// The filename comes from the remote server (Content-Disposition); never let
