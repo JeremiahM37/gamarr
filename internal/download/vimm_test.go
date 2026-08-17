@@ -1,9 +1,11 @@
 package download
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,11 +37,23 @@ func TestParseVimmDownloadForm(t *testing.T) {
 
 func TestVimmDownloadGETURL(t *testing.T) {
 	got := vimmGETURL("https://dl3.vimm.net/", "1624")
-	if !strings.Contains(got, "mediaId=1624") {
-		t.Errorf("GET URL = %q, want mediaId query", got)
+	if got != "https://dl3.vimm.net/?mediaId=1624" {
+		t.Errorf("GET URL = %q, want https://dl3.vimm.net/?mediaId=1624", got)
 	}
-	if strings.HasPrefix(got, "https://dl3.vimm.net/") && !strings.Contains(got, "?") {
-		t.Errorf("GET URL = %q, want query string", got)
+}
+
+func TestVimmLooksLikeFile(t *testing.T) {
+	html := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/html; charset=UTF-8"}}}
+	if vimmLooksLikeFile(html) {
+		t.Error("HTML 200 should not look like a file")
+	}
+	zip := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/zip"}}}
+	if !vimmLooksLikeFile(zip) {
+		t.Error("application/zip 200 should look like a file")
+	}
+	bad := &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/zip"}}}
+	if vimmLooksLikeFile(bad) {
+		t.Error("HTTP 400 should not look like a file")
 	}
 }
 
@@ -110,6 +124,50 @@ func TestDownloadVimmGame_UsesGETNotPOST(t *testing.T) {
 		if strings.HasPrefix(m, "POST") {
 			t.Errorf("Vimm rejects POST; should not have sent %q", m)
 		}
+	}
+}
+
+func TestDownloadVimmGame_ProtocolRelativeAction(t *testing.T) {
+	orig := vimmDownloadPause
+	vimmDownloadPause = 0
+	t.Cleanup(func() { vimmDownloadPause = orig })
+
+	var gotMethod, gotQuery string
+	dl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Disposition", `attachment; filename="game.zip"`)
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write([]byte("PK"))
+	}))
+	t.Cleanup(dl.Close)
+	dlURL, err := url.Parse(dl.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := fmt.Sprintf(`<form action="//%s/" method="POST" id="dl_form"><input type="hidden" name="mediaId" value="1624"></form>`, dlURL.Host)
+
+	vault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, page)
+	}))
+	t.Cleanup(vault.Close)
+
+	cfg := newTestConfig(t)
+	reg, _ := sources.Default()
+	reg.Vimm.BaseURL = vault.URL + "/vault/"
+	cfg.Sources = reg
+	jobs := newTestJobs(t)
+	m := New(cfg, jobs, nil)
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	got := m.downloadVimmGame("1654", cfg.QBSavePath, jobID)
+	if got == "" {
+		job, _ := jobs.Get(jobID)
+		t.Fatalf("download failed: %+v", job)
+	}
+	if gotMethod != http.MethodGet || gotQuery != "mediaId=1624" {
+		t.Errorf("dl host got %s %q, want GET mediaId=1624", gotMethod, gotQuery)
 	}
 }
 

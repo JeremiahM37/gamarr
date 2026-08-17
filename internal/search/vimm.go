@@ -32,7 +32,6 @@ var vimmFlagRe = regexp.MustCompile(`class="flag" title="([^"]+)"`)
 var vimmTDRe = regexp.MustCompile(`(?is)<td[^>]*>(.*?)</td>`)
 var vimmTagRe = regexp.MustCompile(`<[^>]+>`)
 var vimmSysTokenRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,24}$`)
-var vimmDigitRe = regexp.MustCompile(`^\d+$`)
 var vimmHiddenRe = regexp.MustCompile(`(?i)display:\s*none`)
 var titleSysRe = regexp.MustCompile(`\(([A-Za-z0-9]+)\)\s*$`)
 
@@ -47,7 +46,7 @@ func parseVimmSearchHTML(body string) []vimmHit {
 		id := body[loc[2]:loc[3]]
 		attrs := body[loc[4]:loc[5]]
 		title := strings.TrimSpace(body[loc[6]:loc[7]])
-		if id == "999999" || vimmDigitRe.MatchString(title) || vimmHiddenRe.MatchString(attrs) {
+		if id == "999999" || vimmHiddenRe.MatchString(attrs) {
 			continue
 		}
 		if seen[id] {

@@ -693,6 +693,14 @@ func vimmOrigin(gameURL string) string {
 	return u.Scheme + "://" + u.Host
 }
 
+func vimmLooksLikeFile(r *http.Response) bool {
+	if r.StatusCode != 200 && r.StatusCode != 206 {
+		return false
+	}
+	ct := strings.ToLower(r.Header.Get("Content-Type"))
+	return !strings.Contains(ct, "text/html")
+}
+
 func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	jar, _ := cookiejar.New(nil)
 	transport := &http.Transport{
@@ -759,6 +767,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 
 	var dlResp *http.Response
+	sawHTML := false
 	for _, dlURL := range dlURLs {
 		req, _ := http.NewRequest(http.MethodGet, dlURL, nil)
 		req.Header.Set("User-Agent", ua)
@@ -769,31 +778,29 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 			slog.Warn("Vimm download failed", "url", dlURL, "error", err)
 			continue
 		}
-		if r.StatusCode == 200 || r.StatusCode == 206 {
+		if vimmLooksLikeFile(r) {
 			slog.Info("Vimm download started", "url", dlURL, "status", r.StatusCode)
 			dlResp = r
 			break
 		}
+		if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "text/html") {
+			sawHTML = true
+		}
 		r.Body.Close()
-		slog.Warn("Vimm download rejected", "url", dlURL, "status", r.StatusCode)
+		slog.Warn("Vimm download rejected", "url", dlURL, "status", r.StatusCode, "content_type", r.Header.Get("Content-Type"))
 	}
 
 	if dlResp == nil {
+		errMsg := fmt.Sprintf("Vimm download server rejected request (tried %d URLs)", len(dlURLs))
+		if sawHTML {
+			errMsg = "Vimm returned a web page instead of a file"
+		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("Vimm download server rejected request (tried %d URLs)", len(dlURLs)),
+			"status": "error", "error": errMsg,
 		})
 		return ""
 	}
 	defer dlResp.Body.Close()
-
-	ct := strings.ToLower(dlResp.Header.Get("Content-Type"))
-	if strings.Contains(ct, "text/html") {
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error", "error": "Vimm returned a web page instead of a file",
-		})
-		return ""
-	}
 
 	total := dlResp.ContentLength
 	cd := dlResp.Header.Get("Content-Disposition")

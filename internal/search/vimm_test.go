@@ -130,6 +130,17 @@ func TestSearchVimm_IncludesRegionInTitle(t *testing.T) {
 	}
 }
 
+func TestSearchVimm_KeepsNumericTitles(t *testing.T) {
+	_, reg := vimmTestServer(t, `<a href="/vault/999999" style="display: none">9</a><a href="/vault/111">1942</a>`)
+	results := SearchVimm(reg, "1942", "nes")
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (1942 kept, sentinel dropped)", len(results))
+	}
+	if results[0].VimmID != "111" || !strings.Contains(results[0].Title, "1942") {
+		t.Errorf("result = id %q title %q, want vault/111 1942", results[0].VimmID, results[0].Title)
+	}
+}
+
 func TestSearchVimm_SystemColumnBeatsTitleSuffix(t *testing.T) {
 	_, reg := vimmTestServer(t, vimmCrossSystemHTML)
 	results := SearchVimm(reg, "metroid", "")
