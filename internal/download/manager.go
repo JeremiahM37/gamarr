@@ -697,7 +697,9 @@ func vimmOrigin(gameURL string) string {
 }
 
 func vimmLooksLikeFile(r *http.Response) bool {
-	if r.StatusCode != 200 && r.StatusCode != 206 {
+	// 206 Content-Length is the slice, not the file. We never send Range, so
+	// only a full 200 is a complete download.
+	if r.StatusCode != 200 {
 		return false
 	}
 	ct := strings.ToLower(r.Header.Get("Content-Type"))

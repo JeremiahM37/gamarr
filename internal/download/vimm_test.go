@@ -67,6 +67,10 @@ func TestVimmLooksLikeFile(t *testing.T) {
 	if vimmLooksLikeFile(bad) {
 		t.Error("HTTP 400 should not look like a file")
 	}
+	partial := &http.Response{StatusCode: 206, Header: http.Header{"Content-Type": []string{"application/zip"}}}
+	if vimmLooksLikeFile(partial) {
+		t.Error("HTTP 206 Content-Length is the slice size; treating it as a full file would save a truncated ROM")
+	}
 }
 
 func TestDownloadVimmGame_UsesGETNotPOST(t *testing.T) {
