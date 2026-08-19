@@ -58,6 +58,33 @@ func TestTitlesMatch(t *testing.T) {
 	}
 }
 
+func TestJobMatchesTorrent(t *testing.T) {
+	const terraria = "Terraria (v1.4.5.0 + Bonus OST, MULTi9) [FitGirl Repack]"
+
+	tests := []struct {
+		name                     string
+		infoHash, title          string
+		torrentHash, torrentName string
+		want                     bool
+	}{
+		{"hash matches a renamed torrent", "abc123", terraria, "abc123", "Terraria [FitGirl Repack]", true},
+		{"hash is case insensitive", "ABC123", terraria, "abc123", "Terraria [FitGirl Repack]", true},
+		{"hash mismatch is not rescued by the title", "abc123", "Super Game", "def456", "Super Game", false},
+		{"hashless job falls back to the title", "", "Super Game", "abc123", "Super Game (USA)", true},
+		{"hashless job with an unrelated title", "", "Super Game", "abc123", "Other Thing", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := jobMatchesTorrent(tt.infoHash, tt.title, tt.torrentHash, tt.torrentName)
+			if got != tt.want {
+				t.Errorf("jobMatchesTorrent(%q, %q, %q, %q) = %v, want %v",
+					tt.infoHash, tt.title, tt.torrentHash, tt.torrentName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPlatformNameFromSlug(t *testing.T) {
 	tests := []struct {
 		slug string

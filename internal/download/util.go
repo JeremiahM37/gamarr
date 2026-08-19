@@ -45,9 +45,7 @@ func sanitizeLog(s string) string {
 
 // titlesMatch reports whether a tracked job title and a torrent name refer to
 // the same release. Trackers often rename torrents, so it matches
-// case-insensitively when either string contains the other. Shared by
-// Manager.watchGameTorrent and Watcher.hasMatchingJob so the two cannot
-// disagree (a disagreement lets the watcher double-import a job's torrent).
+// case-insensitively when either string contains the other.
 func titlesMatch(title, torrentName string) bool {
 	if title == "" || torrentName == "" {
 		return false
@@ -55,4 +53,16 @@ func titlesMatch(title, torrentName string) bool {
 	a := strings.ToLower(title)
 	b := strings.ToLower(torrentName)
 	return strings.Contains(a, b) || strings.Contains(b, a)
+}
+
+// jobMatchesTorrent reports whether a tracked job refers to this torrent. Jobs
+// recorded with an infohash match on that alone; rows from before it was stored
+// fall back to the title. Shared by Manager.watchGameTorrent and
+// Watcher.hasMatchingJob so the two cannot disagree (a disagreement lets the
+// watcher double-import a job's torrent).
+func jobMatchesTorrent(infoHash, title, torrentHash, torrentName string) bool {
+	if infoHash != "" {
+		return strings.EqualFold(infoHash, torrentHash)
+	}
+	return titlesMatch(title, torrentName)
 }

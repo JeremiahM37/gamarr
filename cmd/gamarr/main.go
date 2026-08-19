@@ -229,7 +229,7 @@ func main() {
 		if url == "" && result.InfoHash != "" {
 			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", result.InfoHash)
 		}
-		return mgr.DownloadTorrent(url, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
+		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
 	}
 
 	webhookFn := func() []webhook.WebhookConfig {
