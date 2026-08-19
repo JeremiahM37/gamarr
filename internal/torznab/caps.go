@@ -10,8 +10,8 @@ package torznab
 //	  1020 Console/PSP    1040 Console/Xbox  1090 Console/Other
 //	                      1050 Console/Xbox 360
 //	4000 PC
-//	  4020 PC/0day        4050 PC/Mac        4070 PC/Games
-//	  4030 PC/ISO         4060 PC/Mobile-Other
+//	  4010 PC/0day        4030 PC/Mac        4050 PC/Games
+//	  4020 PC/ISO         4040 PC/Mobile-Other
 func BuildCaps() *Caps {
 	return &Caps{
 		Server: CapsServer{Title: "Gamarr"},
@@ -38,7 +38,7 @@ func BuildCaps() *Caps {
 				{
 					ID: "4000", Name: "PC",
 					Subs: []CapsSubCategory{
-						{ID: "4070", Name: "PC/Games"},
+						{ID: "4050", Name: "PC/Games"},
 					},
 				},
 			},
@@ -51,7 +51,7 @@ func BuildCaps() *Caps {
 func CategoryForPlatform(slug string) string {
 	switch slug {
 	case "pc":
-		return "4070"
+		return "4050"
 	case "nds", "3ds":
 		return "1010"
 	case "psp", "psvita":
@@ -90,7 +90,7 @@ func categoryName(id string) string {
 		return "Console/Other"
 	case "4000":
 		return "PC"
-	case "4070":
+	case "4050":
 		return "PC/Games"
 	}
 	return "Console"

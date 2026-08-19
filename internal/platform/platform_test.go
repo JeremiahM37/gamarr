@@ -35,9 +35,9 @@ func TestDetectPlatform(t *testing.T) {
 			wantName:   "Switch",
 		},
 		{
-			name:       "Switch from 4050 (Nyaa)",
+			name:       "PC from 4050 (PC/Games)",
 			categories: []interface{}{float64(4050)},
-			wantName:   "Switch",
+			wantName:   "PC",
 		},
 		{
 			name:       "PC from 4000",
@@ -94,13 +94,13 @@ func TestGetCategoriesForPlatform(t *testing.T) {
 		contains []int
 	}{
 		{
-			name:     "PC returns two categories",
+			name:     "PC returns its three categories",
 			slug:     "pc",
-			wantLen:  2,
-			contains: []int{4000, 100010},
+			wantLen:  3,
+			contains: []int{4000, 100010, 4050},
 		},
 		{
-			name:     "Switch returns 100082 and 4050",
+			name:     "Switch still requests 4050 for Nyaa",
 			slug:     "switch",
 			wantLen:  2,
 			contains: []int{100082, 4050},
@@ -304,12 +304,65 @@ func TestExtraPlatformsUnique(t *testing.T) {
 	}
 }
 
-func TestPlatformMapHasSwitchBoth(t *testing.T) {
-	// Both 100082 and 4050 should map to Switch
+func TestPlatformMapPCGamesNotSwitch(t *testing.T) {
+	if info, ok := PlatformMap[4050]; !ok || !info.IsPC {
+		t.Error("4050 is PC/Games and should map to PC")
+	}
 	if info, ok := PlatformMap[100082]; !ok || info.Slug != "switch" {
 		t.Error("100082 should map to switch")
 	}
-	if info, ok := PlatformMap[4050]; !ok || info.Slug != "switch" {
-		t.Error("4050 should map to switch")
+}
+
+func TestDetectConsoleROM(t *testing.T) {
+	tests := []struct {
+		name     string
+		files    []string
+		wantName string
+		wantOK   bool
+	}{
+		{"switch nsp", []string{"Zelda.nsp"}, "Switch", true},
+		{"switch xci", []string{"Metroid.xci"}, "Switch", true},
+		{"wii wbfs", []string{"Galaxy.wbfs"}, "Wii", true},
+		{"pc repack is left alone", []string{"setup.exe", "data.bin", "readme.txt"}, "", false},
+		// A PC game that bundles an emulator or a Doom engine must not be
+		// dragged onto a console platform by its assets.
+		{"pc game shipping a doom wad", []string{"game.exe", "base.wad"}, "", false},
+		{"pc game bundling nes roms", []string{"game.exe", "extras/bonus.nes"}, "", false},
+		{"pc game bundling a gba rom", []string{"game.exe", "roms/classic.gba"}, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range tt.files {
+				full := filepath.Join(dir, f)
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			info, ok := DetectConsoleROM(dir)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v (info %+v)", ok, tt.wantOK, info)
+			}
+			if ok && info.Name != tt.wantName {
+				t.Errorf("name = %q, want %q", info.Name, tt.wantName)
+			}
+			if ok && info.IsPC {
+				t.Error("a console ROM must not come back marked IsPC")
+			}
+		})
+	}
+}
+
+// Every extension trusted to overturn a PC classification must be absent from
+// PC content. This guards the set against being widened back to extPlatformMap.
+func TestConsoleROMExtsExcludePCAmbiguousFormats(t *testing.T) {
+	for _, ext := range []string{".wad", ".nes", ".sfc", ".smc", ".gb", ".gbc", ".gba", ".n64", ".z64", ".v64", ".3ds", ".iso", ".bin"} {
+		if _, ok := consoleROMExts[ext]; ok {
+			t.Errorf("%s also occurs in PC content and cannot overturn a PC tag", ext)
+		}
 	}
 }

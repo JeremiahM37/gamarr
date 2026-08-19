@@ -24,7 +24,7 @@ func TestHandler_Caps(t *testing.T) {
 		t.Fatalf("caps HTTP %d: %s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"<caps", `title="Gamarr"`, `id="1000"`, `id="4070"`, `name="Console/NDS"`} {
+	for _, want := range []string{"<caps", `title="Gamarr"`, `id="1000"`, `id="4050"`, `name="Console/NDS"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("caps body missing %q\n%s", want, body)
 		}
@@ -170,7 +170,7 @@ func TestResultToItem_CategoryFromPlatform(t *testing.T) {
 	cases := []struct {
 		slug, wantCat, wantName string
 	}{
-		{"pc", "4070", "PC/Games"},
+		{"pc", "4050", "PC/Games"},
 		{"nds", "1010", "Console/NDS"},
 		{"xbox360", "1050", "Console/Xbox 360"},
 		{"nes", "1090", "Console/Other"},

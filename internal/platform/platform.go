@@ -36,7 +36,7 @@ var PlatformMap = map[int]PlatformInfo{
 	100072: {Name: "3DS", Slug: "3ds"},
 	100077: {Name: "PS4", Slug: "ps4"},
 	100082: {Name: "Switch", Slug: "switch"},
-	4050:   {Name: "Switch", Slug: "switch"},
+	4050:   {Name: "PC", Slug: "", IsPC: true},
 }
 
 // ExtraPlatform is a platform not in Prowlarr categories, for user override.
@@ -90,8 +90,13 @@ func DetectPlatform(categories []interface{}) PlatformInfo {
 
 // GetCategoriesForPlatform returns all Prowlarr category IDs matching a platform slug.
 func GetCategoriesForPlatform(slug string) []int {
-	if slug == "pc" {
-		return []int{4000, 100010}
+	switch slug {
+	case "pc":
+		return []int{4000, 100010, 4050}
+	case "switch":
+		// Nyaa has no console categories, so Switch releases there come back as
+		// PC/Games; keep requesting it and let file and title hints classify.
+		return []int{100082, 4050}
 	}
 	var matches []int
 	for catID, info := range PlatformMap {
@@ -202,6 +207,42 @@ var titleHints = []struct {
 	{regexp.MustCompile(`(?i)\bsnes\b|super\s*nintendo`), PlatformInfo{Name: "SNES", Slug: "snes"}},
 	{regexp.MustCompile(`(?i)\bnes\b`), PlatformInfo{Name: "NES", Slug: "nes"}},
 	{regexp.MustCompile(`(?i)\bgenesis\b|mega\s*drive`), PlatformInfo{Name: "Sega Genesis", Slug: "genesis"}},
+}
+
+// consoleROMExts maps ROM formats a PC release never legitimately ships to
+// their platform. It is deliberately much narrower than extPlatformMap,
+// because it is the only evidence allowed to overturn a PC classification:
+// .wad is a Doom asset, and .nes/.sfc/.gb/.gba/.n64 turn up inside PC games
+// that bundle an emulator, so none of those can be trusted here. .3ds is out
+// too - it is also the 3D Studio model format.
+var consoleROMExts = map[string]PlatformInfo{
+	".nsp":  {Name: "Switch", Slug: "switch"},
+	".xci":  {Name: "Switch", Slug: "switch"},
+	".nsz":  {Name: "Switch", Slug: "switch"},
+	".cia":  {Name: "3DS", Slug: "3ds"},
+	".nds":  {Name: "DS", Slug: "nds"},
+	".wbfs": {Name: "Wii", Slug: "wii"},
+	".gcz":  {Name: "GameCube", Slug: "ngc"},
+}
+
+// DetectConsoleROM reports a console platform when the content carries a ROM
+// format no PC release ships.
+//
+// Newznab 4050 is PC/Games, and it is also what Prowlarr maps Nyaa's only
+// games category (Software - Games) to, so Switch ROMs from Nyaa arrive
+// tagged PC. Category alone cannot separate the two, but the payload can:
+// a torrent holding an .nsp is a Switch release whatever it was tagged.
+// Only extensions are consulted - the title hints below are too loose to
+// overturn an explicit PC classification ("switch" matches plenty of PC
+// game titles).
+func DetectConsoleROM(contentPath string) (PlatformInfo, bool) {
+	for ext := range collectExtensions(contentPath) {
+		if info, ok := consoleROMExts[ext]; ok {
+			slog.Info("console ROM format found in PC-tagged content", "ext", ext, "platform", info.Name)
+			return info, true
+		}
+	}
+	return PlatformInfo{}, false
 }
 
 // DetectPlatformFromFiles detects platform from file extensions and title keywords.

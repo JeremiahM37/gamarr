@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"gamarr/internal/platform"
 	"gamarr/internal/qbit"
 )
 
@@ -1025,7 +1026,7 @@ func TestDownloadTorrentFileListScanDisabled(t *testing.T) {
 	}})
 
 	m := New(cfg, jobs, qm.client())
-	jobID, err := m.DownloadTorrent("magnet:x", "Repack Game", "PC", "", true)
+	jobID, err := m.DownloadTorrent("magnet:x", "", "Repack Game", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1043,5 +1044,90 @@ func TestDownloadTorrentFileListScanDisabled(t *testing.T) {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// Prowlarr maps Nyaa's only games category to Newznab 4050 PC/Games, so a
+// Switch ROM from Nyaa reaches the downloader tagged PC. It has to still land
+// in the Switch ROM library, not GameVault.
+func TestNyaaSwitchROMTaggedPCImportsAsSwitch(t *testing.T) {
+	info := platform.DetectPlatform([]interface{}{float64(4050)})
+	if !info.IsPC {
+		t.Fatalf("fixture stale: 4050 no longer detects as PC (%+v)", info)
+	}
+
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	cfg.QBURL = "configured"
+
+	content := filepath.Join(t.TempDir(), "Zelda TOTK")
+	writeFileT(t, filepath.Join(content, "Zelda.TOTK.nsp"), []byte("switch-rom"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{{Name: "Zelda TOTK/Zelda.TOTK.nsp"}})
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Zelda TOTK", Hash: "h-switch", Progress: 1.0, ContentPath: content,
+	}})
+
+	m := New(cfg, jobs, qm.client())
+	// exactly what a 4050-tagged search hit hands the downloader
+	jobID, err := m.DownloadTorrent("magnet:x", "h-switch", "Zelda TOTK", info.Name, info.Slug, info.IsPC)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	job := waitJobStatus(t, jobs, jobID, "completed", 10*time.Second)
+	if got, _ := job["platform_slug"].(string); got != "switch" {
+		t.Errorf("platform_slug = %q, want switch", got)
+	}
+	if isPC, _ := job["is_pc"].(bool); isPC {
+		t.Error("job still marked is_pc after a .nsp was found")
+	}
+	wantPath := filepath.Join(cfg.GamesRomsPath, "switch", "Zelda TOTK", "Zelda.TOTK.nsp")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("ROM not in the Switch library: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.GamesVaultPath, "Zelda TOTK")); err == nil {
+		t.Error("ROM was imported into GameVault as a PC game")
+	}
+}
+
+// The other half of the same category: a genuine PC release tagged 4050 has to
+// keep going to GameVault.
+func TestPCGameTaggedPCGamesImportsToVault(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	cfg.QBURL = "configured"
+
+	content := filepath.Join(t.TempDir(), "Terraria")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	// a Doom-engine asset and a bundled NES ROM: neither may reroute a PC game
+	writeFileT(t, filepath.Join(content, "base.wad"), []byte("doom"))
+	writeFileT(t, filepath.Join(content, "extras", "bonus.nes"), []byte("rom"))
+
+	qm := newQbitMock(t)
+	// list the real payload: a lone .exe trips the scanner's "only executables"
+	// heuristic, which is not what this test is about
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Terraria/setup.exe"},
+		{Name: "Terraria/base.wad"},
+		{Name: "Terraria/extras/bonus.nes"},
+	})
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Terraria", Hash: "h-pc", Progress: 1.0, ContentPath: content,
+	}})
+
+	m := New(cfg, jobs, qm.client())
+	jobID, err := m.DownloadTorrent("magnet:x", "h-pc", "Terraria", "PC", "", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	job := waitJobStatus(t, jobs, jobID, "completed", 10*time.Second)
+	if isPC, _ := job["is_pc"].(bool); !isPC {
+		t.Errorf("PC game was reclassified: platform=%v slug=%v", job["platform"], job["platform_slug"])
+	}
+	if _, err := os.Stat(filepath.Join(cfg.GamesVaultPath, "Terraria", "setup.exe")); err != nil {
+		t.Errorf("PC game not in GameVault: %v", err)
 	}
 }
