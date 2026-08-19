@@ -209,6 +209,42 @@ var titleHints = []struct {
 	{regexp.MustCompile(`(?i)\bgenesis\b|mega\s*drive`), PlatformInfo{Name: "Sega Genesis", Slug: "genesis"}},
 }
 
+// consoleROMExts maps ROM formats a PC release never legitimately ships to
+// their platform. It is deliberately much narrower than extPlatformMap,
+// because it is the only evidence allowed to overturn a PC classification:
+// .wad is a Doom asset, and .nes/.sfc/.gb/.gba/.n64 turn up inside PC games
+// that bundle an emulator, so none of those can be trusted here. .3ds is out
+// too - it is also the 3D Studio model format.
+var consoleROMExts = map[string]PlatformInfo{
+	".nsp":  {Name: "Switch", Slug: "switch"},
+	".xci":  {Name: "Switch", Slug: "switch"},
+	".nsz":  {Name: "Switch", Slug: "switch"},
+	".cia":  {Name: "3DS", Slug: "3ds"},
+	".nds":  {Name: "DS", Slug: "nds"},
+	".wbfs": {Name: "Wii", Slug: "wii"},
+	".gcz":  {Name: "GameCube", Slug: "ngc"},
+}
+
+// DetectConsoleROM reports a console platform when the content carries a ROM
+// format no PC release ships.
+//
+// Newznab 4050 is PC/Games, and it is also what Prowlarr maps Nyaa's only
+// games category (Software - Games) to, so Switch ROMs from Nyaa arrive
+// tagged PC. Category alone cannot separate the two, but the payload can:
+// a torrent holding an .nsp is a Switch release whatever it was tagged.
+// Only extensions are consulted - the title hints below are too loose to
+// overturn an explicit PC classification ("switch" matches plenty of PC
+// game titles).
+func DetectConsoleROM(contentPath string) (PlatformInfo, bool) {
+	for ext := range collectExtensions(contentPath) {
+		if info, ok := consoleROMExts[ext]; ok {
+			slog.Info("console ROM format found in PC-tagged content", "ext", ext, "platform", info.Name)
+			return info, true
+		}
+	}
+	return PlatformInfo{}, false
+}
+
 // DetectPlatformFromFiles detects platform from file extensions and title keywords.
 func DetectPlatformFromFiles(contentPath, title string) (PlatformInfo, bool) {
 	exts := collectExtensions(contentPath)

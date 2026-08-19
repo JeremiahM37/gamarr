@@ -339,6 +339,21 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		}
 	}
 
+	// A PC classification can arrive from an ambiguous category rather than a
+	// real PC release: Newznab 4050 is PC/Games, but it is also where Prowlarr
+	// files Nyaa's Software - Games, which is how Switch ROMs get in. The two
+	// detections above are skipped once isPC is set, so without this a Nyaa
+	// Switch ROM imports into GameVault instead of the Switch ROM library.
+	if isPC {
+		if info, ok := platform.DetectConsoleROM(contentPath); ok {
+			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
+			m.jobs.UpdateMulti(jobID, map[string]interface{}{
+				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			})
+			slog.Info("reclassified PC-tagged download from its ROM files", "platform", platf)
+		}
+	}
+
 	var importMode fileops.Mode
 	if isPC {
 		dest := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(contentPath)))
