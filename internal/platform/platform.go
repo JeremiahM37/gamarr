@@ -36,7 +36,7 @@ var PlatformMap = map[int]PlatformInfo{
 	100072: {Name: "3DS", Slug: "3ds"},
 	100077: {Name: "PS4", Slug: "ps4"},
 	100082: {Name: "Switch", Slug: "switch"},
-	4050:   {Name: "Switch", Slug: "switch"},
+	4050:   {Name: "PC", Slug: "", IsPC: true},
 }
 
 // ExtraPlatform is a platform not in Prowlarr categories, for user override.
@@ -90,8 +90,13 @@ func DetectPlatform(categories []interface{}) PlatformInfo {
 
 // GetCategoriesForPlatform returns all Prowlarr category IDs matching a platform slug.
 func GetCategoriesForPlatform(slug string) []int {
-	if slug == "pc" {
-		return []int{4000, 100010}
+	switch slug {
+	case "pc":
+		return []int{4000, 100010, 4050}
+	case "switch":
+		// Nyaa has no console categories, so Switch releases there come back as
+		// PC/Games; keep requesting it and let file and title hints classify.
+		return []int{100082, 4050}
 	}
 	var matches []int
 	for catID, info := range PlatformMap {

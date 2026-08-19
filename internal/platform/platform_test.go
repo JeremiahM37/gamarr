@@ -35,9 +35,9 @@ func TestDetectPlatform(t *testing.T) {
 			wantName:   "Switch",
 		},
 		{
-			name:       "Switch from 4050 (Nyaa)",
+			name:       "PC from 4050 (PC/Games)",
 			categories: []interface{}{float64(4050)},
-			wantName:   "Switch",
+			wantName:   "PC",
 		},
 		{
 			name:       "PC from 4000",
@@ -94,13 +94,13 @@ func TestGetCategoriesForPlatform(t *testing.T) {
 		contains []int
 	}{
 		{
-			name:     "PC returns two categories",
+			name:     "PC returns its three categories",
 			slug:     "pc",
-			wantLen:  2,
-			contains: []int{4000, 100010},
+			wantLen:  3,
+			contains: []int{4000, 100010, 4050},
 		},
 		{
-			name:     "Switch returns 100082 and 4050",
+			name:     "Switch still requests 4050 for Nyaa",
 			slug:     "switch",
 			wantLen:  2,
 			contains: []int{100082, 4050},
@@ -304,12 +304,11 @@ func TestExtraPlatformsUnique(t *testing.T) {
 	}
 }
 
-func TestPlatformMapHasSwitchBoth(t *testing.T) {
-	// Both 100082 and 4050 should map to Switch
+func TestPlatformMapPCGamesNotSwitch(t *testing.T) {
+	if info, ok := PlatformMap[4050]; !ok || !info.IsPC {
+		t.Error("4050 is PC/Games and should map to PC")
+	}
 	if info, ok := PlatformMap[100082]; !ok || info.Slug != "switch" {
 		t.Error("100082 should map to switch")
-	}
-	if info, ok := PlatformMap[4050]; !ok || info.Slug != "switch" {
-		t.Error("4050 should map to switch")
 	}
 }
