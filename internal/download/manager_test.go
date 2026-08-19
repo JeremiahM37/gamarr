@@ -168,12 +168,17 @@ func TestDownloadTorrentBlocksDangerousFiles(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	waitFor(t, 10*time.Second, "dangerous torrent deletion", func() bool {
-		return len(qm.deletedHashes()) > 0
+	waitFor(t, 10*time.Second, "dangerous torrent stop", func() bool {
+		return len(qm.stoppedHashes()) > 0
 	})
+	// Plenty of legitimate repacks ship a .bat next to their checksum tooling,
+	// so the download has to survive for the operator to judge it.
+	if calls := qm.deleteCalls(); len(calls) != 0 {
+		t.Errorf("download was deleted (%+v); it must be left in place for review", calls)
+	}
 	job := waitJobStatus(t, jobs, jobID, "error", 5*time.Second)
-	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "Blocked") {
-		t.Errorf("error = %q, want Blocked message", errMsg)
+	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "keygen.bat") {
+		t.Errorf("error = %q, want the offending filename in it", errMsg)
 	}
 }
 

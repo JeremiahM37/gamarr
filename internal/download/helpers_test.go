@@ -66,6 +66,7 @@ type qbitMock struct {
 	addCalls int
 	deleted  []string
 	deletes  []deleteCall
+	stopped  []string
 }
 
 // deleteCall records a /torrents/delete request, including whether the client
@@ -126,6 +127,13 @@ func newQbitMock(t *testing.T) *qbitMock {
 		q.mu.Unlock()
 		w.WriteHeader(200)
 	})
+	mux.HandleFunc("/api/v2/torrents/stop", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		q.mu.Lock()
+		q.stopped = append(q.stopped, r.Form.Get("hashes"))
+		q.mu.Unlock()
+		w.WriteHeader(200)
+	})
 	q.srv = httptest.NewServer(mux)
 	t.Cleanup(q.srv.Close)
 	return q
@@ -152,6 +160,14 @@ func (q *qbitMock) deleteCalls() []deleteCall {
 	defer q.mu.Unlock()
 	out := make([]deleteCall, len(q.deletes))
 	copy(out, q.deletes)
+	return out
+}
+
+func (q *qbitMock) stoppedHashes() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]string, len(q.stopped))
+	copy(out, q.stopped)
 	return out
 }
 

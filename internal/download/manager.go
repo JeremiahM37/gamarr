@@ -229,12 +229,19 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 				fileScanDone = true
 				if !isSafe {
 					slog.Warn("file list scan failed", "title", title, "issues", issues)
+					// Stopping is enough to keep the files from being imported
+					// or run; deleting them throws away a download the
+					// operator may well consider legitimate.
+					detail := "Dangerous files detected - torrent stopped for review"
+					if !m.qb.StopTorrent(t.Hash) {
+						slog.Error("could not stop torrent after failed file list scan", "title", title, "hash", t.Hash)
+						detail = "Dangerous files detected - could not stop the torrent, review it in your client"
+					}
 					m.jobs.UpdateMulti(jobID, map[string]interface{}{
 						"status": "error",
 						"error":  fmt.Sprintf("Blocked: %s", strings.Join(issues, "; ")),
-						"detail": "Dangerous files detected - download cancelled",
+						"detail": detail,
 					})
-					m.qb.DeleteTorrent(t.Hash, true)
 					return
 				}
 				m.jobs.Update(jobID, "detail", "File list clean. Downloading...")

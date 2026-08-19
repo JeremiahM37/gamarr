@@ -242,6 +242,43 @@ func (c *Client) DeleteTorrent(hash string, deleteFiles bool) bool {
 	return is2xx(resp.StatusCode)
 }
 
+// StopTorrent halts a torrent, leaving it and its data in the client.
+func (c *Client) StopTorrent(hash string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureAuth()
+
+	data := url.Values{"hashes": {hash}}
+	// qBittorrent >= 5.0 calls this endpoint stop; earlier versions only
+	// have pause, and answer 404 for stop.
+	status := c.postWithReauth("/api/v2/torrents/stop", data)
+	if status == http.StatusNotFound {
+		status = c.postWithReauth("/api/v2/torrents/pause", data)
+	}
+	return is2xx(status)
+}
+
+// postWithReauth posts a form, retrying once with a fresh session if the
+// cookie has expired, and returns 0 if the request could not be made.
+// Callers hold c.mu.
+func (c *Client) postWithReauth(path string, data url.Values) int {
+	resp, err := c.client.PostForm(c.baseURL+path, data)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		return resp.StatusCode
+	}
+	c.login()
+	resp2, err := c.client.PostForm(c.baseURL+path, data)
+	if err != nil {
+		return 0
+	}
+	defer resp2.Body.Close()
+	return resp2.StatusCode
+}
+
 func (c *Client) doGet(u string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
