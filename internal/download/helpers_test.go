@@ -40,6 +40,9 @@ func newTestConfig(t *testing.T) *config.Config {
 		ClamAVSocket:    filepath.Join(base, "no-such-clamav.sock"),
 		DockerSocket:    filepath.Join(base, "no-such-docker.sock"),
 		MaxRetries:      2,
+		// Mirrors the production default. A zero value here would silently
+		// disable the scan for every test in this package.
+		FileListScanEnabled: true,
 	}
 }
 

@@ -42,6 +42,9 @@ type Config struct {
 	ClamAVSocket    string
 	DockerSocket    string
 
+	// FileListScanEnabled gates the pre-download file name check.
+	FileListScanEnabled bool
+
 	// Import behavior. ImportMode decides whether a finished download is
 	// moved into the library or preserved in place (hardlink/symlink/copy)
 	// so a torrent can keep seeding. ImportHardlinkFallback applies when a
@@ -173,6 +176,8 @@ func Load() *Config {
 		ClamAVContainer: envStr("CLAMAV_CONTAINER", "clamav"),
 		ClamAVSocket:    envStr("CLAMAV_SOCKET", "/run/clamav/clamd.sock"),
 		DockerSocket:    envStr("DOCKER_SOCKET", "/var/run/docker.sock"),
+
+		FileListScanEnabled: envBool("FILE_LIST_SCAN_ENABLED", true),
 
 		ImportMode:             envImportMode("IMPORT_MODE"),
 		ImportHardlinkFallback: envHardlinkFallback("IMPORT_HARDLINK_FALLBACK"),

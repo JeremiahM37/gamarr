@@ -223,7 +223,7 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 			}
 
 			// Layer 1: scan file list once metadata is available
-			if !fileScanDone && t.Progress > 0 {
+			if m.cfg.FileListScanEnabled && !fileScanDone && t.Progress > 0 {
 				m.jobs.Update(jobID, "detail", "Scanning file list...")
 				isSafe, issues := safety.ScanTorrentFileList(m.qb, t.Hash)
 				fileScanDone = true

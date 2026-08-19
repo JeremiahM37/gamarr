@@ -264,3 +264,15 @@ func TestEnvInt(t *testing.T) {
 		t.Errorf("got %d, want fallback 7", got)
 	}
 }
+
+func TestFileListScanEnabled(t *testing.T) {
+	if !Load().FileListScanEnabled {
+		t.Error("FileListScanEnabled should default to true")
+	}
+
+	os.Setenv("FILE_LIST_SCAN_ENABLED", "false")
+	defer os.Unsetenv("FILE_LIST_SCAN_ENABLED")
+	if Load().FileListScanEnabled {
+		t.Error("FILE_LIST_SCAN_ENABLED=false should turn the scan off")
+	}
+}

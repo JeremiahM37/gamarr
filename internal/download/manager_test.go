@@ -963,3 +963,41 @@ func TestMaybeExtractArchives(t *testing.T) {
 		}
 	})
 }
+
+// Some sources legitimately ship a .bat next to the payload, and the operator
+// has no other way past a filename match.
+func TestDownloadTorrentFileListScanDisabled(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	cfg.QBURL = "configured"
+	cfg.FileListScanEnabled = false
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{{Name: "Game/keygen.bat"}, {Name: "Game/setup.scr"}})
+	qm.setTorrents([]qbit.Torrent{{
+		Name:     "Repack Game",
+		Hash:     "hash-optout",
+		Progress: 0.5, // metadata available, still downloading
+	}})
+
+	m := New(cfg, jobs, qm.client())
+	jobID, err := m.DownloadTorrent("magnet:x", "Repack Game", "PC", "", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With the scan on, the watcher acts on its first pass, so a short wait is
+	// enough to catch it having done so.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(qm.deleteCalls()) != 0 {
+			t.Fatalf("torrent was acted on despite the scan being disabled: %+v", qm.deleteCalls())
+		}
+		if job, ok := jobs.Get(jobID); ok {
+			if status, _ := job["status"].(string); status == "error" {
+				t.Fatalf("job errored despite the scan being disabled: %v", job["error"])
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
