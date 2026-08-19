@@ -70,7 +70,7 @@ func TestNewManager(t *testing.T) {
 func TestDownloadTorrentValidation(t *testing.T) {
 	cfg := newTestConfig(t)
 	m := New(cfg, newTestJobs(t), nil)
-	if _, err := m.DownloadTorrent("", "Title", "PC", "", true); err == nil {
+	if _, err := m.DownloadTorrent("", "", "Title", "PC", "", true); err == nil {
 		t.Fatal("empty URL should return an error")
 	}
 }
@@ -81,7 +81,7 @@ func TestDownloadTorrentNoClientAvailable(t *testing.T) {
 	jobs := newTestJobs(t)
 	m := New(cfg, jobs, nil)
 
-	jobID, err := m.DownloadTorrent("magnet:x", "Some Game", "PC", "", true)
+	jobID, err := m.DownloadTorrent("magnet:x", "", "Some Game", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestDownloadTorrentQBitFullFlow(t *testing.T) {
 	}})
 
 	m := New(cfg, jobs, qm.client())
-	jobID, err := m.DownloadTorrent("magnet:x", "Super Game (USA)", "SNES", "snes", false)
+	jobID, err := m.DownloadTorrent("magnet:x", "", "Super Game (USA)", "SNES", "snes", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,6 +150,45 @@ func TestDownloadTorrentQBitFullFlow(t *testing.T) {
 	}
 }
 
+func TestDownloadTorrentTracksRenamedTorrentByHash(t *testing.T) {
+	// The release title we grabbed and the name the tracker gives the torrent
+	// need not contain one another, so titlesMatch alone loses the download.
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	cfg.QBURL = "configured"
+
+	content := filepath.Join(t.TempDir(), "Chrono Quest")
+	writeFileT(t, filepath.Join(content, "game.sfc"), []byte("rom-data"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{{Name: "Chrono Quest/game.sfc"}})
+	qm.setTorrents([]qbit.Torrent{{
+		Name:        "Chrono Quest [Repack]",
+		Hash:        "hash-renamed",
+		Progress:    1.0,
+		ContentPath: content,
+	}})
+
+	title := "Chrono Quest (v1.2 + Bonus OST, MULTi9) [Repack]"
+	if titlesMatch(title, "Chrono Quest [Repack]") {
+		t.Fatal("fixture no longer exercises a title mismatch")
+	}
+
+	m := New(cfg, jobs, qm.client())
+	jobID, err := m.DownloadTorrent("magnet:x", "hash-renamed", title, "SNES", "snes", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	job := waitJobStatus(t, jobs, jobID, "completed", 10*time.Second)
+	if got, _ := job["info_hash"].(string); got != "hash-renamed" {
+		t.Errorf("job info_hash = %q, want hash-renamed", got)
+	}
+	if !jobs.LibraryHasSourceID("torrent:hash-renamed") {
+		t.Error("library item not tracked")
+	}
+}
+
 func TestDownloadTorrentBlocksDangerousFiles(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
@@ -164,17 +203,22 @@ func TestDownloadTorrentBlocksDangerousFiles(t *testing.T) {
 	}})
 
 	m := New(cfg, jobs, qm.client())
-	jobID, err := m.DownloadTorrent("magnet:x", "Evil Game", "PC", "", true)
+	jobID, err := m.DownloadTorrent("magnet:x", "", "Evil Game", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	waitFor(t, 10*time.Second, "dangerous torrent deletion", func() bool {
-		return len(qm.deletedHashes()) > 0
+	waitFor(t, 10*time.Second, "dangerous torrent stop", func() bool {
+		return len(qm.stoppedHashes()) > 0
 	})
+	// Plenty of legitimate repacks ship a .bat next to their checksum tooling,
+	// so the download has to survive for the operator to judge it.
+	if calls := qm.deleteCalls(); len(calls) != 0 {
+		t.Errorf("download was deleted (%+v); it must be left in place for review", calls)
+	}
 	job := waitJobStatus(t, jobs, jobID, "error", 5*time.Second)
-	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "Blocked") {
-		t.Errorf("error = %q, want Blocked message", errMsg)
+	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "keygen.bat") {
+		t.Errorf("error = %q, want the offending filename in it", errMsg)
 	}
 }
 
@@ -200,7 +244,7 @@ func TestDownloadTorrentFallbacks(t *testing.T) {
 		cfg.TransmissionURL = trSrv.URL
 
 		m := New(cfg, jobs, qm.client())
-		jobID, err := m.DownloadTorrent("magnet:x", "Fallback Game", "PC", "", true)
+		jobID, err := m.DownloadTorrent("magnet:x", "", "Fallback Game", "PC", "", true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -229,7 +273,7 @@ func TestDownloadTorrentFallbacks(t *testing.T) {
 		cfg.DelugeURL = dlSrv.URL
 
 		m := New(cfg, jobs, qm.client())
-		jobID, err := m.DownloadTorrent("magnet:x", "Fallback Game 2", "PC", "", true)
+		jobID, err := m.DownloadTorrent("magnet:x", "", "Fallback Game 2", "PC", "", true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -251,7 +295,7 @@ func TestDownloadTorrentFallbacks(t *testing.T) {
 		cfg.DelugeURL = deadSrv.URL
 
 		m := New(cfg, jobs, qm.client())
-		jobID, err := m.DownloadTorrent("magnet:x", "Doomed Game", "PC", "", true)
+		jobID, err := m.DownloadTorrent("magnet:x", "", "Doomed Game", "PC", "", true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -965,6 +1009,44 @@ func TestMaybeExtractArchives(t *testing.T) {
 	})
 }
 
+// Some sources legitimately ship a .bat next to the payload, and the operator
+// has no other way past a filename match.
+func TestDownloadTorrentFileListScanDisabled(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	cfg.QBURL = "configured"
+	cfg.FileListScanEnabled = false
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{{Name: "Game/keygen.bat"}, {Name: "Game/setup.scr"}})
+	qm.setTorrents([]qbit.Torrent{{
+		Name:     "Repack Game",
+		Hash:     "hash-optout",
+		Progress: 0.5, // metadata available, still downloading
+	}})
+
+	m := New(cfg, jobs, qm.client())
+	jobID, err := m.DownloadTorrent("magnet:x", "", "Repack Game", "PC", "", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With the scan on, the watcher acts on its first pass, so a short wait is
+	// enough to catch it having done so.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(qm.deleteCalls()) != 0 {
+			t.Fatalf("torrent was acted on despite the scan being disabled: %+v", qm.deleteCalls())
+		}
+		if job, ok := jobs.Get(jobID); ok {
+			if status, _ := job["status"].(string); status == "error" {
+				t.Fatalf("job errored despite the scan being disabled: %v", job["error"])
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // Prowlarr maps Nyaa's only games category to Newznab 4050 PC/Games, so a
 // Switch ROM from Nyaa reaches the downloader tagged PC. It has to still land
 // in the Switch ROM library, not GameVault.
@@ -989,7 +1071,7 @@ func TestNyaaSwitchROMTaggedPCImportsAsSwitch(t *testing.T) {
 
 	m := New(cfg, jobs, qm.client())
 	// exactly what a 4050-tagged search hit hands the downloader
-	jobID, err := m.DownloadTorrent("magnet:x", "Zelda TOTK", info.Name, info.Slug, info.IsPC)
+	jobID, err := m.DownloadTorrent("magnet:x", "h-switch", "Zelda TOTK", info.Name, info.Slug, info.IsPC)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1036,7 +1118,7 @@ func TestPCGameTaggedPCGamesImportsToVault(t *testing.T) {
 	}})
 
 	m := New(cfg, jobs, qm.client())
-	jobID, err := m.DownloadTorrent("magnet:x", "Terraria", "PC", "", true)
+	jobID, err := m.DownloadTorrent("magnet:x", "h-pc", "Terraria", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -88,7 +88,7 @@ func newJobID() string {
 
 // DownloadTorrent starts a torrent download.
 // Tries clients in order: qBittorrent -> Transmission -> Deluge (first available).
-func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool) (string, error) {
+func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, isPC bool) (string, error) {
 	if url == "" {
 		return "", fmt.Errorf("no download URL")
 	}
@@ -96,6 +96,7 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 	m.jobs.Set(jobID, map[string]interface{}{
 		"status":        "downloading",
 		"title":         title,
+		"info_hash":     infoHash,
 		"platform":      platf,
 		"platform_slug": platSlug,
 		"is_pc":         isPC,
@@ -156,7 +157,7 @@ func (m *Manager) DownloadTorrent(url, title, platf, platSlug string, isPC bool)
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloading via %s...", clientUsed))
 	slog.Info("torrent added", "client", clientUsed, "title", title)
 
-	go m.watchGameTorrent(jobID, title, platf, platSlug, isPC)
+	go m.watchGameTorrent(jobID, infoHash, title, platf, platSlug, isPC)
 	return jobID, nil
 }
 
@@ -208,7 +209,7 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 	return jobID, nil
 }
 
-func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bool) {
+func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug string, isPC bool) {
 	slog.Info("watching game torrent", "title", title, "platform", platf)
 	maxWait := 7 * 24 * time.Hour
 	start := time.Now()
@@ -218,23 +219,30 @@ func (m *Manager) watchGameTorrent(jobID, title, platf, platSlug string, isPC bo
 		torrents := m.qb.GetTorrents(m.cfg.QBCategory)
 		for _, t := range torrents {
 			tName := t.Name
-			if !titlesMatch(title, tName) {
+			if !jobMatchesTorrent(infoHash, title, t.Hash, tName) {
 				continue
 			}
 
 			// Layer 1: scan file list once metadata is available
-			if !fileScanDone && t.Progress > 0 {
+			if m.cfg.FileListScanEnabled && !fileScanDone && t.Progress > 0 {
 				m.jobs.Update(jobID, "detail", "Scanning file list...")
 				isSafe, issues := safety.ScanTorrentFileList(m.qb, t.Hash)
 				fileScanDone = true
 				if !isSafe {
 					slog.Warn("file list scan failed", "title", title, "issues", issues)
+					// Stopping is enough to keep the files from being imported
+					// or run; deleting them throws away a download the
+					// operator may well consider legitimate.
+					detail := "Dangerous files detected - torrent stopped for review"
+					if !m.qb.StopTorrent(t.Hash) {
+						slog.Error("could not stop torrent after failed file list scan", "title", title, "hash", t.Hash)
+						detail = "Dangerous files detected - could not stop the torrent, review it in your client"
+					}
 					m.jobs.UpdateMulti(jobID, map[string]interface{}{
 						"status": "error",
 						"error":  fmt.Sprintf("Blocked: %s", strings.Join(issues, "; ")),
-						"detail": "Dangerous files detected - download cancelled",
+						"detail": detail,
 					})
-					m.qb.DeleteTorrent(t.Hash, true)
 					return
 				}
 				m.jobs.Update(jobID, "detail", "File list clean. Downloading...")
@@ -989,6 +997,7 @@ func (m *Manager) RecoverOrphanedTorrents() {
 			m.jobs.Set(jobID, map[string]interface{}{
 				"status":        "completed_unorganized",
 				"title":         t.Name,
+				"info_hash":     t.Hash,
 				"platform":      platf,
 				"platform_slug": platSlug,
 				"is_pc":         isPC,
@@ -1000,13 +1009,14 @@ func (m *Manager) RecoverOrphanedTorrents() {
 			m.jobs.Set(jobID, map[string]interface{}{
 				"status":        "downloading",
 				"title":         t.Name,
+				"info_hash":     t.Hash,
 				"platform":      platf,
 				"platform_slug": platSlug,
 				"is_pc":         isPC,
 				"error":         nil,
 				"detail":        "Recovered - watching download...",
 			})
-			go m.watchGameTorrent(jobID, t.Name, platf, platSlug, isPC)
+			go m.watchGameTorrent(jobID, t.Hash, t.Name, platf, platSlug, isPC)
 			slog.Info("recovered in-progress torrent", "name", t.Name, "progress", fmt.Sprintf("%.0f%%", t.Progress*100))
 		}
 	}

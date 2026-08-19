@@ -355,3 +355,82 @@ func TestAddAccepted(t *testing.T) {
 		}
 	}
 }
+
+func TestStopTorrent(t *testing.T) {
+	var gotHashes string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.Write([]byte("Ok."))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/stop" {
+			r.ParseForm()
+			gotHashes = r.Form.Get("hashes")
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if !c.StopTorrent("abc123") {
+		t.Error("expected StopTorrent to succeed")
+	}
+	if gotHashes != "abc123" {
+		t.Errorf("hashes=%q", gotHashes)
+	}
+}
+
+// qBittorrent < 5.0 only has torrents/pause.
+func TestStopTorrent_FallsBackToPause(t *testing.T) {
+	paused := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.Write([]byte("Ok."))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/pause" {
+			paused = true
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if !c.StopTorrent("abc123") {
+		t.Error("expected StopTorrent to fall back to pause")
+	}
+	if !paused {
+		t.Error("pause endpoint was never called")
+	}
+}
+
+func TestStopTorrent_ReauthOn403(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.Write([]byte("Ok."))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/stop" {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(403)
+				return
+			}
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	c.authenticated = true
+	if !c.StopTorrent("abc123") {
+		t.Error("expected StopTorrent to succeed after reauth")
+	}
+}
