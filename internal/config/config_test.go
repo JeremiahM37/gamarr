@@ -276,3 +276,15 @@ func TestFileListScanEnabled(t *testing.T) {
 		t.Error("FILE_LIST_SCAN_ENABLED=false should turn the scan off")
 	}
 }
+
+func TestVaultArchiveEnabled(t *testing.T) {
+	if Load().VaultArchiveEnabled {
+		t.Error("VaultArchiveEnabled should default to false")
+	}
+
+	os.Setenv("VAULT_ARCHIVE_ENABLED", "true")
+	defer os.Unsetenv("VAULT_ARCHIVE_ENABLED")
+	if !Load().VaultArchiveEnabled {
+		t.Error("VAULT_ARCHIVE_ENABLED=true should turn archiving on")
+	}
+}

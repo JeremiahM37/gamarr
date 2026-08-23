@@ -222,7 +222,7 @@ func dirSize(path string) int64 {
 
 func cleanTitle(name string) string {
 	// Remove common archive extensions
-	for _, ext := range []string{".zip", ".rar", ".7z", ".tar.gz", ".iso", ".nsp", ".xci", ".cia", ".nds", ".gba", ".nes", ".sfc", ".n64", ".z64", ".chd", ".gdi", ".cso", ".pbp", ".gcz", ".wbfs"} {
+	for _, ext := range []string{".zip", ".rar", ".7z", ".tar", ".tar.gz", ".iso", ".nsp", ".xci", ".cia", ".nds", ".gba", ".nes", ".sfc", ".n64", ".z64", ".chd", ".gdi", ".cso", ".pbp", ".gcz", ".wbfs"} {
 		if strings.HasSuffix(strings.ToLower(name), ext) {
 			name = name[:len(name)-len(ext)]
 			break

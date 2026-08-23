@@ -306,6 +306,7 @@ Configure either SABnzbd or NZBGet for NZB downloads. If both are configured, SA
 | `IMPORT_HARDLINK_FALLBACK` | `error` | What a hardlink import does when source and library are on different filesystems: `error`, `copy`, `symlink`, `move` |
 | `REMOVE_TORRENT_AFTER_IMPORT` | `false` | Remove the torrent from the client once imported (never deletes the data under a source-preserving mode) |
 | `EXTRACT_ARCHIVES` | `false` | Auto-extract downloaded archives |
+| `VAULT_ARCHIVE_ENABLED` | `false` | Write each PC game into the vault as a single tar so GameVault indexes it as one game |
 | `FILE_LIST_SCAN_ENABLED` | `true` | Block a download whose file names carry a dangerous extension. Set `false` if your sources legitimately ship `.bat`/`.cmd` next to the payload |
 | `MAX_RETRIES` | `2` | Download retry attempts |
 | `RETRY_BACKOFF_SECONDS` | `60` | Seconds between retries |

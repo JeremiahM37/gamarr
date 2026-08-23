@@ -27,7 +27,8 @@ func NewPipeline(cfg *config.Config) *Pipeline {
 
 // OrganizeGame moves a downloaded game file to the appropriate library directory.
 // For ROMs: {roms_path}/{platform_slug}/{cleaned_filename}
-// For PC games: {vault_path}/{game_name}/
+// For PC games: {vault_path}/{game_name}/, or {vault_path}/{game_name}.tar
+// under VAULT_ARCHIVE_ENABLED
 func (p *Pipeline) OrganizeGame(sourcePath, platform, platformSlug string, isPC bool) (string, error) {
 	if _, err := os.Stat(sourcePath); err != nil {
 		return "", fmt.Errorf("source path not found: %s", sourcePath)
@@ -67,13 +68,29 @@ func (p *Pipeline) organizePC(sourcePath string) (string, error) {
 	// component so it cannot escape the vault dir.
 	dest := filepath.Join(destDir, filepath.Base(cleanName))
 
-	// Check duplicate.
-	if exists, _ := DuplicateCheck(dest); exists {
-		return dest, fmt.Errorf("already exists at destination: %s", dest)
+	// GameVault indexes one file per game, so under VAULT_ARCHIVE_ENABLED a
+	// directory becomes a single tar rather than a folder it would misread.
+	archive := p.cfg.VaultArchiveEnabled && fileops.Archivable(sourcePath)
+
+	// Both layouts count as occupied, whichever one this import would write.
+	// Checking only the selected layout stores the game twice, at full size,
+	// the first time the flag changes.
+	if occupied, exists := fileops.VaultOccupied(dest); exists {
+		return occupied, fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, occupied)
+	}
+	if archive {
+		dest = fileops.ArchiveDest(dest)
 	}
 
-	if err := p.importContent(sourcePath, dest); err != nil {
-		return sourcePath, err
+	if archive {
+		if err := fileops.Archive(sourcePath, dest); err != nil {
+			// dest, not sourcePath: a caller that files this in the library on an
+			// already-exists error would otherwise record the download staging
+			// path, which is a row pointing at something meant to be released.
+			return dest, err
+		}
+	} else if err := p.importContent(sourcePath, dest); err != nil {
+		return dest, err
 	}
 
 	slog.Info("PC game organized", "source", sourcePath, "dest", dest)
@@ -89,9 +106,11 @@ func (p *Pipeline) organizeROM(sourcePath, platformSlug string) (string, error) 
 	baseName := filepath.Base(sourcePath)
 	dest := filepath.Join(destDir, baseName)
 
-	// Check duplicate.
+	// Same sentinel as the vault path. Reporting this with a bare error left the
+	// two indistinguishable by message while only one of them matched, so a ROM
+	// already on disk but missing from the library had no way back in.
 	if exists, _ := DuplicateCheck(dest); exists {
-		return dest, fmt.Errorf("already exists at destination: %s", dest)
+		return dest, fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, dest)
 	}
 
 	if err := p.importContent(sourcePath, dest); err != nil {
