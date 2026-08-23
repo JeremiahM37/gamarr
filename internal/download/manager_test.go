@@ -878,6 +878,54 @@ func TestWatchGameTorrentRunsOneWatcherPerTorrent(t *testing.T) {
 	}
 }
 
+func TestDownloadTorrentResolvesHashFromClient(t *testing.T) {
+	const (
+		release = "Cyberpunk 2077: Ultimate Edition - v2.3 [FitGirl Repack]"
+		torrent = "Setup.CP2077.UltimateEdition"
+		hash    = "c9d3921bf7017490c74d546c3d0fd6f1e0694422"
+	)
+	// The premise of the test: with no infohash, nothing else binds this job to
+	// this torrent. If the titles ever did match, the test would pass without
+	// exercising the resolution at all.
+	if titlesMatch(release, torrent) {
+		t.Fatalf("test premise broken: %q and %q match on title", release, torrent)
+	}
+
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	qm.appearOnAdd(qbit.Torrent{Name: torrent, Hash: hash, Progress: 0.2})
+
+	m := New(cfg, jobs, qm.client())
+	// A Prowlarr redirect link, which is what gamarr actually receives - there
+	// is no magnet to read the hash out of.
+	jobID, err := m.DownloadTorrent(
+		"http://prowlarr:9696/75/download?link=abc", "", release, "PC", "", true)
+	if err != nil {
+		t.Fatalf("DownloadTorrent: %v", err)
+	}
+
+	// Resolution runs off the request path, so poll for it rather than
+	// assuming it has already happened.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		job, ok := jobs.Get(jobID)
+		if !ok {
+			t.Fatalf("job %s vanished", jobID)
+		}
+		got, _ := job["info_hash"].(string)
+		if strings.EqualFold(got, hash) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("info_hash = %q, want %q - the client was never asked", got, hash)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestMoveHelpers(t *testing.T) {
 	t.Run("moveFile renames", func(t *testing.T) {
 		dir := t.TempDir()
