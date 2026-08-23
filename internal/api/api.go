@@ -672,7 +672,10 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 	// clients are still returned below.
 	var torrents []qbit.Torrent
 	if s.cfg.HasQBittorrent() {
-		torrents = s.mgr.QB().GetTorrents(s.cfg.QBCategory)
+		var err error
+		if torrents, err = s.mgr.QB().GetTorrents(s.cfg.QBCategory); err != nil {
+			slog.Warn("could not read torrents from the download client", "error", err)
+		}
 	}
 	jobs := s.mgr.Jobs()
 

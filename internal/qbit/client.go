@@ -159,8 +159,10 @@ func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
 	return addAccepted(resp.StatusCode, body)
 }
 
-// GetTorrents returns torrents, optionally filtered by category.
-func (c *Client) GetTorrents(category string) []Torrent {
+// GetTorrents returns torrents, optionally filtered by category. An error means
+// the client could not be read, which is a different answer from it holding
+// nothing: a caller acting on absence has to tell the two apart.
+func (c *Client) GetTorrents(category string) ([]Torrent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureAuth()
@@ -169,11 +171,7 @@ func (c *Client) GetTorrents(category string) []Torrent {
 	if category != "" {
 		u += "?category=" + url.QueryEscape(category)
 	}
-	torrents, err := c.doGetJSON(u)
-	if err != nil {
-		return nil
-	}
-	return torrents
+	return c.doGetJSON(u)
 }
 
 // GetTorrentFiles returns the file list for a torrent.

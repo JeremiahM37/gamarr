@@ -61,15 +61,16 @@ func newTestJobs(t *testing.T) *db.JobStore {
 type qbitMock struct {
 	srv *httptest.Server
 
-	mu       sync.Mutex
-	torrents []qbit.Torrent
-	files    []qbit.TorrentFile
-	loginOK  bool
-	addOK    bool
-	addCalls int
-	deleted  []string
-	deletes  []deleteCall
-	stopped  []string
+	mu        sync.Mutex
+	torrents  []qbit.Torrent
+	files     []qbit.TorrentFile
+	loginOK   bool
+	infoFails bool
+	addOK     bool
+	addCalls  int
+	deleted   []string
+	deletes   []deleteCall
+	stopped   []string
 }
 
 // deleteCall records a /torrents/delete request, including whether the client
@@ -107,6 +108,11 @@ func newQbitMock(t *testing.T) *qbitMock {
 	})
 	mux.HandleFunc("/api/v2/torrents/info", func(w http.ResponseWriter, r *http.Request) {
 		q.mu.Lock()
+		if q.infoFails {
+			q.mu.Unlock()
+			w.WriteHeader(500)
+			return
+		}
 		list := make([]qbit.Torrent, len(q.torrents))
 		copy(list, q.torrents)
 		q.mu.Unlock()
@@ -144,6 +150,14 @@ func newQbitMock(t *testing.T) *qbitMock {
 
 func (q *qbitMock) client() *qbit.Client {
 	return qbit.New(q.srv.URL, "user", "pass")
+}
+
+// failInfo makes every torrent listing fail, which is a different answer from
+// the client holding nothing.
+func (q *qbitMock) failInfo() {
+	q.mu.Lock()
+	q.infoFails = true
+	q.mu.Unlock()
 }
 
 func (q *qbitMock) setTorrents(ts []qbit.Torrent) {

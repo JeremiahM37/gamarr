@@ -138,7 +138,10 @@ func TestGetTorrents(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "admin", "pass")
-	result := c.GetTorrents("games")
+	result, err := c.GetTorrents("games")
+	if err != nil {
+		t.Fatalf("GetTorrents: %v", err)
+	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 torrents, got %d", len(result))
 	}
@@ -170,7 +173,10 @@ func TestGetTorrents_ReauthOn403(t *testing.T) {
 
 	c := New(srv.URL, "admin", "pass")
 	c.authenticated = true
-	result := c.GetTorrents("")
+	result, err := c.GetTorrents("")
+	if err != nil {
+		t.Fatalf("GetTorrents: %v", err)
+	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 torrent after reauth, got %d", len(result))
 	}
