@@ -51,6 +51,13 @@ type Manager struct {
 	// OrganizeTorrent mints a fresh job per call, so two rows can name one
 	// physical download.
 	importing sync.Map
+
+	// watching holds the download hashes a watcher goroutine is polling for.
+	// Keyed by hash rather than job id, and deliberately not inferred from the
+	// job row: a row is persisted and outlives the process, while the goroutine
+	// does not, so after a restart every row needs a watcher again and the row
+	// cannot stand in for the claim.
+	watching sync.Map
 }
 
 // New creates a new download Manager.
@@ -226,6 +233,21 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 }
 
 func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug string, isPC bool) {
+	// One watcher per torrent, whoever asks. Orphan recovery runs at startup and
+	// again on the monitor's run_orphan_recovery command, so a later pass would
+	// otherwise start a rival watcher on a torrent already being watched and both
+	// would race to import it. The title fallback covers indexers that report no
+	// infohash, matching what jobMatchesTorrent does.
+	claim := strings.ToLower(infoHash)
+	if claim == "" {
+		claim = "title:" + strings.ToLower(title)
+	}
+	if _, busy := m.watching.LoadOrStore(claim, struct{}{}); busy {
+		slog.Info("a watcher is already running for this torrent", "title", title)
+		return
+	}
+	defer m.watching.Delete(claim)
+
 	slog.Info("watching game torrent", "title", title, "platform", platf)
 	maxWait := 7 * 24 * time.Hour
 	start := time.Now()
@@ -1202,7 +1224,13 @@ func (m *Manager) RecoverOrphanedTorrents() {
 	}
 
 	for _, t := range torrents {
-		jobID := newJobID()
+		// Reuse the row already tracking this torrent. Recovery is not a
+		// once-per-install routine, so minting an id per pass accumulated a
+		// duplicate row per torrent every time it ran.
+		jobID, known := m.jobForTorrent(t.Hash, t.Name)
+		if !known {
+			jobID = newJobID()
+		}
 		platf := "Unknown"
 		var platSlug string
 		isPC := false

@@ -755,6 +755,90 @@ func TestRecoverOrphanedTorrents(t *testing.T) {
 	}
 }
 
+func TestRecoverOrphanedTorrentsIsIdempotent(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	// One complete, one still going: the two branches record a job by
+	// different routes and both have to be idempotent.
+	qm.setTorrents([]qbit.Torrent{
+		{Name: "Awesome.Game.v1.2-FitGirl", Hash: "h1", Progress: 1.0},
+		{Name: "Zelda Collection wii pack", Hash: "h2", Progress: 0.4},
+	})
+	cfg.QBURL = qm.srv.URL
+
+	m := New(cfg, jobs, qm.client())
+
+	// Recovery runs at startup and again whenever the monitor fires
+	// run_orphan_recovery, so a second pass is ordinary, not pathological.
+	m.RecoverOrphanedTorrents()
+	after1 := len(jobs.Items())
+	m.RecoverOrphanedTorrents()
+	after2 := len(jobs.Items())
+
+	if after1 != 2 {
+		t.Fatalf("first pass recorded %d jobs, want 2", after1)
+	}
+	// Counting rows, not titles: a map keyed by title hides the duplicates.
+	if after2 != after1 {
+		t.Errorf("second pass took jobs from %d to %d, want them unchanged", after1, after2)
+	}
+
+	hashes := map[string]int{}
+	for _, item := range jobs.Items() {
+		h, _ := item.Data["info_hash"].(string)
+		hashes[h]++
+	}
+	for h, n := range hashes {
+		if n != 1 {
+			t.Errorf("hash %q has %d job rows, want 1", h, n)
+		}
+	}
+}
+
+func TestWatchGameTorrentRunsOneWatcherPerTorrent(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	// Never completes, so a watcher that takes the claim stays parked in its
+	// poll loop and holds it for the duration of the test.
+	qm.setTorrents([]qbit.Torrent{
+		{Name: "Held.Game-FitGirl", Hash: "h1", Progress: 0.4},
+	})
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+
+	m := New(cfg, jobs, qm.client())
+
+	go m.watchGameTorrent("job-1", "h1", "Held.Game-FitGirl", "PC", "", true)
+
+	// Wait for the first watcher to register rather than sleeping a fixed
+	// guess at how long it takes to get there.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, held := m.watching.Load("h1"); held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first watcher never claimed the torrent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A second watcher on the same torrent must decline and return, not sit
+	// in a rival poll loop racing the first one to import.
+	done := make(chan struct{})
+	go func() {
+		m.watchGameTorrent("job-2", "h1", "Held.Game-FitGirl", "PC", "", true)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second watcher did not return - it is running alongside the first")
+	}
+}
+
 func TestMoveHelpers(t *testing.T) {
 	t.Run("moveFile renames", func(t *testing.T) {
 		dir := t.TempDir()
