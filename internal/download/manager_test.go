@@ -184,9 +184,11 @@ func TestDownloadTorrentTracksRenamedTorrentByHash(t *testing.T) {
 	if got, _ := job["info_hash"].(string); got != "hash-renamed" {
 		t.Errorf("job info_hash = %q, want hash-renamed", got)
 	}
-	if !jobs.LibraryHasSourceID("torrent:hash-renamed") {
-		t.Error("library item not tracked")
-	}
+	// The import writes the completed status before it tracks the library item,
+	// so reaching that status does not mean the row exists yet.
+	waitFor(t, minPollTimeout, "the library item to be tracked", func() bool {
+		return jobs.LibraryHasSourceID("torrent:hash-renamed")
+	})
 }
 
 func TestDownloadTorrentBlocksDangerousFiles(t *testing.T) {
