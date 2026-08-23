@@ -333,7 +333,13 @@ func (m *Manager) completeNZBOrganize(jobID, dest, title, platf, platSlug string
 	}
 }
 
-// RetryJob retries a failed download job.
+// RetryJob re-runs a failed import on its existing job row.
+//
+// It reuses the row rather than minting a new one, since a second row for the
+// same torrent is what the UI draws as a duplicate card and the job store has no
+// dedup. A retry that cannot start says why and leaves the job in the state it
+// was already in: the UI offers a button for "error" and none at all for
+// "queued", so parking it there is how a click became a dead end.
 func (m *Manager) RetryJob(jobID string) (bool, string) {
 	job, ok := m.jobs.Get(jobID)
 	if !ok {
@@ -343,20 +349,43 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 	if status != "error" && status != "interrupted" && status != "dead_letter" {
 		return false, fmt.Sprintf("Job not in failed state (status=%s)", status)
 	}
+	hash := strVal(job, "info_hash")
+	if hash == "" {
+		return false, "This job has no torrent recorded, so there is nothing to import again"
+	}
+	torrent, found, err := m.torrentByHash(hash)
+	if err != nil {
+		return false, fmt.Sprintf("Cannot read the download client: %v", err)
+	}
+	if !found {
+		return false, "The download client no longer holds this torrent"
+	}
+	if torrent.Progress < 1.0 {
+		return false, "That download has not finished yet"
+	}
+
+	// Advisory only. The import's own claim is what excludes a second one; this
+	// just answers with the specific reason before touching the row, since the
+	// status alone cannot say whether an import is running.
+	if _, busy := m.importing.Load(torrent.Hash); busy {
+		return false, "An import is already running for this download"
+	}
 
 	retryCount := 0
 	if rc, ok := job["retry_count"].(float64); ok {
 		retryCount = int(rc)
 	}
+	isPC, _ := job["is_pc"].(bool)
 
 	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status":      "queued",
+		"status":      "organizing",
 		"error":       nil,
-		"detail":      fmt.Sprintf("Retry #%d queued", retryCount+1),
+		"detail":      fmt.Sprintf("Retry #%d", retryCount+1),
 		"retry_count": retryCount + 1,
 	})
 	m.jobs.LogActivity("download_retried", strVal(job, "title"), fmt.Sprintf("Retry #%d", retryCount+1), jobID, nil)
-	return true, fmt.Sprintf("Job re-queued (retry #%d)", retryCount+1)
+	go m.importFinishedTorrent("retry", jobID, torrent, strVal(job, "platform"), strVal(job, "platform_slug"), isPC)
+	return true, fmt.Sprintf("Retrying (#%d)", retryCount+1)
 }
 
 func strVal(m map[string]interface{}, key string) string {

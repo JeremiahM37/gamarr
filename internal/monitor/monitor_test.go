@@ -494,3 +494,64 @@ func TestActRestartQBittorrent_NoSocket(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// GetJobs hands back detached copies, so the monitor's own retry mutated a
+// throwaway map: nothing reached the cache or the database while it reported
+// success at three layers, and under auto-fix it did so unattended.
+func TestActRetryJobDelegatesRatherThanWritingACopy(t *testing.T) {
+	var gotJobID string
+	m := New(&config.Config{}, Callbacks{
+		GetJobs: func() []struct {
+			ID   string
+			Data map[string]interface{}
+		} {
+			return []struct {
+				ID   string
+				Data map[string]interface{}
+			}{{ID: "j1", Data: map[string]interface{}{"status": "error"}}}
+		},
+		RetryJob: func(jobID string) (bool, string) {
+			gotJobID = jobID
+			return true, "Retrying (#1)"
+		},
+	})
+
+	if msg := m.actRetryJob("j1"); msg != "Retrying (#1)" {
+		t.Errorf("msg = %q, want the real retry's own answer", msg)
+	}
+	if gotJobID != "j1" {
+		t.Errorf("delegated for %q, want j1", gotJobID)
+	}
+}
+
+// With no retry wired the action has to say so rather than claim success.
+func TestActRetryJobWithoutACallback(t *testing.T) {
+	m := New(&config.Config{}, Callbacks{})
+	if msg := m.actRetryJob("j1"); !strings.Contains(msg, "not available") {
+		t.Errorf("msg = %q, want it to say retry is unavailable", msg)
+	}
+}
+
+// Both halves reach the model's prompt verbatim, so they have to describe what
+// the action does now rather than what it did when it was a no-op. The tier is
+// what decides whether it runs unattended, and this one moves files into the
+// vault and under a move import deletes the download afterwards.
+func TestRetryJobActionDescribesAndTiersTheImport(t *testing.T) {
+	info, ok := allowedActions["retry_job"]
+	if !ok {
+		t.Fatal("retry_job is not registered")
+	}
+	if strings.Contains(strings.ToLower(info.Label), "queue") {
+		t.Errorf("label = %q, want it to describe re-running the import", info.Label)
+	}
+	if info.Risk != "approval" {
+		t.Errorf("risk = %q, want approval: an unattended run moves files and can delete the download", info.Risk)
+	}
+	prompt := buildSystemPrompt()
+	if !strings.Contains(prompt, info.Label) {
+		t.Error("the prompt does not carry the registered label")
+	}
+	if !strings.Contains(prompt, fmt.Sprintf("%s [risk: %s]", info.Label, info.Risk)) {
+		t.Error("the prompt does not carry the label and tier together")
+	}
+}

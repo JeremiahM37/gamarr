@@ -133,6 +133,7 @@ func main() {
 			}
 			return result
 		},
+		RetryJob: mgr.RetryJob,
 		QBReauth: func() bool {
 			return cfg.HasQBittorrent() && qb.Login()
 		},

@@ -355,7 +355,7 @@ func TestWatcherMarksAWaitingImportAsInFlight(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); w.importTorrent(torrent) }()
 
-	waitFor(t, time.Second, "the waiting job to read as in flight", func() bool {
+	waitFor(t, minPollTimeout, "the waiting job to read as in flight", func() bool {
 		for _, item := range m.Jobs().Items() {
 			if title, _ := item.Data["title"].(string); title != "Waiting Game" {
 				continue

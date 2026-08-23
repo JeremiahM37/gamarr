@@ -11,6 +11,9 @@ import (
 	"gamarr/internal/config"
 	"gamarr/internal/db"
 	"gamarr/internal/models"
+	"os"
+	"path/filepath"
+	"time"
 )
 
 // ── Wishlist CRUD ──────────────────────────────────────────────────────────────
@@ -272,21 +275,30 @@ func TestRetryJob(t *testing.T) {
 	env := newTestEnv(t, nil)
 	env.jobs.Set("job-err", map[string]interface{}{"status": "error", "title": "Broken"})
 
-	t.Run("failed job requeued", func(t *testing.T) {
+	// A job with no torrent recorded has nothing to import again, and the row
+	// stays where the UI still offers a button. It used to report success and
+	// park at "queued", which nothing consumed and nothing could act on.
+	t.Run("job with no torrent reports failure", func(t *testing.T) {
 		rr := env.do("POST", "/api/downloads/job-err/retry", "")
-		wantStatus(t, rr, 200)
-		if m := decodeMap(t, rr); m["success"] != true {
-			t.Errorf("retry failed: %v", m)
+		// A refusal is a client error, and every non-browser consumer reads the
+		// status before it reads the body.
+		wantStatus(t, rr, 400)
+		m := decodeMap(t, rr)
+		if m["success"] != false {
+			t.Errorf("retry reported success with no torrent to import: %v", m)
+		}
+		if msg, _ := m["error"].(string); !strings.Contains(msg, "no torrent recorded") {
+			t.Errorf("error = %q, want it to say why", msg)
 		}
 		data, _ := env.jobs.Get("job-err")
-		if data["status"] != "queued" {
-			t.Errorf("status after retry = %v, want queued", data["status"])
+		if data["status"] != "error" {
+			t.Errorf("status after a refused retry = %v, want error", data["status"])
 		}
 	})
 
 	t.Run("missing job reports failure", func(t *testing.T) {
 		rr := env.do("POST", "/api/downloads/missing/retry", "")
-		wantStatus(t, rr, 200)
+		wantStatus(t, rr, 400)
 		if m := decodeMap(t, rr); m["success"] != false {
 			t.Errorf("expected success=false for missing job, got %v", m)
 		}
@@ -294,8 +306,38 @@ func TestRetryJob(t *testing.T) {
 }
 
 func TestBulkRetryAndCancel(t *testing.T) {
-	env := newTestEnv(t, nil)
-	env.jobs.Set("f1", map[string]interface{}{"status": "error", "title": "F1"})
+	// One fixture records a torrent the client actually holds, so the bulk path
+	// reaches the retry rather than short-circuiting on a missing hash. Without
+	// it every request returns at the first check and the endpoint stays green
+	// under a full revert.
+	content := t.TempDir()
+	if err := os.WriteFile(filepath.Join(content, "setup.exe"), []byte("installer"), 0644); err != nil {
+		t.Fatalf("stage content: %v", err)
+	}
+	qb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			w.Write([]byte("Ok."))
+		case "/api/v2/torrents/info":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{
+				"name": "F1", "hash": "f1-hash", "progress": 1.0,
+				"save_path": content, "content_path": content,
+			}})
+		default:
+			w.WriteHeader(200)
+		}
+	}))
+	defer qb.Close()
+
+	env := newTestEnv(t, func(c *config.Config) {
+		c.QBURL = qb.URL
+		// Without these the import destination is relative and resolves against
+		// the package source directory.
+		c.QBSavePath, c.GamesVaultPath, c.GamesRomsPath = t.TempDir(), t.TempDir(), t.TempDir()
+	})
+	env.jobs.Set("f1", map[string]interface{}{
+		"status": "error", "title": "F1", "info_hash": "f1-hash", "is_pc": true,
+	})
 	env.jobs.Set("f2", map[string]interface{}{"status": "dead_letter", "title": "F2"})
 	env.jobs.Set("a1", map[string]interface{}{"status": "downloading", "title": "A1"})
 
@@ -303,8 +345,34 @@ func TestBulkRetryAndCancel(t *testing.T) {
 		rr := env.do("POST", "/api/admin/bulk/retry", "")
 		wantStatus(t, rr, 200)
 		m := decodeMap(t, rr)
-		if m["requested"] != float64(2) || m["succeeded"] != float64(2) {
-			t.Errorf("bulk retry = %v, want requested=2 succeeded=2", m)
+		// f1 records a torrent the client holds, so its retry starts; f2 records
+		// none, so it is refused with a reason.
+		if m["requested"] != float64(2) || m["succeeded"] != float64(1) {
+			t.Errorf("bulk retry = %v, want requested=2 succeeded=1", m)
+		}
+		results, _ := m["results"].([]interface{})
+		if len(results) != 2 {
+			t.Fatalf("results = %v, want one per requested job", m["results"])
+		}
+		// The retry runs in a goroutine, so wait for it rather than returning
+		// while it is still writing.
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if job, ok := env.jobs.Get("f1"); ok {
+				if s, _ := job["status"].(string); s == "completed" {
+					break
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if job, _ := env.jobs.Get("f1"); job["status"] != "completed" {
+			t.Errorf("f1 status = %v, want completed", job["status"])
+		}
+		for _, r := range results {
+			row, _ := r.(map[string]interface{})
+			if msg, _ := row["message"].(string); msg == "" {
+				t.Errorf("result %v carries no reason", row)
+			}
 		}
 	})
 
@@ -1003,5 +1071,60 @@ func TestAdminDashboard(t *testing.T) {
 	}
 	if _, ok := m["system"].(map[string]interface{}); !ok {
 		t.Error("dashboard missing system section")
+	}
+}
+
+// The Retry button is gated on the payload saying the job has a torrent to
+// resolve. `hash` cannot answer that: it is a LIVE torrent matched to the row by
+// fuzzy title, so a release whose name differs from the job title - which is any
+// title carrying a colon, apostrophe or ampersand - loses the button while the
+// backend would retry it fine.
+func TestDownloadsReportTheJobsOwnInfoHash(t *testing.T) {
+	qb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			w.Write([]byte("Ok."))
+		case "/api/v2/torrents/info":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"name": "Assassins.Creed.Valhalla.REPACK-KaOs", "hash": "ac-hash", "progress": 1.0},
+				{"name": "Plain Game", "hash": "pg-hash", "progress": 1.0},
+			})
+		default:
+			w.WriteHeader(200)
+		}
+	}))
+	defer qb.Close()
+
+	env := newTestEnv(t, func(c *config.Config) { c.QBURL = qb.URL })
+	// The first title does not fuzzy-match its torrent name, so it lands in the
+	// unmatched branch; the second does, so it lands in the matched one. Both
+	// have to carry the hash or one of the two branches silently drops it.
+	env.jobs.Set("ac", map[string]interface{}{
+		"status": "error", "title": "Assassin's Creed: Valhalla", "info_hash": "ac-hash",
+	})
+	env.jobs.Set("pg", map[string]interface{}{
+		"status": "error", "title": "Plain Game", "info_hash": "pg-hash",
+	})
+
+	rr := env.do("GET", "/api/downloads", "")
+	wantStatus(t, rr, 200)
+	entries, _ := decodeMap(t, rr)["downloads"].([]interface{})
+
+	rows := map[string]map[string]interface{}{}
+	for _, e := range entries {
+		m, _ := e.(map[string]interface{})
+		if id, _ := m["job_id"].(string); id != "" {
+			rows[id] = m
+		}
+	}
+	for jobID, want := range map[string]string{"ac": "ac-hash", "pg": "pg-hash"} {
+		row, ok := rows[jobID]
+		if !ok {
+			t.Errorf("no entry for job %s: %v", jobID, entries)
+			continue
+		}
+		if got, _ := row["info_hash"].(string); got != want {
+			t.Errorf("job %s info_hash = %q, want %q", jobID, got, want)
+		}
 	}
 }

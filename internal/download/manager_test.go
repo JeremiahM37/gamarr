@@ -1210,7 +1210,7 @@ func TestOrganizeTorrentRetriesAPathThatIsNotThereYet(t *testing.T) {
 		t.Fatalf("OrganizeTorrent: %v", err)
 	}
 
-	waitJobStatus(t, m.Jobs(), jobID, "completed", time.Second)
+	waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
 	if err := <-staged; err != nil {
 		t.Fatalf("stage the published files: %v", err)
 	}
