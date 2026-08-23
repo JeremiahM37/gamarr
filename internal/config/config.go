@@ -52,6 +52,12 @@ type Config struct {
 	ImportMode             fileops.Mode
 	ImportHardlinkFallback fileops.Fallback
 
+	// VaultArchiveEnabled writes a PC game into the vault as one .tar rather
+	// than as a folder. GameVault indexes one file per game and takes the
+	// title from the file name, so a folder is read as a single game named
+	// after whichever loose file inside it has a supported extension.
+	VaultArchiveEnabled bool
+
 	// Experimental
 	ExtractArchives bool
 
@@ -181,6 +187,8 @@ func Load() *Config {
 
 		ImportMode:             envImportMode("IMPORT_MODE"),
 		ImportHardlinkFallback: envHardlinkFallback("IMPORT_HARDLINK_FALLBACK"),
+
+		VaultArchiveEnabled: envBool("VAULT_ARCHIVE_ENABLED", false),
 
 		ExtractArchives: envBool("EXTRACT_ARCHIVES", false),
 

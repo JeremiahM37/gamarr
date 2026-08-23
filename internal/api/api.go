@@ -885,6 +885,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		settings.ImportMode = string(mode)
 	}
+	if v, ok := req["vault_archive_enabled"].(bool); ok {
+		settings.VaultArchiveEnabled = &v
+	}
 	s.mgr.SaveSettings(settings)
 	writeJSON(w, 200, settings)
 }

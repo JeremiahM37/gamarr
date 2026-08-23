@@ -514,6 +514,7 @@ async function loadSettings() {
 }
 function applySettings(d) {
   document.getElementById('setting-extract').checked = !!d.extract_archives;
+  document.getElementById('setting-vault-archive').checked = !!d.vault_archive_enabled;
   const sel = document.getElementById('setting-import-mode');
   if (sel && d.import_mode) sel.value = d.import_mode;
   showImportModeHint(d.import_mode);
@@ -697,6 +698,7 @@ document.addEventListener('click', e => {
 const CHANGE_ACTIONS = {
   loadLibrary: () => loadLibrary(),
   saveExtractSetting: el => saveSetting('extract_archives', el.checked),
+  saveVaultArchiveSetting: el => saveSetting('vault_archive_enabled', el.checked),
   saveImportMode: el => saveImportMode(el),
 };
 

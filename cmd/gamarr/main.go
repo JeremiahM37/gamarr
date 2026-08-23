@@ -242,6 +242,16 @@ func main() {
 	// Configure circuit breaker
 	search.InitHealthConfig(cfg.CircuitBreakerThreshold, cfg.CircuitBreakerTimeoutS)
 
+	// A partial vault archive is named uniquely per attempt, so one abandoned by
+	// a crash is never reclaimed by a later import. Sweep with no age floor,
+	// which is only safe here: this runs before any import goroutine starts, so
+	// nothing is mid-write rather than merely assumed not to be. A floor would
+	// defeat the sweep instead of guarding it, since a container restarts in
+	// seconds and the partial it left is that young.
+	if cfg.GamesVaultPath != "" {
+		fileops.SweepPartials(cfg.GamesVaultPath, 0)
+	}
+
 	// Recover orphaned torrents and scan library in background
 	if cfg.HasQBittorrent() {
 		go mgr.RecoverOrphanedTorrents()

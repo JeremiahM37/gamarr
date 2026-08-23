@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"gamarr/internal/db"
+	"gamarr/internal/fileops"
 	"gamarr/internal/organize"
 )
 
@@ -113,7 +115,7 @@ func (s *Server) handleImportFiles(w http.ResponseWriter, r *http.Request) {
 	pipeline := organize.NewPipeline(s.cfg)
 	imported := 0
 	skipped := 0
-	var errors []string
+	var failures []string
 
 	for _, f := range req.Files {
 		if f.Path == "" {
@@ -123,7 +125,7 @@ func (s *Server) handleImportFiles(w http.ResponseWriter, r *http.Request) {
 
 		info, err := os.Stat(f.Path)
 		if err != nil {
-			errors = append(errors, f.Path+": file not found")
+			failures = append(failures, f.Path+": file not found")
 			skipped++
 			continue
 		}
@@ -142,9 +144,12 @@ func (s *Server) handleImportFiles(w http.ResponseWriter, r *http.Request) {
 		// Organize (move to correct directory)
 		destPath, err := pipeline.OrganizeGame(f.Path, f.Platform, f.PlatformSlug, f.IsPC)
 		if err != nil {
-			// If it's "already exists" that's fine, use the dest path
-			if !strings.Contains(err.Error(), "already exists") {
-				errors = append(errors, f.Path+": "+err.Error())
+			// Content already in the library is not a failure: OrganizeGame
+			// returns where it sits, so file that. Matched on the error rather
+			// than its text, so a different failure carrying the same words
+			// cannot be filed as a successful import.
+			if !errors.Is(err, fileops.ErrDestinationOccupied) {
+				failures = append(failures, f.Path+": "+err.Error())
 				skipped++
 				continue
 			}
@@ -162,7 +167,7 @@ func (s *Server) handleImportFiles(w http.ResponseWriter, r *http.Request) {
 			SourceType:   "import",
 		}
 		if _, err := s.mgr.Jobs().AddLibraryItem(item); err != nil {
-			errors = append(errors, title+": "+err.Error())
+			failures = append(failures, title+": "+err.Error())
 			skipped++
 			continue
 		}
@@ -175,6 +180,6 @@ func (s *Server) handleImportFiles(w http.ResponseWriter, r *http.Request) {
 		"success":  true,
 		"imported": imported,
 		"skipped":  skipped,
-		"errors":   errors,
+		"errors":   failures,
 	})
 }
