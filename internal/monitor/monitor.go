@@ -27,6 +27,10 @@ type Callbacks struct {
 		ID   string
 		Data map[string]interface{}
 	}
+	// RetryJob re-runs a failed import. The monitor cannot do this itself:
+	// GetJobs hands back detached copies, so writing to one reaches neither the
+	// cache nor the database while still reading as success.
+	RetryJob          func(jobID string) (bool, string)
 	QBReauth          func() bool
 	ClearMyrientCache func()
 	RunOrphanRecovery func()
@@ -36,7 +40,10 @@ var allowedActions = map[string]struct {
 	Risk  string
 	Label string
 }{
-	"retry_job":             {"safe", "Re-queue a failed download job"},
+	// Not safe: this moves files into the vault, and under a move import the
+	// download is deleted afterwards. The only other action behind approval is
+	// restarting a container, which is recoverable where this is not.
+	"retry_job":             {"approval", "Re-run a failed download's import"},
 	"clear_interrupted":     {"safe", "Mark interrupted/stuck jobs as cleared"},
 	"reauth_qbittorrent":    {"safe", "Force qBittorrent session re-authentication"},
 	"refresh_myrient_cache": {"safe", "Clear cached Myrient directory listings"},
@@ -544,19 +551,11 @@ func (m *GamarrMonitor) actRetryJob(jobID string) string {
 	if jobID == "" {
 		return "No job_id provided"
 	}
-	jobs := m.callbacks.GetJobs()
-	for _, j := range jobs {
-		if j.ID == jobID {
-			status, _ := j.Data["status"].(string)
-			if status != "error" && status != "interrupted" {
-				return fmt.Sprintf("Job %q not in a failed state (status=%q)", jobID, status)
-			}
-			j.Data["status"] = "queued"
-			j.Data["error"] = nil
-			return fmt.Sprintf("Job %q re-queued", jobID)
-		}
+	if m.callbacks.RetryJob == nil {
+		return "Retry is not available"
 	}
-	return fmt.Sprintf("Job %q not found", jobID)
+	_, msg := m.callbacks.RetryJob(jobID)
+	return msg
 }
 
 func (m *GamarrMonitor) actClearInterrupted() string {

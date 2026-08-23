@@ -146,7 +146,11 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "jobID")
 	ok, msg := s.mgr.RetryJob(jobID)
-	writeJSON(w, 200, map[string]interface{}{"success": ok, "message": msg})
+	if !ok {
+		writeError(w, 400, msg)
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"success": true, "message": msg})
 }
 
 // ── Import preflight ───────────────────────────────────────────────────────────

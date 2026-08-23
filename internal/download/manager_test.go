@@ -1133,3 +1133,107 @@ func TestPCGameTaggedPCGamesImportsToVault(t *testing.T) {
 		t.Errorf("PC game not in GameVault: %v", err)
 	}
 }
+
+// The per-job watch imports through the same path the watcher does, so a
+// content path that is not there yet has to recover on both. It did not: the
+// watch computed the retryable signal and discarded it, erroring the job
+// permanently, and an errored job then stops the watcher rescuing it.
+func TestWatchGameTorrentRetriesAPathThatIsNotThereYet(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	// A FitGirl release: the folder the client publishes is not the torrent's
+	// display name, so the save-path guess never resolves either.
+	content := filepath.Join(cfg.QBSavePath, "Spider-Man - Miles Morales [FitGirl Repack]")
+	torrent := qbit.Torrent{
+		Name:        "Marvel's Spider-Man - Miles Morales (v3.1.0 + DLC, MULTi19) [FitGirl Repack]",
+		Hash:        "mm-hash",
+		Progress:    1.0,
+		SavePath:    cfg.QBSavePath,
+		ContentPath: content,
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "downloading", "title": torrent.Name, "info_hash": "mm-hash",
+	})
+
+	staged := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		if err := os.MkdirAll(content, 0755); err != nil {
+			staged <- err
+			return
+		}
+		staged <- os.WriteFile(filepath.Join(content, "setup.exe"), []byte("installer"), 0644)
+	}()
+
+	m.watchGameTorrent(jobID, "mm-hash", torrent.Name, "PC", "", true)
+
+	if err := <-staged; err != nil {
+		t.Fatalf("stage the published files: %v", err)
+	}
+	assertImportedCleanly(t, m, jobID)
+}
+
+// The manual organize is the path used to unstick a game by hand, and it hit the
+// transient without a retry. Worse than the immediate failure: the error job it
+// left behind is what makes the watcher skip the torrent afterwards, so one
+// mistimed manual organize stranded it from the automatic path for good.
+func TestOrganizeTorrentRetriesAPathThatIsNotThereYet(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	content := filepath.Join(cfg.QBSavePath, "Manual Game [FitGirl Repack]")
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Manual Game", Hash: "man-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: content,
+	}})
+
+	staged := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		if err := os.MkdirAll(content, 0755); err != nil {
+			staged <- err
+			return
+		}
+		staged <- os.WriteFile(filepath.Join(content, "setup.exe"), []byte("installer"), 0644)
+	}()
+
+	jobID, err := m.OrganizeTorrent("man-hash", "PC", "", true)
+	if err != nil {
+		t.Fatalf("OrganizeTorrent: %v", err)
+	}
+
+	waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+	if err := <-staged; err != nil {
+		t.Fatalf("stage the published files: %v", err)
+	}
+	assertImportedCleanly(t, m, jobID)
+}
+
+// assertImportedCleanly checks the whole job row rather than the status alone.
+// A status assertion on its own passes while the row is wrong: the error field
+// the UI renders regardless of status is exactly what a retried import was
+// leaving behind from its failed attempts.
+func assertImportedCleanly(t *testing.T, m *Manager, jobID string) {
+	t.Helper()
+	job, ok := m.Jobs().Get(jobID)
+	if !ok {
+		t.Fatalf("job %s not found", jobID)
+	}
+	status, _ := job["status"].(string)
+	detail, _ := job["detail"].(string)
+	errMsg, _ := job["error"].(string)
+	if status != "completed" || detail != "Moved to GameVault" || errMsg != "" {
+		t.Errorf("job = {status:%q detail:%q error:%q}, want completed, moved to the vault, and nothing left over from a failed attempt",
+			status, detail, errMsg)
+	}
+}

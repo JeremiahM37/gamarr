@@ -71,7 +71,11 @@ func (w *Watcher) Stop() {
 
 // checkCompleted scans qBittorrent for completed torrents that haven't been imported.
 func (w *Watcher) checkCompleted() {
-	torrents := w.mgr.QB().GetTorrents(w.cfg.QBCategory)
+	torrents, err := w.mgr.QB().GetTorrents(w.cfg.QBCategory)
+	if err != nil {
+		slog.Warn("watcher: could not read the download client, skipping this pass", "error", err)
+		return
+	}
 
 	for _, t := range torrents {
 		if t.Progress < 1.0 {
@@ -133,6 +137,7 @@ func (w *Watcher) importTorrent(t qbit.Torrent) {
 	w.mgr.Jobs().Set(jobID, map[string]interface{}{
 		"status":        "organizing",
 		"title":         t.Name,
+		"info_hash":     t.Hash,
 		"platform":      platf,
 		"platform_slug": platSlug,
 		"is_pc":         isPC,
@@ -140,31 +145,25 @@ func (w *Watcher) importTorrent(t qbit.Torrent) {
 		"detail":        "Auto-importing completed torrent...",
 	})
 
-	w.mgr.organizeWithScan(jobID, &t, platf, platSlug, isPC)
+	if w.mgr.importFinishedTorrent("watcher", jobID, t, platf, platSlug, isPC) {
+		w.imported.Store(t.Hash, struct{}{})
 
-	// Check if organize succeeded.
-	job, ok := w.mgr.Jobs().Get(jobID)
-	if ok {
-		status, _ := job["status"].(string)
-		if status == "completed" {
-			w.imported.Store(t.Hash, struct{}{})
-			slog.Info("watcher: auto-import completed", "name", t.Name)
-
-			// Optionally remove the torrent after import.
-			if w.cfg.RemoveAfterImport {
-				w.mgr.QB().DeleteTorrent(t.Hash, false)
-				slog.Info("watcher: removed torrent after import", "name", t.Name)
-			}
-
-			// Send notification.
-			if w.mgr.NotifyFunc != nil {
-				w.mgr.NotifyFunc("", "download_complete", t.Name,
-					"Auto-imported by watcher: "+t.Name+" ("+platf+")")
-			}
-		} else {
-			// Mark as imported to prevent retry loops on persistent errors.
-			w.imported.Store(t.Hash, struct{}{})
-			slog.Warn("watcher: auto-import did not complete, skipping future retries", "name", t.Name, "status", status)
+		// Optionally remove the torrent after import.
+		if w.cfg.RemoveAfterImport {
+			w.mgr.QB().DeleteTorrent(t.Hash, false)
+			slog.Info("watcher: removed torrent after import", "name", t.Name)
 		}
+
+		// Send notification.
+		if w.mgr.NotifyFunc != nil {
+			w.mgr.NotifyFunc("", "download_complete", t.Name,
+				"Auto-imported by watcher: "+t.Name+" ("+platf+")")
+		}
+		return
 	}
+
+	// Bounded rather than disabled. The guard this replaces was right that a
+	// broken import must not spin forever, but it could not tell a transient miss
+	// from a permanent one and so treated every failure as permanent.
+	w.imported.Store(t.Hash, struct{}{})
 }

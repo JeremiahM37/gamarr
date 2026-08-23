@@ -672,7 +672,10 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 	// clients are still returned below.
 	var torrents []qbit.Torrent
 	if s.cfg.HasQBittorrent() {
-		torrents = s.mgr.QB().GetTorrents(s.cfg.QBCategory)
+		var err error
+		if torrents, err = s.mgr.QB().GetTorrents(s.cfg.QBCategory); err != nil {
+			slog.Warn("could not read torrents from the download client", "error", err)
+		}
 	}
 	jobs := s.mgr.Jobs()
 
@@ -708,6 +711,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 			platf, _ := matchedJob.Data["platform"].(string)
 			errMsg, _ := matchedJob.Data["error"].(string)
 			detail, _ := matchedJob.Data["detail"].(string)
+			infoHash, _ := matchedJob.Data["info_hash"].(string)
 
 			downloads = append(downloads, models.DownloadEntry{
 				Type:     "job",
@@ -722,6 +726,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 				Speed:    speed,
 				ETA:      t.ETA,
 				Hash:     t.Hash,
+				InfoHash: infoHash,
 			})
 		} else {
 			status := t.State
@@ -750,6 +755,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 		status, _ := item.Data["status"].(string)
 		errMsg, _ := item.Data["error"].(string)
 		detail, _ := item.Data["detail"].(string)
+		infoHash, _ := item.Data["info_hash"].(string)
 
 		downloads = append(downloads, models.DownloadEntry{
 			Type:     "job",
@@ -759,6 +765,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 			JobID:    item.ID,
 			Error:    errMsg,
 			Detail:   detail,
+			InfoHash: infoHash,
 		})
 	}
 

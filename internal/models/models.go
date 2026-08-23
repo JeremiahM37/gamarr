@@ -69,6 +69,10 @@ type DownloadEntry struct {
 	Speed    string  `json:"speed,omitempty"`
 	ETA      int     `json:"eta,omitempty"`
 	Hash     string  `json:"hash,omitempty"`
+	// InfoHash is the torrent the JOB recorded, which is what a retry resolves
+	// by. Hash above is a live torrent matched to this row by title, so the two
+	// disagree whenever the title and the torrent name differ.
+	InfoHash string `json:"info_hash,omitempty"`
 }
 
 // DownloadRequest is the POST body for /api/download.

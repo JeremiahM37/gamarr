@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"gamarr/internal/qbit"
 	"gamarr/internal/sabnzbd"
 )
 
@@ -417,33 +418,17 @@ func TestRetryJob(t *testing.T) {
 			wantOK:  false,
 			wantMsg: "not in failed state",
 		},
+		// A job with no torrent recorded has nothing to import again. It used to
+		// report success and park at "queued", which the UI gives no button for,
+		// so the click looked like it worked and stranded the row instead.
 		{
-			name: "error job requeued",
+			name: "no torrent recorded",
 			setup: func(jobID string, m *Manager) {
 				m.Jobs().Set(jobID, map[string]interface{}{"status": "error", "title": "G"})
 			},
-			wantOK:     true,
-			wantMsg:    "retry #1",
-			wantStatus: "queued",
-		},
-		{
-			name: "interrupted job requeued with count",
-			setup: func(jobID string, m *Manager) {
-				m.Jobs().Set(jobID, map[string]interface{}{
-					"status": "interrupted", "title": "G", "retry_count": float64(2),
-				})
-			},
-			wantOK:     true,
-			wantMsg:    "retry #3",
-			wantStatus: "queued",
-		},
-		{
-			name: "dead letter job requeued",
-			setup: func(jobID string, m *Manager) {
-				m.Jobs().Set(jobID, map[string]interface{}{"status": "dead_letter", "title": "G"})
-			},
-			wantOK:     true,
-			wantStatus: "queued",
+			wantOK:     false,
+			wantMsg:    "no torrent recorded",
+			wantStatus: "error",
 		},
 	}
 
@@ -465,8 +450,8 @@ func TestRetryJob(t *testing.T) {
 				if status, _ := job["status"].(string); status != tt.wantStatus {
 					t.Errorf("status = %q, want %q", status, tt.wantStatus)
 				}
-				if job["error"] != nil {
-					t.Errorf("error = %v, want nil after retry", job["error"])
+				if tt.wantOK && job["error"] != nil {
+					t.Errorf("error = %v, want nil once a retry starts", job["error"])
 				}
 			}
 		})
@@ -534,5 +519,289 @@ func TestStrVal(t *testing.T) {
 				t.Errorf("strVal = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// The click that started all this: Retry set a status nothing consumed, so a
+// failed import stayed failed while the UI reported success. It now re-runs the
+// import on the same row, which is what stops a second row appearing for a
+// torrent the job store will not dedup.
+func TestRetryJobImportsOnTheSameRow(t *testing.T) {
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	content := filepath.Join(cfg.QBSavePath, "Retried Game [FitGirl Repack]")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Retried Game", Hash: "rt-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: content,
+	}})
+
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "error", "title": "Retried Game", "info_hash": "rt-hash",
+		"platform": "PC", "platform_slug": "", "is_pc": true,
+		"error": "Cannot read the downloaded files at ...",
+	})
+
+	ok, msg := m.RetryJob(jobID)
+	if !ok {
+		t.Fatalf("RetryJob refused: %s", msg)
+	}
+
+	job := waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+	if !pathExists(filepath.Join(cfg.GamesVaultPath, "Retried Game [FitGirl Repack]", "setup.exe")) {
+		t.Error("the retry reported success without importing anything")
+	}
+	if msg, _ := job["error"].(string); msg != "" {
+		t.Errorf("completed job still carries error %q from the attempt that failed", msg)
+	}
+	if rc, _ := job["retry_count"].(float64); rc != 1 {
+		t.Errorf("retry_count = %v, want 1", rc)
+	}
+	if n := len(m.Jobs().Items()); n != 1 {
+		t.Errorf("job rows = %d, want the retry to reuse the one it was given", n)
+	}
+}
+
+// A refusal has to say the true reason and leave the row where the UI still
+// offers a button. Both cases end in a refusal either way, so the message is
+// what distinguishes them: without the explicit check, a torrent the client has
+// dropped is reported as one that has not finished downloading.
+func TestRetryJobRefusalsLeaveTheRowActionable(t *testing.T) {
+	tests := []struct {
+		name     string
+		torrents []qbit.Torrent
+		wantMsg  string
+	}{
+		{"client no longer holds it", nil, "no longer holds"},
+		{"download not finished", []qbit.Torrent{{Name: "P", Hash: "p-hash", Progress: 0.4}}, "has not finished"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			qm := newQbitMock(t)
+			qm.setTorrents(tt.torrents)
+			cfg := newTestConfig(t)
+			cfg.QBURL = "configured"
+			m := New(cfg, newTestJobs(t), qm.client())
+
+			jobID := newJobID()
+			m.Jobs().Set(jobID, map[string]interface{}{
+				"status": "error", "title": "P", "info_hash": "p-hash",
+				"error": "Cannot read the downloaded files at ...",
+			})
+
+			ok, msg := m.RetryJob(jobID)
+			if ok {
+				t.Fatalf("retry started anyway: %s", msg)
+			}
+			if !strings.Contains(strings.ToLower(msg), tt.wantMsg) {
+				t.Errorf("msg = %q, want containing %q", msg, tt.wantMsg)
+			}
+			job, _ := m.Jobs().Get(jobID)
+			if status, _ := job["status"].(string); status != "error" {
+				t.Errorf("status = %q, want the row left where the UI can still act on it", status)
+			}
+			if left, _ := job["error"].(string); left == "" {
+				t.Error("the original error was cleared even though no retry started")
+			}
+		})
+	}
+}
+
+// The give-up message tells the user to press Retry, so the row it writes has to
+// be one Retry can act on. The hash reaches the job from a request parameter
+// that is empty for any result carrying a .torrent URL, so recording it at the
+// creation sites left whichever site nobody had patched yet still broken.
+func TestGiveUpLeavesARowRetryCanActOn(t *testing.T) {
+	setImportRetries(t, 2, time.Millisecond)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	torrent := qbit.Torrent{
+		Name: "No Hash Recorded", Hash: "nh-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: filepath.Join(cfg.QBSavePath, "pending"),
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+
+	// The row as the download path writes it: no hash.
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{"status": "downloading", "title": torrent.Name})
+
+	m.importFinishedTorrent("job watch", jobID, torrent, "PC", "", true)
+
+	job, _ := m.Jobs().Get(jobID)
+	if detail, _ := job["detail"].(string); !strings.Contains(detail, "Retry") {
+		t.Fatalf("detail = %q, want it to point at Retry", detail)
+	}
+	if got, _ := job["info_hash"].(string); got != "nh-hash" {
+		t.Errorf("info_hash = %q, want the torrent the message says to retry", got)
+	}
+	// Drop the torrent first so this refuses on the client rather than starting
+	// an import: the point is which reason it gives, and a spawned import would
+	// outlive the test and race the next one over the shared retry budget.
+	qm.setTorrents(nil)
+	if _, msg := m.RetryJob(jobID); strings.Contains(msg, "no torrent recorded") {
+		t.Errorf("Retry refused the row its own message told the user to press: %s", msg)
+	}
+}
+
+// A second click used to start a second import of one source. Whichever moved it
+// first won; the loser stat'd the emptied path, read it as missing and overwrote
+// the winner's completed row with a failure blaming the user's mounts.
+//
+// The status alone cannot say whether a retry is running: the import writes
+// "error" on every failed attempt before writing "organizing" back, and that
+// window is observable for a couple of percent of a retry's life, so a click
+// landing in it reads a row that looks idle. The claim is the check.
+func TestRetryJobRefusesASecondClickAndKeepsTheImportClean(t *testing.T) {
+	setImportRetries(t, 400, 2*time.Second)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	content := filepath.Join(cfg.QBSavePath, "Clicked Twice [FitGirl Repack]")
+	torrent := qbit.Torrent{
+		Name: "Clicked Twice", Hash: "cc-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: content,
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "error", "title": "Clicked Twice", "info_hash": "cc-hash", "is_pc": true,
+	})
+
+	if ok, msg := m.RetryJob(jobID); !ok {
+		t.Fatalf("first retry refused: %s", msg)
+	}
+	// Wait until the first retry is between attempts, so it will not overwrite
+	// the row while the second click is made.
+	waitFor(t, minPollTimeout, "the first retry to reach its wait", func() bool {
+		job, _ := m.Jobs().Get(jobID)
+		detail, _ := job["detail"].(string)
+		return strings.Contains(detail, "Waiting for the download client")
+	})
+
+	// Put the row in the state the running import genuinely writes on a failed
+	// attempt. This seeds the job row, not the claim, so the claim is still what
+	// is under test.
+	m.Jobs().Update(jobID, "status", "error")
+
+	ok, msg := m.RetryJob(jobID)
+	if ok {
+		t.Fatal("a second retry started while the first was still running")
+	}
+	if !strings.Contains(msg, "already running") {
+		t.Errorf("msg = %q, want it to say an import is already running", msg)
+	}
+
+	// The files land, so the first retry finishes on its own.
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	job := waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+	if left, _ := job["error"].(string); left != "" {
+		t.Errorf("a completed import was overwritten with %q", left)
+	}
+	if rc, _ := job["retry_count"].(float64); rc != 1 {
+		t.Errorf("retry_count = %v, want 1 after one accepted click", rc)
+	}
+
+	// The job reads completed before the import goroutine has unwound, so wait
+	// for the claim to clear or the test's cleanup restores the retry budget
+	// while that goroutine is still reading it.
+	waitFor(t, minPollTimeout, "the retry to finish", func() bool {
+		_, busy := m.importing.Load(torrent.Hash)
+		return !busy
+	})
+}
+
+// A Retry landing during a natural import has to be refused. The claim used to
+// live in the caller, which covered two clicks and nothing else, so an import
+// already running from the watcher or the job watch was invisible to it.
+func TestRetryJobRefusesDuringANaturalImport(t *testing.T) {
+	// Long enough between attempts that the row is not being rewritten while
+	// the retry is attempted, short enough that the import gives up in seconds.
+	setImportRetries(t, 3, 2*time.Second)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	torrent := qbit.Torrent{
+		Name: "Natural Import", Hash: "ni-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: filepath.Join(cfg.QBSavePath, "pending"),
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "downloading", "title": torrent.Name, "info_hash": "ni-hash", "is_pc": true,
+	})
+
+	// A natural import, not a retry.
+	go m.importFinishedTorrent("job watch", jobID, torrent, "PC", "", true)
+	waitFor(t, minPollTimeout, "the natural import to reach its wait", func() bool {
+		job, _ := m.Jobs().Get(jobID)
+		detail, _ := job["detail"].(string)
+		return strings.Contains(detail, "Waiting for the download client")
+	})
+
+	// The transient the import writes on every failed attempt.
+	m.Jobs().Update(jobID, "status", "error")
+
+	ok, msg := m.RetryJob(jobID)
+	if ok {
+		t.Fatal("a retry started on top of an import that was already running")
+	}
+	if !strings.Contains(msg, "already running") {
+		t.Errorf("msg = %q, want it to say an import is already running", msg)
+	}
+
+	waitFor(t, minPollTimeout, "the natural import to finish", func() bool {
+		_, busy := m.importing.Load(torrent.Hash)
+		return !busy
+	})
+}
+
+// A refused import must leave a row the user can still act on. Left at
+// organizing it carries no button, counts as active and is never pruned, which
+// is the state this has now been driven into from both directions.
+func TestRefusedImportLeavesAnActionableRow(t *testing.T) {
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	torrent := qbit.Torrent{
+		Name: "One Download", Hash: "od-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: filepath.Join(cfg.QBSavePath, "pending"),
+	}
+	// A second job row naming the same physical download, carrying no hash of
+	// its own - which is what DownloadTorrent writes whenever the search result
+	// gave a .torrent URL rather than a magnet.
+	second := newJobID()
+	m.Jobs().Set(second, map[string]interface{}{"status": "organizing", "title": torrent.Name})
+
+	m.importing.Store(torrent.Hash, struct{}{})
+	defer m.importing.Delete(torrent.Hash)
+
+	if m.importFinishedTorrent("manual organize", second, torrent, "PC", "", true) {
+		t.Error("a second import ran for a download already being imported")
+	}
+	job, _ := m.Jobs().Get(second)
+	if status, _ := job["status"].(string); status != "error" {
+		t.Errorf("status = %q, want error so the row keeps a Retry button", status)
+	}
+	if detail, _ := job["detail"].(string); !strings.Contains(detail, "already running") {
+		t.Errorf("detail = %q, want it to say why", detail)
+	}
+	// Actionable means the UI can offer the button, and it gates that on the
+	// hash. A refusal that returned before recording it left error plus no
+	// hash, which renders nothing and refuses if reached any other way.
+	if got, _ := job["info_hash"].(string); got != torrent.Hash {
+		t.Errorf("info_hash = %q, want %q so the row keeps a usable Retry", got, torrent.Hash)
 	}
 }

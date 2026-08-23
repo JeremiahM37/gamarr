@@ -35,7 +35,11 @@ func TestLiveQBittorrent(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	found := false
 	for time.Now().Before(deadline) {
-		for _, tor := range c.GetTorrents("gamarr-test") {
+		listed, err := c.GetTorrents("gamarr-test")
+		if err != nil {
+			t.Fatalf("GetTorrents: %v", err)
+		}
+		for _, tor := range listed {
 			if tor.Hash == hash {
 				found = true
 			}

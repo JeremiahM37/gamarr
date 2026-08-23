@@ -8,6 +8,7 @@ import (
 
 	"gamarr/internal/db"
 	"gamarr/internal/qbit"
+	"os"
 )
 
 func newTestWatcher(t *testing.T, qm *qbitMock) (*Watcher, *Manager) {
@@ -215,37 +216,238 @@ func TestWatcherImportTorrentRemoveAfterImport(t *testing.T) {
 	}
 }
 
-func TestWatcherImportTorrentFailure(t *testing.T) {
+// setImportRetries scopes the retry budget to one test.
+func setImportRetries(t *testing.T, attempts int, delay time.Duration) {
+	t.Helper()
+	a, d := importAttempts, importRetryDelay
+	importAttempts, importRetryDelay = attempts, delay
+	t.Cleanup(func() { importAttempts, importRetryDelay = a, d })
+}
+
+// jobByTitle finds the job importTorrent created for a torrent.
+func jobByTitle(t *testing.T, m *Manager, title string) map[string]interface{} {
+	t.Helper()
+	for _, item := range m.Jobs().Items() {
+		if got, _ := item.Data["title"].(string); got == title {
+			return item.Data
+		}
+	}
+	t.Fatalf("no job for %q", title)
+	return nil
+}
+
+// The save-path-plus-name guess is dangerous when it RESOLVES, not when it
+// fails: anything already sitting at the torrent's display name gets imported
+// in place of the download's own files, which are simply not written yet.
+func TestWatcherDoesNotImportALookalikeWhileContentPathIsPending(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	w, _ := newTestWatcher(t, qm)
+
+	// Something unrelated already at save_path + name.
+	decoy := filepath.Join(w.cfg.QBSavePath, "Some Game")
+	writeFileT(t, filepath.Join(decoy, "wrong.exe"), []byte("not this one"))
+
+	// The torrent's own folder, which the client has not finished writing.
+	content := filepath.Join(w.cfg.QBSavePath, "Some Game [FitGirl Repack]")
+	torrent := qbit.Torrent{
+		Name: "Some Game", Hash: "sg-hash", Progress: 1.0,
+		SavePath: w.cfg.QBSavePath, ContentPath: content,
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+
+	staged := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		if err := os.MkdirAll(content, 0755); err != nil {
+			staged <- err
+			return
+		}
+		staged <- os.WriteFile(filepath.Join(content, "setup.exe"), []byte("installer"), 0644)
+	}()
+
+	w.importTorrent(torrent)
+
+	if err := <-staged; err != nil {
+		t.Fatalf("stage the late files: %v", err)
+	}
+	if !pathExists(filepath.Join(w.cfg.GamesVaultPath, "Some Game [FitGirl Repack]", "setup.exe")) {
+		t.Error("did not import the torrent's own files")
+	}
+	if pathExists(filepath.Join(w.cfg.GamesVaultPath, "Some Game", "wrong.exe")) {
+		t.Error("imported the lookalike that happened to sit at the torrent's display name")
+	}
+}
+
+// content_path moves when the client finishes relocating a download, so a retry
+// has to ask the client again rather than reuse the value that just failed.
+func TestWatcherRetriesAgainstTheClientsCurrentPath(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	w, m := newTestWatcher(t, qm)
+
+	moved := filepath.Join(w.cfg.QBSavePath, "complete", "Game")
+	writeFileT(t, filepath.Join(moved, "setup.exe"), []byte("installer"))
+
+	// What the watcher was handed, and what the client says now.
+	stale := qbit.Torrent{
+		Name: "Relocated Game", Hash: "rl-hash", Progress: 1.0,
+		SavePath:    w.cfg.QBSavePath,
+		ContentPath: filepath.Join(w.cfg.QBSavePath, "incomplete", "Game"),
+	}
+	current := stale
+	current.ContentPath = moved
+	qm.setTorrents([]qbit.Torrent{current})
+
+	w.importTorrent(stale)
+
+	if got, _ := jobByTitle(t, m, stale.Name)["status"].(string); got != "completed" {
+		t.Errorf("status = %q, want completed", got)
+	}
+}
+
+// A failed listing is not evidence the client dropped the torrent. Reading it
+// as absence turns one bad request into a permanent give-up, which is the same
+// failure this exists to fix arriving by another route.
+func TestWatcherSpendsAnAttemptWhenTheClientCannotBeRead(t *testing.T) {
+	setImportRetries(t, 3, time.Millisecond)
+	qm := newQbitMock(t)
+	w, m := newTestWatcher(t, qm)
+
+	torrent := qbit.Torrent{
+		Name: "Unreadable", Hash: "ur-hash", Progress: 1.0,
+		SavePath: w.cfg.QBSavePath, ContentPath: filepath.Join(w.cfg.QBSavePath, "pending"),
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+	qm.failInfo()
+
+	w.importTorrent(torrent)
+
+	detail, _ := jobByTitle(t, m, "Unreadable")["detail"].(string)
+	if !strings.Contains(detail, "Gave up after 3 attempts") {
+		t.Errorf("detail = %q, want the whole budget spent rather than a stop on one failed read", detail)
+	}
+}
+
+// The budget is what stands between a transient miss and a permanent one, so a
+// change to it should surface here rather than in an incident.
+func TestImportRetryBudget(t *testing.T) {
+	if prodImportAttempts != 20 || prodImportRetryDelay != 30*time.Second {
+		t.Errorf("retry budget = %d attempts every %v, want 20 every 30s",
+			prodImportAttempts, prodImportRetryDelay)
+	}
+}
+
+// A restart during the wait has to leave a row the job store recovers on
+// startup. Left at error, the row survives verbatim and reads as retrying with
+// nothing retrying it.
+func TestWatcherMarksAWaitingImportAsInFlight(t *testing.T) {
+	setImportRetries(t, 3, 200*time.Millisecond)
+	qm := newQbitMock(t)
+	w, m := newTestWatcher(t, qm)
+
+	torrent := qbit.Torrent{
+		Name: "Waiting Game", Hash: "wg-hash", Progress: 1.0,
+		SavePath: w.cfg.QBSavePath, ContentPath: filepath.Join(w.cfg.QBSavePath, "pending"),
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+
+	done := make(chan struct{})
+	go func() { defer close(done); w.importTorrent(torrent) }()
+
+	waitFor(t, minPollTimeout, "the waiting job to read as in flight", func() bool {
+		for _, item := range m.Jobs().Items() {
+			if title, _ := item.Data["title"].(string); title != "Waiting Game" {
+				continue
+			}
+			detail, _ := item.Data["detail"].(string)
+			status, _ := item.Data["status"].(string)
+			if strings.Contains(detail, "Waiting for the download client") && status == "organizing" {
+				return true
+			}
+		}
+		return false
+	})
+	<-done
+}
+
+// A path that never appears has to stop, and stop somewhere a human can see.
+// A silently abandoned job is what made the incident need a person.
+func TestWatcherStopsRetryingAndSaysSoOnTheJob(t *testing.T) {
+	setImportRetries(t, 3, time.Millisecond)
+	qm := newQbitMock(t)
+	w, m := newTestWatcher(t, qm)
+
+	torrent := qbit.Torrent{
+		Name: "Never Lands", Hash: "nl-hash", Progress: 1.0,
+		SavePath: w.cfg.QBSavePath, ContentPath: filepath.Join(w.cfg.QBSavePath, "never"),
+	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+
+	done := make(chan struct{})
+	go func() { defer close(done); w.importTorrent(torrent) }()
+	select {
+	case <-done:
+	case <-time.After(minPollTimeout):
+		t.Fatal("importTorrent never stopped retrying")
+	}
+
+	job := jobByTitle(t, m, torrent.Name)
+	if got, _ := job["status"].(string); got != "error" {
+		t.Errorf("status = %q, want error", got)
+	}
+	if detail, _ := job["detail"].(string); !strings.Contains(detail, "Gave up after 3 attempts") {
+		t.Errorf("detail = %q, want it to say it gave up and how many attempts it made", detail)
+	}
+	if _, ok := w.imported.Load("nl-hash"); !ok {
+		t.Error("a torrent it gave up on must not be picked up again on the next tick")
+	}
+}
+
+// A path error that will read the same way forever must stop on the first
+// attempt, and must not have its own terminal state overwritten by the
+// give-up message: a quarantined download has already had its files deleted.
+func TestWatcherStopsOnAPermanentPathError(t *testing.T) {
+	setImportRetries(t, 5, time.Millisecond)
 	qm := newQbitMock(t)
 	w, m := newTestWatcher(t, qm)
 
 	notifyCalled := false
 	m.NotifyFunc = func(userID, notifType, title, message string) { notifyCalled = true }
 
+	// A regular file where a directory belongs: ENOTDIR, not ENOENT, so no
+	// amount of waiting changes the answer.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	writeFileT(t, blocker, []byte("x"))
 	torrent := qbit.Torrent{
 		Name: "Ghost Game", Hash: "ghost-hash", Progress: 1.0,
-		ContentPath: "/no/such/content",
+		ContentPath: filepath.Join(blocker, "content"),
 	}
+	qm.setTorrents([]qbit.Torrent{torrent})
+
 	w.importTorrent(torrent)
 
-	// Failed imports are still marked to avoid retry loops.
 	if _, ok := w.imported.Load("ghost-hash"); !ok {
 		t.Error("failed import should still mark the hash")
 	}
 	if notifyCalled {
 		t.Error("failed import must not send a completion notification")
 	}
-
-	// The job it created should be in error state.
-	var errJob bool
-	for _, item := range m.Jobs().Items() {
-		if title, _ := item.Data["title"].(string); title == "Ghost Game" {
-			if status, _ := item.Data["status"].(string); status == "error" {
-				errJob = true
-			}
-		}
+	job := jobByTitle(t, m, "Ghost Game")
+	if status, _ := job["status"].(string); status != "error" {
+		t.Errorf("status = %q, want error", status)
 	}
-	if !errJob {
-		t.Error("no error job recorded for failed import")
+	// Assert what should be there as well as what should not: an empty detail
+	// satisfies the negative on its own, so a give-up write that blanked the
+	// terminal state would slip through it.
+	detail, _ := job["detail"].(string)
+	if strings.Contains(detail, "Gave up after") {
+		t.Errorf("detail = %q; a permanent failure already wrote its own terminal state", detail)
+	}
+	if detail == "" {
+		t.Error("detail was blanked, so whatever the import wrote about this failure is gone")
+	}
+	if msg, _ := job["error"].(string); !strings.Contains(msg, "not a directory") {
+		t.Errorf("error = %q, want the real errno rather than a generic miss", msg)
 	}
 }
