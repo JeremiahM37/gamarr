@@ -463,6 +463,21 @@ func TestSettingsGetAndUpdate(t *testing.T) {
 	}
 }
 
+func TestSettingsVaultArchive(t *testing.T) {
+	env := newTestEnv(t, nil)
+
+	rr := env.do("PUT", "/api/settings", `{"vault_archive_enabled":true}`)
+	wantStatus(t, rr, 200)
+	if m := decodeMap(t, rr); m["vault_archive_enabled"] != true {
+		t.Errorf("vault_archive_enabled after update = %v, want true", m["vault_archive_enabled"])
+	}
+
+	rr = env.do("GET", "/api/settings", "")
+	if m := decodeMap(t, rr); m["vault_archive_enabled"] != true {
+		t.Errorf("vault_archive_enabled after reload = %v, want true", m["vault_archive_enabled"])
+	}
+}
+
 func TestSettingsImportMode(t *testing.T) {
 	env := newTestEnv(t, nil)
 

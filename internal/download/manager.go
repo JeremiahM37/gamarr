@@ -361,10 +361,15 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		}
 	}
 
+	// DetectConsoleROM above is the first guard on this boundary and is narrow
+	// by design, so everything it does not cover arrives here and this if/else
+	// is the rest of the guarantee: is_pc comes in unvalidated on several
+	// request bodies and is never cross-checked against platform_slug, so a
+	// caller can still route a ROM to the vault. Do not restructure it into a
+	// form that can reach both arms.
 	var importMode fileops.Mode
 	if isPC {
-		dest := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(contentPath)))
-		mode, err := m.importContent(contentPath, dest)
+		dest, mode, err := m.importToVault(contentPath)
 		importMode = mode
 		if err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -413,6 +418,99 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 
 	m.finishTorrent(torrentHash, torrentName, importMode)
 	return false
+}
+
+// importToVault places finished PC content in the vault and reports the path it
+// landed at along with the mode that got it there.
+//
+// Under VAULT_ARCHIVE_ENABLED a directory is written as a single tar instead of
+// being imported as a folder. Writing the archive is itself always a copy, so a
+// source-preserving mode reports one and the torrent is left seedable; under
+// move the download is dropped, but only once the published archive is
+// confirmed to stand in for it.
+func (m *Manager) importToVault(src string) (string, fileops.Mode, error) {
+	base := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(src)))
+
+	// Occupancy is decided before either branch, and both take the same answer.
+	// Deciding it per branch is how the archive path came to refuse a duplicate
+	// while the plain path stored the same game a second time beside it.
+	if occ, done, occupied := acceptOccupiedVault(base, src); occupied {
+		if done {
+			// Copy however the import is configured. The occupant is only known
+			// to be big enough to be an archive of src, which cannot tell this
+			// build from another of the same game, so honouring move here would
+			// drop a newer download and keep the older build in the library.
+			return occ, fileops.ModeCopy, nil
+		}
+		return occ, fileops.ModeCopy, fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, occ)
+	}
+
+	if m.vaultArchiveEnabled() && fileops.Archivable(src) {
+		dest := fileops.ArchiveDest(base)
+		if err := fileops.Archive(src, dest); err != nil {
+			slog.Error("vault archive failed, download left in place",
+				"src", sanitizeLog(src), "dest", sanitizeLog(dest), "error", err)
+			return dest, fileops.ModeCopy, err
+		}
+		return dest, m.archivedImportMode(dest, src), nil
+	}
+	mode, err := m.importContent(src, base)
+	return base, mode, err
+}
+
+// verifyArchive indirects fileops.VerifyArchive so a test can fail the check
+// that authorises dropping a download. It is otherwise unreachable, since the
+// only caller runs it on an archive Archive has just written successfully.
+var verifyArchive = fileops.VerifyArchive
+
+// archivedImportMode reports the mode an archive this import just wrote counts
+// as. Only for an archive written from src: one that was already there cannot be
+// told apart from an archive of another build.
+//
+// A mode that drops the source needs the published archive confirmed to stand
+// in for it first. Failing that the import counts as a copy and the download
+// stays, which costs disk rather than content.
+func (m *Manager) archivedImportMode(dest, src string) fileops.Mode {
+	mode := m.importOptions().Mode
+	if mode.PreservesSource() {
+		// The archive was written, not linked, so a copy is what happened. Every
+		// preserving mode takes the same finishTorrent branch, so this changes
+		// only the verb the UI reports, and it makes it true.
+		return fileops.ModeCopy
+	}
+	if err := verifyArchive(dest, src); err != nil {
+		slog.Error("keeping the download: the vault archive cannot be confirmed to stand in for it",
+			"dest", sanitizeLog(dest), "error", err)
+		return fileops.ModeCopy
+	}
+	return mode
+}
+
+// acceptOccupiedVault decides what an already-occupied vault destination means
+// for an import of src: the occupant, whether the import counts as already done,
+// and whether anything was there at all.
+//
+// It returns the path that EXISTS, never the one this import would have written.
+// A library row aimed at a path nothing wrote reads as a stored game to whatever
+// releases download copies, so the two must not be confused.
+//
+// An occupant only counts as this import when it could be an archive of src.
+// "Something is at this name" also covers a stale archive of another build, a
+// truncated leftover and a hand-placed file, and accepting those reports content
+// as stored that was never stored.
+func acceptOccupiedVault(base, src string) (dest string, done, occupied bool) {
+	occ, exists := fileops.VaultOccupied(base)
+	if !exists {
+		return "", false, false
+	}
+	if fileops.ArchiveHolds(occ, src) {
+		// Either a crash lost the job update after publishing, or a collision was
+		// swallowed. This is the only trace of either.
+		slog.Warn("vault already holds this game, treating the import as done",
+			"dest", sanitizeLog(occ), "src", sanitizeLog(src))
+		return occ, true, true
+	}
+	return occ, false, true
 }
 
 // finishTorrent decides what happens to the torrent once its content is in the
@@ -1247,9 +1345,11 @@ func writeMetadataSidecar(destPath, title, platf, platSlug string, isPC bool, so
 func moveFile(src, dest string) error { return fileops.MoveFile(src, dest) }
 
 // moveContent moves a file or directory tree. Content Gamarr fetched itself
-// (DDL, Usenet) always moves: nothing is seeding it, so leaving the staging
-// copy behind would just leak disk. Torrent content goes through
-// Manager.importContent, which honors the configured import mode.
+// (DDL, Usenet) moves: nothing is seeding it, so leaving the staging copy behind
+// would just leak disk. Torrent content goes through Manager.importContent,
+// which honors the configured import mode. The one exception is a Usenet PC
+// download written to the vault as an archive, which cannot move bytes and so
+// leaves the staging copy for a layer that can confirm the archive is safe.
 func moveContent(src, dest string) error { return fileops.MoveContent(src, dest) }
 
 func copyFile(src, dest string) error { return fileops.CopyFile(src, dest) }
@@ -1286,9 +1386,11 @@ func pathExists(p string) bool {
 // imports will actually use.
 func (m *Manager) LoadSettings() *Settings {
 	defaults := func() *Settings {
+		archive := m.cfg.VaultArchiveEnabled
 		return &Settings{
-			ExtractArchives: m.cfg.ExtractArchives,
-			ImportMode:      string(m.effectiveImportMode()),
+			ExtractArchives:     m.cfg.ExtractArchives,
+			ImportMode:          string(m.effectiveImportMode()),
+			VaultArchiveEnabled: &archive,
 		}
 	}
 	settingsFile := filepath.Join(m.cfg.DataDir, "settings.json")
@@ -1305,7 +1407,21 @@ func (m *Manager) LoadSettings() *Settings {
 	} else {
 		s.ImportMode = string(mode)
 	}
+	if s.VaultArchiveEnabled == nil {
+		archive := m.cfg.VaultArchiveEnabled
+		s.VaultArchiveEnabled = &archive
+	}
 	return &s
+}
+
+// vaultArchiveEnabled reports whether a PC game is written to the vault as one
+// archive. The runtime setting wins so it can be changed from the UI without a
+// restart; the environment default applies when it is unset.
+func (m *Manager) vaultArchiveEnabled() bool {
+	if s := m.LoadSettings(); s != nil && s.VaultArchiveEnabled != nil {
+		return *s.VaultArchiveEnabled
+	}
+	return m.cfg.VaultArchiveEnabled
 }
 
 // effectiveImportMode is the configured default, guarding against a zero
@@ -1330,6 +1446,11 @@ type Settings struct {
 	// ImportMode overrides IMPORT_MODE at runtime. Empty means "follow the
 	// environment default".
 	ImportMode string `json:"import_mode"`
+	// VaultArchiveEnabled overrides VAULT_ARCHIVE_ENABLED at runtime. A pointer
+	// so an absent value is not the same as a stored false, which is what keeps
+	// a settings file written before this option existed from turning archiving
+	// off for an install that set the environment variable.
+	VaultArchiveEnabled *bool `json:"vault_archive_enabled"`
 }
 
 // DDL source management
