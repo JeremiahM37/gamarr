@@ -123,10 +123,18 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 
 	added := false
 	clientUsed := ""
+	var knownBefore map[string]bool
 
 	// Try qBittorrent first.
 	if m.cfg.HasQBittorrent() {
 		m.jobs.Update(jobID, "detail", "Sending to qBittorrent...")
+		// Taken before the add, and only when it will be used: qBittorrent's add
+		// returns no id, so the only thing identifying the torrent it created is
+		// that it was not there a moment ago. When the indexer published a hash
+		// there is nothing to resolve, and this listing sits on the request path.
+		if infoHash == "" {
+			knownBefore = m.hashesInCategory()
+		}
 		ok := m.qb.AddTorrent(url, title, m.cfg.QBSavePath, m.cfg.QBCategory)
 		if ok {
 			added = true
@@ -174,8 +182,74 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloading via %s...", clientUsed))
 	slog.Info("torrent added", "client", clientUsed, "title", title)
 
-	go m.watchGameTorrent(jobID, infoHash, title, platf, platSlug, isPC)
+	go func() {
+		hash := infoHash
+		// An indexer is not obliged to publish an infohash - FitGirl rows carry
+		// none - which leaves the job bound to its torrent by title, and a
+		// repack's release title and torrent name have nothing in common. The
+		// client knows the hash, so ask it rather than giving up the binding.
+		// Off the request path because it polls.
+		if hash == "" && clientUsed == "qBittorrent" {
+			if resolved, ok := m.resolveAddedHash(knownBefore, title); ok {
+				hash = resolved
+				m.jobs.Update(jobID, "info_hash", resolved)
+				slog.Info("resolved infohash from client", "title", title, "hash", resolved)
+			} else {
+				slog.Warn("no infohash from client, matching on title", "title", title)
+			}
+		}
+		m.watchGameTorrent(jobID, hash, title, platf, platSlug, isPC)
+	}()
 	return jobID, nil
+}
+
+// hashesInCategory snapshots the hashes the client already holds. A nil result
+// means the listing FAILED, which is not the same as the category being empty:
+// without the distinction a failed snapshot makes every existing torrent look
+// new, and resolveAddedHash would return whichever one it saw first.
+func (m *Manager) hashesInCategory() map[string]bool {
+	torrents, err := m.qb.GetTorrents(m.cfg.QBCategory)
+	if err != nil {
+		slog.Warn("could not snapshot the download client before adding", "error", err)
+		return nil
+	}
+	known := make(map[string]bool, len(torrents))
+	for _, t := range torrents {
+		known[strings.ToLower(t.Hash)] = true
+	}
+	return known
+}
+
+// resolveAddedHash identifies the torrent the client just accepted by
+// eliminating the ones it already had. Polls because a magnet takes a moment to
+// show up in the listing.
+func (m *Manager) resolveAddedHash(knownBefore map[string]bool, title string) (string, bool) {
+	if knownBefore == nil {
+		return "", false
+	}
+	for attempt := 0; attempt < 20; attempt++ {
+		torrents, err := m.qb.GetTorrents(m.cfg.QBCategory)
+		if err == nil {
+			var fresh []qbit.Torrent
+			for _, t := range torrents {
+				if !knownBefore[strings.ToLower(t.Hash)] {
+					fresh = append(fresh, t)
+				}
+			}
+			if len(fresh) == 1 {
+				return fresh[0].Hash, true
+			}
+			// Two adds can overlap, so elimination alone is ambiguous here.
+			// Prefer the title over picking one arbitrarily.
+			for _, t := range fresh {
+				if titlesMatch(title, t.Name) {
+					return t.Hash, true
+				}
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return "", false
 }
 
 // DownloadDDL starts a direct download.

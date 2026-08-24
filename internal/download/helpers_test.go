@@ -61,16 +61,17 @@ func newTestJobs(t *testing.T) *db.JobStore {
 type qbitMock struct {
 	srv *httptest.Server
 
-	mu        sync.Mutex
-	torrents  []qbit.Torrent
-	files     []qbit.TorrentFile
-	loginOK   bool
-	infoFails bool
-	addOK     bool
-	addCalls  int
-	deleted   []string
-	deletes   []deleteCall
-	stopped   []string
+	mu         sync.Mutex
+	torrents   []qbit.Torrent
+	addAppends []qbit.Torrent
+	files      []qbit.TorrentFile
+	loginOK    bool
+	infoFails  bool
+	addOK      bool
+	addCalls   int
+	deleted    []string
+	deletes    []deleteCall
+	stopped    []string
 }
 
 // deleteCall records a /torrents/delete request, including whether the client
@@ -99,6 +100,10 @@ func newQbitMock(t *testing.T) *qbitMock {
 		q.mu.Lock()
 		q.addCalls++
 		ok := q.addOK
+		if ok && len(q.addAppends) > 0 {
+			q.torrents = append(q.torrents, q.addAppends[0])
+			q.addAppends = q.addAppends[1:]
+		}
 		q.mu.Unlock()
 		if ok {
 			w.Write([]byte("Ok."))
@@ -163,6 +168,15 @@ func (q *qbitMock) failInfo() {
 func (q *qbitMock) setTorrents(ts []qbit.Torrent) {
 	q.mu.Lock()
 	q.torrents = ts
+	q.mu.Unlock()
+}
+
+// appearOnAdd makes the mock behave like qBittorrent: a successful add puts a
+// new torrent in the list. The add API returns no id, so this is the only route
+// by which a caller can learn the hash it was given.
+func (q *qbitMock) appearOnAdd(ts ...qbit.Torrent) {
+	q.mu.Lock()
+	q.addAppends = append(q.addAppends, ts...)
 	q.mu.Unlock()
 }
 
