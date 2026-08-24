@@ -207,6 +207,27 @@ func (s *JobStore) DeleteLibraryItem(id int64) error {
 	return err
 }
 
+// DeleteLibraryItemsByPath removes every library row pointing at a file path
+// except the one keeping it. Source ids are scheme-prefixed ("scan:",
+// "torrent:", "nzb:", "ddl:"), so a row recorded when a game was downloaded can
+// never collide with the scan's id for the same file and LibraryHasSourceID
+// cannot see it. The path can.
+//
+// keepID is the row that supersedes the others, so the caller inserts first and
+// prunes after -- pruning first would leave the file with no row at all if the
+// insert then failed.
+func (s *JobStore) DeleteLibraryItemsByPath(path string, keepID int64) int64 {
+	if path == "" {
+		return 0
+	}
+	res, err := s.db.Exec("DELETE FROM library_items WHERE file_path = ? AND id != ?", path, keepID)
+	if err != nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
 // LibraryHasSourceID checks if a source_id already exists in the library.
 func (s *JobStore) LibraryHasSourceID(sourceID string) bool {
 	if sourceID == "" {

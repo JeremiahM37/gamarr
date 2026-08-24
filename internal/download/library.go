@@ -149,7 +149,7 @@ func (m *Manager) addLibraryEntry(fp, name, platform, platformSlug string, isPC 
 	}
 
 	title := cleanTitle(name)
-	_, err = m.jobs.AddLibraryItem(&db.LibraryItem{
+	id, err := m.jobs.AddLibraryItem(&db.LibraryItem{
 		Title:        title,
 		Platform:     platform,
 		PlatformSlug: platformSlug,
@@ -161,10 +161,20 @@ func (m *Manager) addLibraryEntry(fp, name, platform, platformSlug string, isPC 
 		SourceID:     sourceID,
 		Metadata:     "{}",
 	})
-	if err == nil {
-		return 1
+	if err != nil {
+		return 0
 	}
-	return 0
+
+	// A row recorded when the game was downloaded points at this same file under
+	// a different source scheme, so the guard above cannot see it and the game
+	// shows twice: once titled from the torrent, with no size, and once from this
+	// scan. The scan is the better record - it has the real size from disk and a
+	// title derived from the filename rather than the raw torrent name. Pruned
+	// after the insert, so a failed insert cannot leave the file unrecorded.
+	if n := m.jobs.DeleteLibraryItemsByPath(fp, id); n > 0 {
+		slog.Info("library scan superseded download-time rows", "path", fp, "removed", n)
+	}
+	return 1
 }
 
 // containsGameFiles checks if a directory directly contains game ROM files.
