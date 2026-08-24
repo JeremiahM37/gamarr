@@ -76,9 +76,9 @@ func TestJobMatchesTorrent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := jobMatchesTorrent(tt.infoHash, tt.title, tt.torrentHash, tt.torrentName)
+			got := JobMatchesTorrent(tt.infoHash, tt.title, tt.torrentHash, tt.torrentName)
 			if got != tt.want {
-				t.Errorf("jobMatchesTorrent(%q, %q, %q, %q) = %v, want %v",
+				t.Errorf("JobMatchesTorrent(%q, %q, %q, %q) = %v, want %v",
 					tt.infoHash, tt.title, tt.torrentHash, tt.torrentName, got, tt.want)
 			}
 		})

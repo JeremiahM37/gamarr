@@ -688,11 +688,22 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 			ID   string
 			Data map[string]interface{}
 		}
+		// Use the same matcher the watcher does. This used to compare titles by
+		// substring only, which never matches a repack - the job carries the
+		// release title and the torrent its own name - so the torrent and its job
+		// were both emitted and the UI drew two cards for one download.
 		found := false
 		for _, item := range jobs.Items() {
-			jTitle, _ := item.Data["title"].(string)
-			if strings.Contains(strings.ToLower(t.Name), strings.ToLower(jTitle)) ||
-				strings.Contains(strings.ToLower(jTitle), strings.ToLower(t.Name)) {
+			// One job belongs to one torrent. A job with no infohash falls back to
+			// a substring match on the title, which two torrents in the category
+			// can both satisfy, and merging it twice draws the same job as two
+			// cards - the duplicate this endpoint is meant to stop.
+			if matchedJobIDs[item.ID] {
+				continue
+			}
+			jobTitle, _ := item.Data["title"].(string)
+			jobHash, _ := item.Data["info_hash"].(string)
+			if download.JobMatchesTorrent(jobHash, jobTitle, t.Hash, t.Name) {
 				matchedJob = item
 				found = true
 				break
