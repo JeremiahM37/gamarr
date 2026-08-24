@@ -138,6 +138,15 @@ func (m *Manager) addLibraryEntry(fp, name, platform, platformSlug string, isPC 
 		return 0
 	}
 
+	// A row recorded when the game was downloaded points at this same file under
+	// a different source scheme, so the guard above cannot see it and the game
+	// shows twice: once titled from the torrent, with no size, and once from this
+	// scan. The scan is the better record - it has the real size from disk and a
+	// title derived from the filename rather than the raw torrent name.
+	if n := m.jobs.DeleteLibraryItemsByPath(fp); n > 0 {
+		slog.Info("library scan superseded download-time rows", "path", fp, "removed", n)
+	}
+
 	var fileSize int64
 	info, err := os.Stat(fp)
 	if err == nil {

@@ -191,6 +191,48 @@ func TestAddLibraryEntryDedup(t *testing.T) {
 	}
 }
 
+func TestScanSupersedesDownloadTimeRow(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	m := New(cfg, jobs, nil)
+
+	fp := filepath.Join(t.TempDir(), "Some Game [FitGirl Repack].tar")
+	writeFileT(t, fp, []byte("payload"))
+
+	// The grab records the game first, under the torrent's own name and with no
+	// size - that is what every TrackInLibrary caller passes. Its source id is
+	// scheme-prefixed, so the scan's "scan:"+path guard cannot see it.
+	m.TrackInLibrary("Some&#039;s Game (v1.2 + DLCs) [FitGirl Repack]", "PC", "", true,
+		fp, 0, "torrent", "prowlarr", "torrent:deadbeef")
+
+	if n := m.addLibraryEntry(fp, "Some Game [FitGirl Repack].tar", "PC", "", true); n != 1 {
+		t.Fatalf("scan add = %d, want 1", n)
+	}
+
+	// One physical file must be one library row, whichever path recorded it.
+	var rows int
+	for _, it := range jobs.GetLibraryPage(1, 100, "", "").Items {
+		if it.FilePath == fp {
+			rows++
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("%d library rows for one file, want 1", rows)
+	}
+
+	// The surviving row must be the scan's: real size, filename-derived title,
+	// not the raw torrent name with its undecoded HTML entities.
+	// cleanTitle only strips the archive extension, so the scan's title is the
+	// filename minus ".tar" - not the torrent's name.
+	item := jobs.FindLibraryByTitle("Some Game [FitGirl Repack]", "")
+	if item == nil {
+		t.Fatal("scan-derived title not found - the download-time row won")
+	}
+	if item.FileSize == 0 {
+		t.Errorf("file size = 0, want the real size from disk")
+	}
+}
+
 func TestAddLibraryEntryDirectorySize(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
