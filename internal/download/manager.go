@@ -128,10 +128,13 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	// Try qBittorrent first.
 	if m.cfg.HasQBittorrent() {
 		m.jobs.Update(jobID, "detail", "Sending to qBittorrent...")
-		// Taken before the add. qBittorrent's add returns no id, so the only
-		// thing identifying the torrent it created is that it was not there a
-		// moment ago.
-		knownBefore = m.hashesInCategory()
+		// Taken before the add, and only when it will be used: qBittorrent's add
+		// returns no id, so the only thing identifying the torrent it created is
+		// that it was not there a moment ago. When the indexer published a hash
+		// there is nothing to resolve, and this listing sits on the request path.
+		if infoHash == "" {
+			knownBefore = m.hashesInCategory()
+		}
 		ok := m.qb.AddTorrent(url, title, m.cfg.QBSavePath, m.cfg.QBCategory)
 		if ok {
 			added = true
