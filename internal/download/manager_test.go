@@ -796,6 +796,45 @@ func TestRecoverOrphanedTorrentsIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRecoverOrphanedTorrentsLeavesImportedGamesAlone(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	// finishTorrent leaves a torrent seeding after a source-preserving import,
+	// so a game that is already in the library is still in the category the next
+	// time recovery runs. That is the ordinary case, not an odd one.
+	qm.setTorrents([]qbit.Torrent{
+		{Name: "Imported.Game-FitGirl", Hash: "h1", Progress: 1.0},
+	})
+	cfg.QBURL = qm.srv.URL
+
+	m := New(cfg, jobs, qm.client())
+	jobs.Set("job-done", map[string]interface{}{
+		"status":    "completed",
+		"title":     "Imported.Game-FitGirl",
+		"info_hash": "h1",
+		"detail":    "Moved to GameVault",
+	})
+
+	m.RecoverOrphanedTorrents()
+
+	job, ok := jobs.Get("job-done")
+	if !ok {
+		t.Fatal("recovery dropped the completed job")
+	}
+	// completed_unorganized is what draws the Organize button, so a downgrade
+	// here offers to import a game that is already in the library.
+	if status, _ := job["status"].(string); status != "completed" {
+		t.Errorf("status = %q, want it left at completed", status)
+	}
+	if detail, _ := job["detail"].(string); detail != "Moved to GameVault" {
+		t.Errorf("detail = %q, want the import's own detail kept", detail)
+	}
+	if n := len(jobs.Items()); n != 1 {
+		t.Errorf("%d job rows, want 1 - recovery added a row for an imported game", n)
+	}
+}
+
 func TestWatchGameTorrentRunsOneWatcherPerTorrent(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)

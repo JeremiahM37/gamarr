@@ -1228,7 +1228,18 @@ func (m *Manager) RecoverOrphanedTorrents() {
 		// once-per-install routine, so minting an id per pass accumulated a
 		// duplicate row per torrent every time it ran.
 		jobID, known := m.jobForTorrent(t.Hash, t.Name)
-		if !known {
+		if known {
+			// A finished import is terminal, and organizeGame leaves the torrent
+			// seeding under a source-preserving import, so a game already in the
+			// library is still in the category on the next pass. Rewriting its row
+			// to completed_unorganized would put an Organize button on a game that
+			// is already organized, and pressing it imports it a second time.
+			if job, ok := m.jobs.Get(jobID); ok {
+				if status, _ := job["status"].(string); status == "completed" {
+					continue
+				}
+			}
+		} else {
 			jobID = newJobID()
 		}
 		platf := "Unknown"
