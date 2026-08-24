@@ -55,12 +55,12 @@ func titlesMatch(title, torrentName string) bool {
 	return strings.Contains(a, b) || strings.Contains(b, a)
 }
 
-// jobMatchesTorrent reports whether a tracked job refers to this torrent. Jobs
+// JobMatchesTorrent reports whether a tracked job refers to this torrent. Jobs
 // recorded with an infohash match on that alone; rows from before it was stored
-// fall back to the title. Shared by Manager.watchGameTorrent and
-// Watcher.hasMatchingJob so the two cannot disagree (a disagreement lets the
-// watcher double-import a job's torrent).
-func jobMatchesTorrent(infoHash, title, torrentHash, torrentName string) bool {
+// fall back to the title. Shared by Manager.watchGameTorrent, Watcher.hasMatchingJob
+// and the downloads API so they cannot disagree - a disagreement lets the watcher
+// double-import a job's torrent, and made the API list one download twice.
+func JobMatchesTorrent(infoHash, title, torrentHash, torrentName string) bool {
 	if infoHash != "" {
 		return strings.EqualFold(infoHash, torrentHash)
 	}

@@ -237,6 +237,53 @@ func TestDownloadNZBRoutesToNZBGet(t *testing.T) {
 	})
 }
 
+func TestDownloadsMergesTorrentWithJobByHash(t *testing.T) {
+	// A FitGirl repack's job title and its torrent name have nothing in common -
+	// the torrent name carries the repacker's own suffix - so matching on the
+	// title alone emits the torrent and the job as two separate cards.
+	const (
+		hash    = "1159ad0f27a63ef7926cffb6a60409d701df18bb"
+		jobName = "Hades II \u2013 v1.137792 + Bonus OST [FitGirl Repack]"
+		torName = "Hades II (v1.137792 + Bonus OST, MULTi15) [FitGirl Repack, Selective Download - from 3.7 GB]"
+	)
+
+	qb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/auth/login") {
+			w.Write([]byte("Ok."))
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]interface{}{{
+			"name": torName, "hash": hash, "progress": 0.42,
+			"state": "downloading", "total_size": 9065307136, "dlspeed": 12000000, "eta": 900,
+		}})
+	}))
+	defer qb.Close()
+
+	env := newTestEnv(t, func(c *config.Config) { c.QBURL = qb.URL })
+	env.jobs.Set("job-hades", map[string]interface{}{
+		"status": "downloading", "title": jobName, "info_hash": hash,
+	})
+
+	rr := env.do("GET", "/api/downloads", "")
+	wantStatus(t, rr, 200)
+	downloads, _ := decodeMap(t, rr)["downloads"].([]interface{})
+
+	if len(downloads) != 1 {
+		t.Fatalf("downloads = %d entries, want 1 - the torrent and its job were not merged", len(downloads))
+	}
+	entry, _ := downloads[0].(map[string]interface{})
+	if entry["type"] != "job" {
+		t.Errorf("type = %v, want job", entry["type"])
+	}
+	if entry["job_id"] != "job-hades" {
+		t.Errorf("job_id = %v, want job-hades", entry["job_id"])
+	}
+	// The merged card must carry the torrent's progress, or the UI has no bar.
+	if p, _ := entry["progress"].(float64); p == 0 {
+		t.Errorf("progress = %v, want the torrent's progress", entry["progress"])
+	}
+}
+
 func TestDownloadsListClearAndDelete(t *testing.T) {
 	env := newTestEnv(t, nil)
 

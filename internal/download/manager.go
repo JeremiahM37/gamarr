@@ -262,7 +262,7 @@ func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug strin
 		}
 		for _, t := range torrents {
 			tName := t.Name
-			if !jobMatchesTorrent(infoHash, title, t.Hash, tName) {
+			if !JobMatchesTorrent(infoHash, title, t.Hash, tName) {
 				continue
 			}
 

@@ -107,7 +107,7 @@ func (w *Watcher) hasMatchingJob(t qbit.Torrent) bool {
 	for _, item := range w.mgr.Jobs().Items() {
 		title, _ := item.Data["title"].(string)
 		infoHash, _ := item.Data["info_hash"].(string)
-		if jobMatchesTorrent(infoHash, title, t.Hash, t.Name) {
+		if JobMatchesTorrent(infoHash, title, t.Hash, t.Name) {
 			return true
 		}
 	}
