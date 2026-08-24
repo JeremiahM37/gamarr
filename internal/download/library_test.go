@@ -205,6 +205,12 @@ func TestScanSupersedesDownloadTimeRow(t *testing.T) {
 	m.TrackInLibrary("Some&#039;s Game (v1.2 + DLCs) [FitGirl Repack]", "PC", "", true,
 		fp, 0, "torrent", "prowlarr", "torrent:deadbeef")
 
+	// An unrelated game the scan is not touching on this call. The prune is
+	// scoped to one path, so this row must survive it.
+	other := filepath.Join(filepath.Dir(fp), "Other Game.tar")
+	writeFileT(t, other, []byte("payload"))
+	m.TrackInLibrary("Other Game", "PC", "", true, other, 0, "torrent", "prowlarr", "torrent:cafe")
+
 	if n := m.addLibraryEntry(fp, "Some Game [FitGirl Repack].tar", "PC", "", true); n != 1 {
 		t.Fatalf("scan add = %d, want 1", n)
 	}
@@ -230,6 +236,10 @@ func TestScanSupersedesDownloadTimeRow(t *testing.T) {
 	}
 	if item.FileSize == 0 {
 		t.Errorf("file size = 0, want the real size from disk")
+	}
+
+	if jobs.FindLibraryByTitle("Other Game", "") == nil {
+		t.Error("the prune took a row at a different path with it")
 	}
 }
 
