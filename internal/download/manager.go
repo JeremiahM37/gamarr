@@ -237,7 +237,7 @@ func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug strin
 	// again on the monitor's run_orphan_recovery command, so a later pass would
 	// otherwise start a rival watcher on a torrent already being watched and both
 	// would race to import it. The title fallback covers indexers that report no
-	// infohash, matching what jobMatchesTorrent does.
+	// infohash, matching what JobMatchesTorrent does.
 	claim := strings.ToLower(infoHash)
 	if claim == "" {
 		claim = "title:" + strings.ToLower(title)

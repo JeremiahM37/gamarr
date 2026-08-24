@@ -68,13 +68,13 @@ func JobMatchesTorrent(infoHash, title, torrentHash, torrentName string) bool {
 }
 
 // jobForTorrent returns the id of the job already tracking this torrent. It
-// shares jobMatchesTorrent with the watcher so the two cannot disagree about
+// shares JobMatchesTorrent with the watcher so the two cannot disagree about
 // which row belongs to a torrent.
 func (m *Manager) jobForTorrent(torrentHash, torrentName string) (string, bool) {
 	for _, item := range m.jobs.Items() {
 		infoHash, _ := item.Data["info_hash"].(string)
 		title, _ := item.Data["title"].(string)
-		if jobMatchesTorrent(infoHash, title, torrentHash, torrentName) {
+		if JobMatchesTorrent(infoHash, title, torrentHash, torrentName) {
 			return item.ID, true
 		}
 	}
