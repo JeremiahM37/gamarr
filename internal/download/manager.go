@@ -380,8 +380,8 @@ func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug strin
 }
 
 // resolvePlatform runs the detection cascade over finished content and records
-// what it finds on the job row. Both import paths call it, so neither can drift
-// from the other on what a download turns out to be.
+// what it finds on the job row. Every import path calls it, so none can drift
+// from the others on what a download turns out to be.
 func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug string, isPC bool) (string, string, bool) {
 	// Platform detection from metadata
 	if platSlug == "" && !isPC {
@@ -1222,6 +1222,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 
 func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC bool) {
 	filename := sanitizeFilename(filepath.Base(fp))
+	platf, platSlug, isPC = m.resolvePlatform(jobID, fp, title, platf, platSlug, isPC)
 	if isPC {
 		dest := filepath.Join(m.cfg.GamesVaultPath, filename)
 		if err := moveFile(fp, dest); err != nil {
@@ -1256,6 +1257,7 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 		slog.Info("DDL ROM organized", "file", sanitizeLog(filename), "dest", sanitizeLog(dest))
 		m.maybeExtractArchives(jobID, dest)
 	} else {
+		slog.Warn("no platform detected, left in staging", "title", sanitizeLog(title), "path", sanitizeLog(fp))
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": "Downloaded (unknown platform, left in staging)",
 		})
