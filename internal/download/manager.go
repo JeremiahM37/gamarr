@@ -379,6 +379,50 @@ func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug strin
 	})
 }
 
+// resolvePlatform runs the detection cascade over finished content and records
+// what it finds on the job row. Both import paths call it, so neither can drift
+// from the other on what a download turns out to be.
+func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug string, isPC bool) (string, string, bool) {
+	// Platform detection from metadata
+	if platSlug == "" && !isPC {
+		if info, ok := platform.DetectPlatformFromMetadata(contentPath); ok {
+			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
+			m.jobs.UpdateMulti(jobID, map[string]interface{}{
+				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			})
+			slog.Info("detected platform from metadata", "platform", platf)
+		}
+	}
+
+	// Platform detection from files/title
+	if platSlug == "" && !isPC {
+		if info, ok := platform.DetectPlatformFromFiles(contentPath, title); ok {
+			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
+			m.jobs.UpdateMulti(jobID, map[string]interface{}{
+				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			})
+			slog.Info("detected platform from files/title", "platform", platf)
+		}
+	}
+
+	// A PC classification can arrive from an ambiguous category rather than a
+	// real PC release: Newznab 4050 is PC/Games, but it is also where Prowlarr
+	// files Nyaa's Software - Games, which is how Switch ROMs get in. The two
+	// detections above are skipped once isPC is set, so without this a Nyaa
+	// Switch ROM imports into GameVault instead of the Switch ROM library.
+	if isPC {
+		if info, ok := platform.DetectConsoleROM(contentPath); ok {
+			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
+			m.jobs.UpdateMulti(jobID, map[string]interface{}{
+				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			})
+			slog.Info("reclassified PC-tagged download from its ROM files", "platform", platf)
+		}
+	}
+
+	return platf, platSlug, isPC
+}
+
 // organizeGame imports a finished torrent, reporting whether a failure is worth
 // another attempt later. Only a content path that is not there yet is: the
 // client may still be moving files into place when the download reads complete.
@@ -420,42 +464,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		return missing
 	}
 
-	// Platform detection from metadata
-	if platSlug == "" && !isPC {
-		if info, ok := platform.DetectPlatformFromMetadata(contentPath); ok {
-			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
-			})
-			slog.Info("detected platform from metadata", "platform", platf)
-		}
-	}
-
-	// Platform detection from files/title
-	if platSlug == "" && !isPC {
-		if info, ok := platform.DetectPlatformFromFiles(contentPath, torrentName); ok {
-			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
-			})
-			slog.Info("detected platform from files/title", "platform", platf)
-		}
-	}
-
-	// A PC classification can arrive from an ambiguous category rather than a
-	// real PC release: Newznab 4050 is PC/Games, but it is also where Prowlarr
-	// files Nyaa's Software - Games, which is how Switch ROMs get in. The two
-	// detections above are skipped once isPC is set, so without this a Nyaa
-	// Switch ROM imports into GameVault instead of the Switch ROM library.
-	if isPC {
-		if info, ok := platform.DetectConsoleROM(contentPath); ok {
-			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
-			})
-			slog.Info("reclassified PC-tagged download from its ROM files", "platform", platf)
-		}
-	}
+	platf, platSlug, isPC = m.resolvePlatform(jobID, contentPath, torrentName, platf, platSlug, isPC)
 
 	// DetectConsoleROM above is the first guard on this boundary and is narrow
 	// by design, so everything it does not cover arrives here and this if/else

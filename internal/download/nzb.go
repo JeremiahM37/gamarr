@@ -267,8 +267,11 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 		return
 	}
 
+	platf, platSlug, isPC = m.resolvePlatform(jobID, storagePath, title, platf, platSlug, isPC)
+
 	dest, ok := m.nzbDestPath(storagePath, platSlug, isPC)
 	if !ok {
+		slog.Warn("no platform detected, left in staging", "title", sanitizeLog(title), "path", sanitizeLog(storagePath))
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed",
 			"detail": "Downloaded (unknown platform, left in staging)",
