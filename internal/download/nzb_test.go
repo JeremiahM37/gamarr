@@ -394,6 +394,40 @@ func TestOrganizeNZBDownload(t *testing.T) {
 			t.Errorf("status = %q, want error (job=%v)", status, job)
 		}
 	})
+
+	// A search row can carry no platform at all, which is how a ROM set ends up
+	// matching neither destination and sitting in staging on a completed job.
+	t.Run("platform comes from the files when the request carried none", func(t *testing.T) {
+		m, jobID := newFixture(t)
+		storage := filepath.Join(t.TempDir(), "Cartridge Collection")
+		writeFileT(t, filepath.Join(storage, "game.smc"), []byte("rom"))
+
+		m.organizeNZBDownloadWithClient(jobID, storage, "Cartridge Collection", "", "", false, "sabnzbd")
+
+		dest := filepath.Join(m.cfg.GamesRomsPath, "snes", "Cartridge Collection", "game.smc")
+		if !pathExists(dest) {
+			t.Errorf("usenet import did not detect the platform from its files: %s not written", dest)
+		}
+		job, _ := m.Jobs().Get(jobID)
+		if slug, _ := job["platform_slug"].(string); slug != "snes" {
+			t.Errorf("detected platform never reached the job row: platform_slug = %q, want snes", slug)
+		}
+	})
+
+	// The vault branch runs before anything reads the payload, so a PC-tagged
+	// console ROM only reclassifies if detection happens ahead of it.
+	t.Run("a PC-tagged console ROM is reclassified before the vault branch", func(t *testing.T) {
+		m, jobID := newFixture(t)
+		storage := filepath.Join(t.TempDir(), "Tagged PC")
+		writeFileT(t, filepath.Join(storage, "game.nsp"), []byte("rom"))
+
+		m.organizeNZBDownloadWithClient(jobID, storage, "Tagged PC", "PC", "", true, "sabnzbd")
+
+		dest := filepath.Join(m.cfg.GamesRomsPath, "switch", "Tagged PC", "game.nsp")
+		if !pathExists(dest) {
+			t.Errorf("usenet import did not reclassify a PC-tagged console ROM: %s not written", dest)
+		}
+	})
 }
 
 func TestRetryJob(t *testing.T) {

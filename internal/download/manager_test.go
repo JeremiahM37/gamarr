@@ -701,6 +701,21 @@ func TestOrganizeDDLFile(t *testing.T) {
 			t.Errorf("status = %q, want error", status)
 		}
 	})
+
+	// A DDL source need not label its rows either, and the file itself is then
+	// the only thing that can say where the download belongs.
+	t.Run("platform comes from the file when the request carried none", func(t *testing.T) {
+		m, jobID, _ := newFixture(t)
+		src := filepath.Join(t.TempDir(), "Some Cartridge.nes")
+		writeFileT(t, src, []byte("rom"))
+
+		m.organizeDDLFile(jobID, src, "Some Cartridge", "", "", false)
+
+		dest := filepath.Join(m.cfg.GamesRomsPath, "nes", "Some Cartridge.nes")
+		if !pathExists(dest) {
+			t.Errorf("DDL import did not detect the platform from its file: %s not written", dest)
+		}
+	})
 }
 
 func TestRecoverOrphanedTorrents(t *testing.T) {
