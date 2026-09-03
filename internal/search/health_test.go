@@ -279,3 +279,61 @@ func TestSnapshotHealth_CircuitRetryInSec(t *testing.T) {
 		t.Errorf("CircuitRetryInSec=%d, want >0", h.CircuitRetryInSec)
 	}
 }
+
+func TestRecordDownloadFail_OpensCircuitAndDegrades(t *testing.T) {
+	resetHealthStore()
+	for i := 1; i < circuitThreshold; i++ {
+		RecordDownloadFail("dl-source", "gate")
+		if IsDownloadDegraded("dl-source") || IsCircuitOpen("dl-source") {
+			t.Fatalf("degraded/open after %d download failures, threshold is %d", i, circuitThreshold)
+		}
+	}
+	RecordDownloadFail("dl-source", "gate")
+	if !IsDownloadDegraded("dl-source") {
+		t.Error("threshold consecutive download failures should mark the source degraded")
+	}
+	if !IsCircuitOpen("dl-source") {
+		t.Error("threshold consecutive download failures should open the circuit")
+	}
+	h := GetSourceHealth("dl-source")
+	if !h.DownloadDegraded || !h.CircuitOpen {
+		t.Errorf("snapshot = degraded:%v open:%v, want both true", h.DownloadDegraded, h.CircuitOpen)
+	}
+	if h.DownloadFail != circuitThreshold || h.LastErrorKind != "download" {
+		t.Errorf("download_fail=%d kind=%q", h.DownloadFail, h.LastErrorKind)
+	}
+}
+
+func TestRecordDownloadSuccess_ClearsDegraded(t *testing.T) {
+	resetHealthStore()
+	for i := 0; i < circuitThreshold; i++ {
+		RecordDownloadFail("dl-source", "gate")
+	}
+	RecordDownloadSuccess("dl-source")
+	if IsDownloadDegraded("dl-source") {
+		t.Error("a successful download should clear the degraded flag")
+	}
+	if GetSourceHealth("dl-source").DownloadDegraded {
+		t.Error("snapshot still reports degraded after success")
+	}
+}
+
+func TestResetCircuit_ClearsDownloadDegraded(t *testing.T) {
+	resetHealthStore()
+	for i := 0; i < circuitThreshold; i++ {
+		RecordDownloadFail("dl-source", "gate")
+	}
+	if !ResetCircuit("dl-source") {
+		t.Fatal("ResetCircuit returned false for a known source")
+	}
+	if IsDownloadDegraded("dl-source") {
+		t.Error("ResetCircuit should clear the download failure streak")
+	}
+}
+
+func TestIsDownloadDegraded_UnknownSource(t *testing.T) {
+	resetHealthStore()
+	if IsDownloadDegraded("never-seen") {
+		t.Error("an unknown source is not degraded")
+	}
+}

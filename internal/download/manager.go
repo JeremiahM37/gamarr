@@ -836,21 +836,36 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 		filepath_, dlErr = m.downloadDDL(dlURL, staging, jobID)
 	}
 
+	source := m.ddlSourceName(dlURL, vimmID)
+
 	if filepath_ == "" || !pathExists(filepath_) {
-		job, ok := m.jobs.Get(jobID)
-		if ok {
+		errMsg := "Download failed"
+		if dlErr != nil {
+			errMsg = fmt.Sprintf("Download failed: %v", dlErr)
+		}
+		if job, ok := m.jobs.Get(jobID); ok {
 			status, _ := job["status"].(string)
-			if status != "error" {
-				errMsg := "Download failed"
-				if dlErr != nil {
-					errMsg = fmt.Sprintf("Download failed: %v", dlErr)
+			if status == "error" {
+				// The downloader already wrote a specific reason; keep it.
+				if e, _ := job["error"].(string); e != "" {
+					errMsg = e
 				}
+			} else {
 				m.jobs.UpdateMulti(jobID, map[string]interface{}{
 					"status": "error", "error": errMsg,
 				})
 			}
 		}
+		// A source whose files never arrive is not healthy, whatever its
+		// searches say. Recording it here is what lets /api/sources and the
+		// scheduler see a download-side outage at all.
+		if source != "" {
+			search.RecordDownloadFail(source, errMsg)
+		}
 		return
+	}
+	if source != "" {
+		search.RecordDownloadSuccess(source)
 	}
 
 	// ClamAV scan
@@ -876,6 +891,27 @@ func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug
 		"status": "organizing", "detail": "Moving to library...",
 	})
 	m.organizeDDLFile(jobID, filepath_, title, platf, platSlug, isPC)
+}
+
+// ddlSourceName maps a DDL job back to the health bucket of the source that
+// produced it: Vimm jobs carry a vault ID, Myrient jobs a URL under its base.
+// An unrecognised host records nothing rather than inventing a source.
+func (m *Manager) ddlSourceName(dlURL, vimmID string) string {
+	if vimmID != "" {
+		return "vimm"
+	}
+	if dlURL == "" {
+		return ""
+	}
+	if m.cfg != nil && m.cfg.Sources != nil {
+		if base := m.cfg.Sources.Myrient.BaseURL; base != "" && strings.HasPrefix(dlURL, base) {
+			return "myrient"
+		}
+	}
+	if u, err := url.Parse(dlURL); err == nil && strings.Contains(u.Host, "myrient") {
+		return "myrient"
+	}
+	return ""
 }
 
 func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
@@ -967,6 +1003,22 @@ var vimmMediaRe = regexp.MustCompile(`name="mediaId"\s+value="(\d+)"`)
 var vimmJSMediaRe = regexp.MustCompile(`"ID":(\d+)`)
 var vimmDLRe = regexp.MustCompile(`(//dl\d*\.vimm\.net/[^"']*)`)
 var vimmCDFilenameRe = regexp.MustCompile(`filename="?([^";\n]+)"?`)
+
+// Vimm's Lair fronts its vault pages with a Cloudflare Turnstile challenge and
+// only renders the download form to a session that passed it. A plain HTTP
+// client never gets the form, so a page carrying these markers is the gate
+// itself, not a parsing miss. Turnstile exists to withhold that token from
+// automated browsers; gamarr does not try to defeat it.
+var vimmChallengeRe = regexp.MustCompile(`cf-turnstile|Checking if you are human`)
+
+// vimmChallengeError is the job error for a Turnstile-gated page. It names the
+// cause so the failure is a decision the user can act on, not a dead end.
+const vimmChallengeError = "Vimm's Lair requires a Cloudflare Turnstile check that only a real browser can pass; gamarr cannot download from Vimm. Try another source for this title."
+
+// vimmIsChallenge reports whether a Vimm response is the Turnstile gate.
+func vimmIsChallenge(pageText string) bool {
+	return vimmChallengeRe.MatchString(pageText)
+}
 
 // vimmDownloadPause is the courtesy delay between fetching the vault page and
 // hitting the download host. Tests set it to 0.
@@ -1101,8 +1153,13 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	actionURL = resolveVimmAction(gameURL, actionURL)
 
 	if actionURL == "" || mediaID == "" {
+		errMsg := "Could not find download form on Vimm"
+		if vimmIsChallenge(pageText) {
+			errMsg = vimmChallengeError
+			slog.Warn("Vimm vault page is Turnstile-gated; download form withheld", "game_id", gameID)
+		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error", "error": "Could not find download form on Vimm",
+			"status": "error", "error": errMsg,
 		})
 		return ""
 	}
@@ -1124,7 +1181,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 
 	var dlResp *http.Response
-	sawHTML := false
+	sawHTML, sawChallenge := false, false
 	for _, dlURL := range dlURLs {
 		req, _ := http.NewRequest(http.MethodGet, dlURL, nil)
 		req.Header.Set("User-Agent", ua)
@@ -1142,6 +1199,11 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 		}
 		if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "text/html") {
 			sawHTML = true
+			// Read a bounded slice to tell the gate apart from any other page.
+			peek, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+			if vimmIsChallenge(string(peek)) {
+				sawChallenge = true
+			}
 		}
 		r.Body.Close()
 		slog.Warn("Vimm download rejected", "url", dlURL, "status", r.StatusCode, "content_type", r.Header.Get("Content-Type"))
@@ -1151,6 +1213,9 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 		errMsg := fmt.Sprintf("Vimm download server rejected request (tried %d URLs)", len(dlURLs))
 		if sawHTML {
 			errMsg = "Vimm returned a web page instead of a file"
+		}
+		if sawChallenge {
+			errMsg = vimmChallengeError
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "error", "error": errMsg,

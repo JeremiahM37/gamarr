@@ -20,6 +20,11 @@ type SourceHealth struct {
 	Score             int     `json:"score"`
 	CircuitOpen       bool    `json:"circuit_open"`
 	CircuitRetryInSec int     `json:"circuit_retry_in_sec"`
+	// DownloadDegraded is set once a source has failed to deliver
+	// circuitThreshold downloads in a row. Unlike the circuit it does not
+	// expire on a timer: only a successful download (or ResetCircuit) clears
+	// it, so the scheduler keeps preferring sources that actually deliver.
+	DownloadDegraded bool `json:"download_degraded,omitempty"`
 
 	// internal
 	searchFailStreak   int
@@ -141,6 +146,27 @@ func RecordDownloadFail(name string, errMsg string) {
 	if h.Score < 0 {
 		h.Score = 0
 	}
+
+	// A source that searches fine but never delivers is down for every
+	// purpose gamarr has; trip the same breaker a failing search would.
+	if h.downloadFailStreak >= circuitThreshold {
+		h.circuitOpenUntil = now + float64(circuitRetrySec)
+		slog.Warn("source circuit opened on download failures", "source", name, "streak", h.downloadFailStreak, "retry_sec", circuitRetrySec)
+	}
+}
+
+// IsDownloadDegraded reports whether a source's last circuitThreshold
+// downloads all failed. It stays true until a download succeeds or the circuit
+// is reset by hand, so a gate like Vimm's Turnstile is remembered past the
+// circuit's retry window rather than rediscovered every scheduler run.
+func IsDownloadDegraded(name string) bool {
+	healthMu.RLock()
+	defer healthMu.RUnlock()
+	h, ok := healthStore[name]
+	if !ok {
+		return false
+	}
+	return h.downloadFailStreak >= circuitThreshold
 }
 
 // IsCircuitOpen returns true if the source's circuit breaker is open.
@@ -164,6 +190,7 @@ func ResetCircuit(name string) bool {
 	}
 	h.circuitOpenUntil = 0
 	h.searchFailStreak = 0
+	h.downloadFailStreak = 0
 	h.Score = 100
 	slog.Info("source circuit reset", "source", name)
 	return true
@@ -211,5 +238,6 @@ func snapshotHealth(h *SourceHealth) *SourceHealth {
 		Score:             h.Score,
 		CircuitOpen:       circuitOpen,
 		CircuitRetryInSec: retryIn,
+		DownloadDegraded:  h.downloadFailStreak >= circuitThreshold,
 	}
 }

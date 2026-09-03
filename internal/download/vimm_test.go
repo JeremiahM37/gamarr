@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"gamarr/internal/db"
+	"gamarr/internal/search"
 	"gamarr/internal/sources"
 )
 
@@ -219,5 +221,202 @@ func TestDownloadVimmGame_HTMLResponseIsError(t *testing.T) {
 	errMsg, _ := job["error"].(string)
 	if !strings.Contains(strings.ToLower(errMsg), "html") && !strings.Contains(strings.ToLower(errMsg), "web page") {
 		t.Errorf("error = %q, want mention of HTML/web page", errMsg)
+	}
+}
+
+// A trimmed copy of what vimm.net serves a plain HTTP client for any vault
+// page since it moved behind Cloudflare Turnstile (issue #37). The download
+// form is absent; only the challenge widget is present.
+const vimmChallengePageHTML = `<!DOCTYPE html><html><head><title>Vimm's Lair</title></head><body>
+<div id="challenge"><p>Checking if you are human.</p>
+<div class="cf-turnstile" data-sitekey="0x4AAAAAAAcFgS2_wvnSBZF1" data-callback="onTurnstileSuccess" style="margin-top:8px"></div>
+<form method="post"><input type="hidden" name="cf-turnstile-response" value=""></form></div>
+</body></html>`
+
+func TestVimmIsChallenge(t *testing.T) {
+	if !vimmIsChallenge(vimmChallengePageHTML) {
+		t.Error("Turnstile page not recognised as a challenge")
+	}
+	if vimmIsChallenge(vimmGamePageHTML) {
+		t.Error("a normal vault page must not read as a challenge")
+	}
+	if vimmIsChallenge("<html>rate limited</html>") {
+		t.Error("unrelated HTML must not read as a challenge")
+	}
+}
+
+func newVimmChallengeServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		_, _ = io.WriteString(w, vimmChallengePageHTML)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func newVimmManager(t *testing.T, vaultURL string) (*Manager, *db.JobStore) {
+	t.Helper()
+	orig := vimmDownloadPause
+	vimmDownloadPause = 0
+	t.Cleanup(func() { vimmDownloadPause = orig })
+	cfg := newTestConfig(t)
+	reg, err := sources.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Vimm.BaseURL = vaultURL
+	cfg.Sources = reg
+	jobs := newTestJobs(t)
+	return New(cfg, jobs, nil), jobs
+}
+
+func TestDownloadVimmGame_TurnstileGateIsNamed(t *testing.T) {
+	srv := newVimmChallengeServer(t)
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	if got := m.downloadVimmGame("1654", m.cfg.QBSavePath, jobID); got != "" {
+		t.Fatalf("challenge page must not produce a file, got %q", got)
+	}
+	job, _ := jobs.Get(jobID)
+	if job["status"] != "error" {
+		t.Errorf("status = %v, want error", job["status"])
+	}
+	errMsg, _ := job["error"].(string)
+	if errMsg != vimmChallengeError {
+		t.Errorf("error = %q, want the Turnstile explanation", errMsg)
+	}
+	if strings.Contains(errMsg, "Could not find download form") {
+		t.Error("gate reported as a parsing miss")
+	}
+}
+
+func TestDownloadVimmGame_ChallengeOnDownloadHost(t *testing.T) {
+	// The vault page still renders a form, but the download host answers with
+	// the challenge instead of the file.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		if strings.HasPrefix(r.URL.Path, "/vault/") {
+			_, _ = io.WriteString(w, vimmGamePageHTML)
+			return
+		}
+		_, _ = io.WriteString(w, vimmChallengePageHTML)
+	}))
+	t.Cleanup(srv.Close)
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	if got := m.downloadVimmGame("1654", m.cfg.QBSavePath, jobID); got != "" {
+		t.Fatalf("challenge page must not be saved as a ROM, got %q", got)
+	}
+	job, _ := jobs.Get(jobID)
+	if errMsg, _ := job["error"].(string); errMsg != vimmChallengeError {
+		t.Errorf("error = %q, want the Turnstile explanation", errMsg)
+	}
+}
+
+func TestDDLSourceName(t *testing.T) {
+	cfg := newTestConfig(t)
+	reg, _ := sources.Default()
+	reg.Myrient.BaseURL = "http://127.0.0.1:9/files/"
+	cfg.Sources = reg
+	m := New(cfg, newTestJobs(t), nil)
+
+	cases := []struct{ url, vimmID, want string }{
+		{"", "1654", "vimm"},
+		{"http://127.0.0.1:9/files/gb/Tetris.zip", "", "myrient"},
+		{"https://myrient.erista.me/files/No-Intro/x.zip", "", "myrient"},
+		{"http://127.0.0.1:9/elsewhere/x.zip", "", ""},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := m.ddlSourceName(c.url, c.vimmID); got != c.want {
+			t.Errorf("ddlSourceName(%q, %q) = %q, want %q", c.url, c.vimmID, got, c.want)
+		}
+	}
+}
+
+// The reporter's health panel read score 100 / 0 failed downloads after every
+// Vimm download had failed: nothing on the DDL path ever recorded a download
+// outcome. The worker must feed the same health store searches do.
+func TestDDLWorker_RecordsVimmDownloadFailures(t *testing.T) {
+	srv := newVimmChallengeServer(t)
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	search.ResetCircuit("vimm")
+	t.Cleanup(func() { search.ResetCircuit("vimm") })
+
+	before := 0
+	if h := search.GetSourceHealth("vimm"); h != nil {
+		before = h.DownloadFail
+	}
+
+	for i := 0; i < 3; i++ {
+		jobID := newJobID()
+		jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+		m.ddlDownloadWorker(jobID, "", "1654", "Super Metroid", "SNES", "snes", false)
+		job, _ := jobs.Get(jobID)
+		if errMsg, _ := job["error"].(string); errMsg != vimmChallengeError {
+			t.Fatalf("run %d: job error = %q, want the Turnstile explanation", i, errMsg)
+		}
+		if i < 2 && search.IsDownloadDegraded("vimm") {
+			t.Fatalf("run %d: degraded before the threshold", i)
+		}
+	}
+
+	h := search.GetSourceHealth("vimm")
+	if h == nil {
+		t.Fatal("no health recorded for vimm")
+	}
+	if h.DownloadFail != before+3 {
+		t.Errorf("download_fail = %d, want %d", h.DownloadFail, before+3)
+	}
+	if h.LastErrorKind != "download" || h.LastError != vimmChallengeError {
+		t.Errorf("last error = (%s, %q), want the download-side Turnstile message", h.LastErrorKind, h.LastError)
+	}
+	if h.Score == 100 {
+		t.Error("score still 100 after three failed downloads")
+	}
+	if !h.DownloadDegraded || !search.IsDownloadDegraded("vimm") {
+		t.Error("three consecutive failed downloads should mark the source degraded")
+	}
+	if !h.CircuitOpen {
+		t.Error("three consecutive failed downloads should open the circuit")
+	}
+}
+
+func TestDDLWorker_RecordsVimmDownloadSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/vault/") {
+			_, _ = io.WriteString(w, vimmGamePageHTML)
+			return
+		}
+		w.Header().Set("Content-Disposition", `attachment; filename="Super Metroid (Japan, USA).zip"`)
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write([]byte("PK\x03\x04fake-zip"))
+	}))
+	t.Cleanup(srv.Close)
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	search.ResetCircuit("vimm")
+	t.Cleanup(func() { search.ResetCircuit("vimm") })
+
+	// Start degraded: a delivered file is what clears it.
+	for i := 0; i < 3; i++ {
+		search.RecordDownloadFail("vimm", "earlier gate")
+	}
+	before := search.GetSourceHealth("vimm").DownloadOK
+
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+	m.ddlDownloadWorker(jobID, "", "1654", "Super Metroid", "SNES", "snes", false)
+
+	h := search.GetSourceHealth("vimm")
+	if h.DownloadOK != before+1 {
+		t.Errorf("download_ok = %d, want %d", h.DownloadOK, before+1)
+	}
+	if search.IsDownloadDegraded("vimm") {
+		t.Error("a delivered file should clear the degraded flag")
 	}
 }

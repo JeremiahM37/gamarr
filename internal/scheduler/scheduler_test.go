@@ -15,6 +15,7 @@ import (
 	"gamarr/internal/config"
 	"gamarr/internal/db"
 	"gamarr/internal/models"
+	"gamarr/internal/search"
 	"gamarr/internal/webhook"
 )
 
@@ -492,5 +493,72 @@ func TestNormalizeTitle(t *testing.T) {
 				t.Errorf("NormalizeTitle(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// Issue #37: Vimm's Lair searches fine but every download is withheld behind
+// Cloudflare Turnstile. Once the source is download-degraded the scheduler
+// must take the next deliverable match instead of re-queuing the same dead
+// end every run — and must not start a download when nothing deliverable
+// clears the score bar.
+func TestRunSkipsDownloadDegradedSource(t *testing.T) {
+	// Touches the process-wide health store, so not t.Parallel().
+	search.ResetCircuit("vimm")
+	t.Cleanup(func() { search.ResetCircuit("vimm") })
+	for i := 0; i < 3; i++ {
+		search.RecordDownloadFail("vimm", "Turnstile")
+	}
+	if !search.IsDownloadDegraded("vimm") {
+		t.Fatal("test setup: vimm should be download-degraded")
+	}
+
+	store := newTestStore(t)
+	if _, err := store.AddWishlistItem("DreamWorks Madagascar", "PS2", "ps2"); err != nil {
+		t.Fatalf("AddWishlistItem: %v", err)
+	}
+	searchFn := func(q, p string) []*models.SearchResult {
+		return []*models.SearchResult{
+			{Title: "Madagascar (USA)", Platform: "PS2", Score: 90, SourceType: "ddl", VimmID: "5000", Indexer: "Vimm's Lair"},
+			{Title: "Madagascar (USA) [Redump]", Platform: "PS2", Score: 80, SourceType: "torrent", Indexer: "Tracker"},
+		}
+	}
+	var downloaded *models.SearchResult
+	downloadFn := func(r *models.SearchResult) (string, error) {
+		downloaded = r
+		return "job-1", nil
+	}
+	cfg := &config.Config{SchedulerEnabled: true, SchedulerAutoDownload: true, SchedulerMinScore: 70}
+	s := New(cfg, store, searchFn, downloadFn, nil)
+	s.run()
+
+	if downloaded == nil {
+		t.Fatal("downloadFn was not called")
+	}
+	if downloaded.SourceType != "torrent" {
+		t.Errorf("downloaded %+v, want the deliverable torrent, not the degraded Vimm hit", downloaded)
+	}
+	if items := store.GetWishlist(); len(items) != 0 {
+		t.Errorf("wishlist has %d items after a deliverable download, want 0", len(items))
+	}
+
+	// Only the degraded source clears the bar: nothing may be started.
+	store2 := newTestStore(t)
+	if _, err := store2.AddWishlistItem("DreamWorks Madagascar", "PS2", "ps2"); err != nil {
+		t.Fatalf("AddWishlistItem: %v", err)
+	}
+	downloaded = nil
+	onlyVimm := func(q, p string) []*models.SearchResult {
+		return []*models.SearchResult{
+			{Title: "Madagascar (USA)", Platform: "PS2", Score: 90, SourceType: "ddl", VimmID: "5000"},
+			{Title: "Madagascar (Europe)", Platform: "PS2", Score: 40, SourceType: "torrent"},
+		}
+	}
+	s2 := New(cfg, store2, onlyVimm, downloadFn, nil)
+	s2.run()
+	if downloaded != nil {
+		t.Errorf("downloaded %+v from a degraded source / below-threshold result", downloaded)
+	}
+	if items := store2.GetWishlist(); len(items) != 1 {
+		t.Errorf("wishlist has %d items, want the item kept for a later run", len(items))
 	}
 }
