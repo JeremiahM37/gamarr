@@ -587,7 +587,11 @@ async function loadSources() {
     document.getElementById('settings-sources').innerHTML = (d.sources||[]).map(s => {
       const dot = s.enabled ? 'bg-emerald-500' : 'bg-slate-600';
       const srcColor = s.source_type === 'torrent' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400';
-      return `<div class="flex items-center justify-between bg-slate-800 rounded-lg p-3"><div class="flex items-center gap-3"><span class="w-2 h-2 rounded-full ${dot}"></span><span class="text-sm text-white">${esc(s.label)}</span></div><span class="px-2 py-0.5 text-xs rounded ${srcColor}">${s.source_type}</span></div>`;
+      // A source can answer searches while every download from it fails
+      // (Vimm behind Turnstile); the enabled dot alone would call that healthy.
+      const h = s.health || {};
+      const degraded = h.download_degraded ? `<span class="px-2 py-0.5 text-xs rounded bg-red-500/20 text-red-400" title="${esc(h.last_error || '')}" data-source-degraded="${esc(s.name)}">downloads failing</span>` : '';
+      return `<div class="flex items-center justify-between bg-slate-800 rounded-lg p-3"><div class="flex items-center gap-3"><span class="w-2 h-2 rounded-full ${dot}"></span><span class="text-sm text-white">${esc(s.label)}</span>${degraded}</div><span class="px-2 py-0.5 text-xs rounded ${srcColor}">${s.source_type}</span></div>`;
     }).join('');
   } catch(e) {}
 }

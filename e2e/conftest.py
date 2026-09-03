@@ -8,8 +8,10 @@ runs with ZERO external network access:
     [chromium] -> [gamarr binary] -> [stub qBittorrent/Prowlarr/Myrient on 127.0.0.1]
 
 The injected sources registry points Myrient at the stub (which serves a
-real ZIP so the DDL pipeline completes for real) and Vimm at a dead local
-port that refuses connections instantly, keeping runs fast and deterministic.
+real ZIP so the DDL pipeline completes for real) and Vimm at the stub too,
+where every vault page is the Cloudflare Turnstile challenge the real site
+serves a non-browser client (issue #37) — fast, deterministic, and true to
+what production actually returns.
 
 Requires: the gamarr binary (built automatically, or set GAMARR_E2E_BIN),
 pytest-playwright with chromium installed.
@@ -88,6 +90,16 @@ PROWLARR_INDEXERS = [
     },
 ]
 GAME_INDEXER_ID = 16
+
+
+# What vimm.net serves a plain HTTP client for any vault page: the Turnstile
+# widget and no download form. Trimmed from a live fetch; the markers gamarr
+# keys on (the widget class and the "human" prompt) are verbatim.
+VIMM_CHALLENGE_HTML = """<!DOCTYPE html><html><head><title>Vimm's Lair</title></head><body>
+<div id="challenge"><p>Checking if you are human.</p>
+<div class="cf-turnstile" data-sitekey="0x4AAAAAAAcFgS2_wvnSBZF1" data-callback="onTurnstileSuccess"></div>
+<form method="post"><input type="hidden" name="cf-turnstile-response" value=""></form></div>
+</body></html>"""
 
 
 # Torrents the stub client is "seeding", plus every delete gamarr asked for.
@@ -213,6 +225,9 @@ class _StubHandler(BaseHTTPRequestHandler):
                 self._send(200, _rom_zip(name), "application/zip")
             else:
                 self._send(404, b"no such rom", "text/plain")
+        # ── Vimm's Lair: every vault page (search or game) is the gate ────
+        elif path.startswith("/vault/"):
+            self._send(200, VIMM_CHALLENGE_HTML.encode(), "text/html; charset=UTF-8")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -244,20 +259,19 @@ def gamarr_binary(tmp_path_factory) -> Path:
 
 
 def _boot_gamarr(stub_server, gamarr_binary, data, env_overrides: dict) -> dict:
-    """Boot one gamarr with an injected registry: Myrient -> stub, Vimm -> dead
-    port that refuses connections instantly.
+    """Boot one gamarr with an injected registry: Myrient -> stub, Vimm -> the
+    stub's Turnstile-gated vault.
 
     env_overrides let a test represent a deployment the defaults cannot — a
     library on a second filesystem, say — without a second harness.
     """
-    dead = "http://127.0.0.1:1/"
     registry = {
         "version": 1,
         "myrient": {
             "base_url": f"{stub_server}/files/",
             "platform_paths": {"gb": "gb/"},
         },
-        "vimm": {"base_url": dead, "platform_systems": {}},
+        "vimm": {"base_url": f"{stub_server}/vault/", "platform_systems": {}},
     }
     reg_path = data / "sources.json"
     reg_path.write_text(json.dumps(registry))

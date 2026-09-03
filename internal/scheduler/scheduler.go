@@ -12,6 +12,7 @@ import (
 	"gamarr/internal/config"
 	"gamarr/internal/db"
 	"gamarr/internal/models"
+	"gamarr/internal/search"
 	"gamarr/internal/webhook"
 )
 
@@ -177,9 +178,9 @@ func (s *Scheduler) run() {
 
 		totalResults += len(results)
 
-		// Auto-download best match if score is high enough
-		if s.cfg.SchedulerAutoDownload && len(results) > 0 && results[0].Score >= minScore {
-			best := results[0]
+		// Auto-download the best match that its source can actually deliver.
+		best := pickDownloadable(results, minScore)
+		if s.cfg.SchedulerAutoDownload && best != nil {
 			slog.Info("scheduler: auto-downloading", "title", best.Title, "score", best.Score,
 				"wishlist_title", item.Title, "platform", best.Platform)
 
@@ -220,6 +221,26 @@ func (s *Scheduler) run() {
 
 	slog.Info("scheduler: completed", "wishlist_items", len(wishlist),
 		"results", totalResults, "auto_downloads", autoDownloads)
+}
+
+// pickDownloadable returns the highest-scored result at or above minScore whose
+// source is not download-degraded, or nil. results must already be sorted by
+// score. A top hit from a source whose downloads keep failing (Vimm behind
+// Turnstile, say) would otherwise be re-picked every run while a deliverable
+// match from another source sat one row below it.
+func pickDownloadable(results []*models.SearchResult, minScore int) *models.SearchResult {
+	for _, r := range results {
+		if r.Score < minScore {
+			return nil
+		}
+		if src := search.SourceNameFor(r); search.IsDownloadDegraded(src) {
+			slog.Info("scheduler: skipping result from download-degraded source",
+				"title", r.Title, "score", r.Score, "source", src)
+			continue
+		}
+		return r
+	}
+	return nil
 }
 
 func itoa(n int) string {

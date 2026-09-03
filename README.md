@@ -239,6 +239,17 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `PROWLARR_GAME_INDEXERS` | *(auto)* | Comma-separated indexer IDs to search. Unset means every enabled indexer that advertises game categories (see [Prowlarr indexers](#prowlarr-indexers)) |
 | `RAWG_API_KEY` | | RAWG.io API key (enables metadata, calendar) |
 
+#### Vimm's Lair is search-only
+
+Vimm's Lair now gates its download form behind Cloudflare Turnstile, a
+CAPTCHA built to withhold the form from automated browsers, so gamarr can
+search Vimm but cannot download from it. Gamarr does not try to bypass it.
+A Vimm download fails with an error that says so, counts against the
+source's health on `/api/sources` (`download_fail`, `download_degraded`),
+and after three consecutive failures the scheduler skips Vimm results in
+favour of the next deliverable match from another source. Use a Prowlarr
+indexer for titles that only Vimm carries.
+
 #### Prowlarr indexers
 
 Gamarr asks Prowlarr which of its indexers carry games — every enabled one
