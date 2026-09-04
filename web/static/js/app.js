@@ -636,7 +636,7 @@ async function testConn(service) {
   el.textContent = 'Testing...'; el.className = 'text-xs text-yellow-400 mt-1';
   try {
     const d = await (await api(`/api/test/${service}`, {method:'POST'})).json();
-    if (d.success) { el.textContent = 'Connected'; el.className = 'text-xs text-emerald-400 mt-1'; }
+    if (d.success) { el.textContent = service === 'flaresolverr' && d.version ? `Connected (${d.version})` : 'Connected'; el.className = 'text-xs text-emerald-400 mt-1'; }
     else { el.textContent = d.error || 'Failed'; el.className = 'text-xs text-red-400 mt-1'; }
   } catch(e) { el.textContent = 'Error'; el.className = 'text-xs text-red-400 mt-1'; }
 }

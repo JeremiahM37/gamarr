@@ -199,7 +199,7 @@
       <div class="space-y-6">
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
           <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Connection Tests</h3>
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             <button data-action="testConn" data-service="prowlarr" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-3 text-left transition-colors">
               <div class="text-sm font-medium text-white">Prowlarr</div>
               <div class="text-xs text-slate-500 mt-1" id="test-prowlarr-status">Not tested</div>
@@ -215,6 +215,10 @@
             <button data-action="testConn" data-service="nzbget" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-3 text-left transition-colors">
               <div class="text-sm font-medium text-white">NZBGet</div>
               <div class="text-xs text-slate-500 mt-1" id="test-nzbget-status">Not tested</div>
+            </button>
+            <button data-action="testConn" data-service="flaresolverr" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-3 text-left transition-colors">
+              <div class="text-sm font-medium text-white">FlareSolverr</div>
+              <div class="text-xs text-slate-500 mt-1" id="test-flaresolverr-status" role="status" aria-live="polite">Not tested</div>
             </button>
           </div>
         </div>

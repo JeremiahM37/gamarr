@@ -87,3 +87,35 @@ def test_repeated_vimm_failures_degrade_the_source(ui):
     expect(badge).to_have_text("downloads failing", timeout=SLOW_MS)
     expect(badge).to_have_attribute("title", re.compile("Turnstile"))
     expect(page.locator('#settings-sources [data-source-degraded="myrient"]')).to_have_count(0)
+
+
+def test_flaresolverr_env_restores_vimm_download(gamarr_factory, stub_server, page):
+    """Env configuration tests connected, then feeds the ID to the DDL path."""
+    # Extra session-lived instances must not watch the suite's shared torrent
+    # stub; this test exercises only the direct-download path.
+    app = gamarr_factory(
+        "vimm-flaresolverr",
+        QB_URL="http://127.0.0.1:1/",
+        FLARESOLVERR_URL=stub_server,
+        FLARESOLVERR_MAX_TIMEOUT="12345",
+    )
+    page.goto(app["base"], wait_until="networkidle")
+    page.locator('#main-nav button[data-tab="settings"]').click()
+    page.locator("#test-flaresolverr-status").locator("xpath=ancestor-or-self::button").click()
+    expect(page.locator("#test-flaresolverr-status")).to_have_text(
+        "Connected (3.5.0-e2e)", timeout=SLOW_MS)
+
+    title = "FlareSolverr Vimm Game"
+    _start_vimm_download(app["base"], title)
+    page.locator('#main-nav button[data-tab="downloads"]').click()
+    card = page.locator("#downloads > div", has_text=title)
+    expect(card).to_contain_text("completed", timeout=SLOW_MS)
+    assert "Turnstile" not in card.inner_text()
+
+    calls = json.loads(urllib.request.urlopen(
+        f"{stub_server}/stub/flaresolverr-calls", timeout=5).read())
+    call = calls[-1]
+    assert call["cmd"] == "request.get"
+    assert call["url"].endswith("/vault/1654")
+    assert call["maxTimeout"] == 12345
+    assert call["waitInSeconds"] == 5

@@ -106,6 +106,7 @@ VIMM_CHALLENGE_HTML = """<!DOCTYPE html><html><head><title>Vimm's Lair</title></
 # Tests arm these through /stub/* so the watcher sees a real completed torrent.
 TORRENTS: list[dict] = []
 DELETE_CALLS: list[dict] = []
+FLARESOLVERR_CALLS: list[dict] = []
 SWARM_LOCK = threading.Lock()
 
 
@@ -135,6 +136,7 @@ class _StubHandler(BaseHTTPRequestHandler):
 
     # ── qBittorrent ────────────────────────────────────────────────────────
     def do_POST(self):  # noqa: N802 (http.server API)
+        base = f"http://127.0.0.1:{self.server.server_address[1]}"
         body = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
         path = self.path.split("?")[0]
         if path == "/api/v2/auth/login":
@@ -171,7 +173,23 @@ class _StubHandler(BaseHTTPRequestHandler):
             with SWARM_LOCK:
                 TORRENTS.clear()
                 DELETE_CALLS.clear()
+                FLARESOLVERR_CALLS.clear()
             self._send(200, b'{"ok":true}', "application/json")
+        # ── FlareSolverr: return a rendered Vimm page with a JS media ID ──
+        elif path == "/v1":
+            request = json.loads(body.decode())
+            with SWARM_LOCK:
+                FLARESOLVERR_CALLS.append(request)
+            page = (
+                f'<html><body><form action="{base}/vimm-download" id="dl_form"></form>'
+                '<script>let allMedia = [{"ID":3811,"Region":"USA"}];</script>'
+                '</body></html>'
+            )
+            response = json.dumps({
+                "status": "ok", "message": "Challenge solved!",
+                "solution": {"status": 200, "response": page, "userAgent": "e2e-solver"},
+            }).encode()
+            self._send(200, response, "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -179,7 +197,13 @@ class _StubHandler(BaseHTTPRequestHandler):
         base = f"http://127.0.0.1:{self.server.server_address[1]}"
         path = self.path.split("?")[0]
 
-        if path == "/api/v2/torrents/info":
+        if path == "/":
+            self._send(
+                200,
+                b'{"msg":"FlareSolverr is ready!","version":"3.5.0-e2e"}',
+                "application/json",
+            )
+        elif path == "/api/v2/torrents/info":
             with SWARM_LOCK:
                 body = json.dumps(list(TORRENTS)).encode()
             self._send(200, body, "application/json")
@@ -193,6 +217,10 @@ class _StubHandler(BaseHTTPRequestHandler):
         elif path == "/stub/torrents":
             with SWARM_LOCK:
                 body = json.dumps(list(TORRENTS)).encode()
+            self._send(200, body, "application/json")
+        elif path == "/stub/flaresolverr-calls":
+            with SWARM_LOCK:
+                body = json.dumps(list(FLARESOLVERR_CALLS)).encode()
             self._send(200, body, "application/json")
         # ── Prowlarr ──────────────────────────────────────────────────────
         elif path == "/api/v1/search":
@@ -225,6 +253,18 @@ class _StubHandler(BaseHTTPRequestHandler):
                 self._send(200, _rom_zip(name), "application/zip")
             else:
                 self._send(404, b"no such rom", "text/plain")
+        elif path == "/vimm-download":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if params.get("mediaId") != ["3811"]:
+                self._send(400, b"missing mediaId", "text/plain")
+                return
+            body = _rom_zip("Solved Vimm.zip")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="Solved Vimm.zip"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         # ── Vimm's Lair: every vault page (search or game) is the gate ────
         elif path.startswith("/vault/"):
             self._send(200, VIMM_CHALLENGE_HTML.encode(), "text/html; charset=UTF-8")
@@ -303,6 +343,10 @@ def _boot_gamarr(stub_server, gamarr_binary, data, env_overrides: dict) -> dict:
         "WATCHER_INTERVAL": "10",
         "PROWLARR_URL": stub_server,
         "PROWLARR_API_KEY": "e2e-stub-key",
+        # Keep host-level solver configuration from making tests contact an
+        # external service. Individual tests override these values as needed.
+        "FLARESOLVERR_URL": "",
+        "FLARESOLVERR_MAX_TIMEOUT": "55000",
         **env_overrides,
     }
     log = open(data / "gamarr.log", "w")

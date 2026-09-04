@@ -10,7 +10,8 @@ func TestLoad_Defaults(t *testing.T) {
 	for _, k := range []string{"PROWLARR_URL", "PROWLARR_API_KEY", "QB_URL", "QB_USER", "QB_PASS",
 		"QB_CONTAINER_NAME", "GAMARR_PORT", "MAX_RETRIES", "METRICS_ENABLED", "PROWLARR_GAME_INDEXERS",
 		"AI_MONITOR_ENABLED", "EXTRACT_ARCHIVES", "SABNZBD_URL", "SABNZBD_API_KEY",
-		"NZBGET_URL", "NZBGET_USER", "NZBGET_PASS", "NZBGET_CATEGORY"} {
+		"NZBGET_URL", "NZBGET_USER", "NZBGET_PASS", "NZBGET_CATEGORY", "FLARESOLVERR_URL",
+		"FLARESOLVERR_MAX_TIMEOUT"} {
 		os.Unsetenv(k)
 	}
 
@@ -40,6 +41,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ExtractArchives {
 		t.Error("ExtractArchives should default to false")
 	}
+	if cfg.FlareSolverrURL != "" || cfg.FlareSolverrMaxTimeout != 55_000 {
+		t.Errorf("FlareSolverr defaults = (%q, %d), want disabled and 55000", cfg.FlareSolverrURL, cfg.FlareSolverrMaxTimeout)
+	}
 
 	// No default indexer IDs: Prowlarr numbers indexers per install, so any
 	// hardcoded list points at a different set of trackers on every one.
@@ -62,6 +66,8 @@ func TestLoad_FromEnv(t *testing.T) {
 	os.Setenv("NZBGET_USER", "gamarr")
 	os.Setenv("NZBGET_PASS", "secret")
 	os.Setenv("NZBGET_CATEGORY", "roms")
+	os.Setenv("FLARESOLVERR_URL", "http://flaresolverr:8191")
+	os.Setenv("FLARESOLVERR_MAX_TIMEOUT", "90000")
 	defer func() {
 		os.Unsetenv("GAMARR_PORT")
 		os.Unsetenv("PROWLARR_API_KEY")
@@ -75,6 +81,8 @@ func TestLoad_FromEnv(t *testing.T) {
 		os.Unsetenv("NZBGET_USER")
 		os.Unsetenv("NZBGET_PASS")
 		os.Unsetenv("NZBGET_CATEGORY")
+		os.Unsetenv("FLARESOLVERR_URL")
+		os.Unsetenv("FLARESOLVERR_MAX_TIMEOUT")
 	}()
 
 	cfg := Load()
@@ -106,6 +114,9 @@ func TestLoad_FromEnv(t *testing.T) {
 	if cfg.NZBGetURL != "http://nzbget:6789" || cfg.NZBGetUser != "gamarr" || cfg.NZBGetPass != "secret" || cfg.NZBGetCategory != "roms" {
 		t.Errorf("unexpected NZBGet config: url=%q user=%q pass=%q category=%q", cfg.NZBGetURL, cfg.NZBGetUser, cfg.NZBGetPass, cfg.NZBGetCategory)
 	}
+	if cfg.FlareSolverrURL != "http://flaresolverr:8191" || cfg.FlareSolverrMaxTimeout != 90_000 {
+		t.Errorf("unexpected FlareSolverr config: url=%q timeout=%d", cfg.FlareSolverrURL, cfg.FlareSolverrMaxTimeout)
+	}
 }
 
 func TestLoad_ExplicitEmptyQBURLDisablesQBittorrent(t *testing.T) {
@@ -116,6 +127,17 @@ func TestLoad_ExplicitEmptyQBURLDisablesQBittorrent(t *testing.T) {
 	}
 	if cfg.HasQBittorrent() {
 		t.Fatal("qBittorrent should be disabled by an explicitly empty QB_URL")
+	}
+}
+
+func TestLoad_InvalidFlareSolverrTimeoutUsesDefault(t *testing.T) {
+	for _, value := range []string{"9999", "600001", "not-a-number"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("FLARESOLVERR_MAX_TIMEOUT", value)
+			if got := Load().FlareSolverrMaxTimeout; got != 55_000 {
+				t.Errorf("timeout = %d, want 55000", got)
+			}
+		})
 	}
 }
 

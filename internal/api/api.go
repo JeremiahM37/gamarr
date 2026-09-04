@@ -152,6 +152,7 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Post("/api/test/qbittorrent", requireAdmin(s.handleTestQBittorrent))
 	r.Post("/api/test/sabnzbd", requireAdmin(s.handleTestSABnzbd))
 	r.Post("/api/test/nzbget", requireAdmin(s.handleTestNZBGet))
+	r.Post("/api/test/flaresolverr", requireAdmin(s.handleTestFlareSolverr))
 
 	// Source health
 	r.Get("/api/sources/health", s.handleSourcesHealth)

@@ -1,6 +1,8 @@
 package download
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"gamarr/internal/db"
 	"gamarr/internal/search"
@@ -30,10 +34,50 @@ func TestParseVimmDownloadForm(t *testing.T) {
 		t.Errorf("action = %q, want /download", action)
 	}
 
-	live := `<form action="//dl3.vimm.net/" method="POST" id="dl_form" onsubmit="return submitDL(this, 'dialog3')"><input type="hidden" name="mediaId" value="1624">`
+	live := `<form action="//dl3.vimm.net/" method="POST" id="dl_form" onsubmit="return submitDL(this, 'dialog3')"><input type="hidden" name="mediaId" value="1624"></form>`
 	action, media = parseVimmDownloadForm(live)
 	if media != "1624" || action != "//dl3.vimm.net/" {
 		t.Errorf("live form action=%q media=%q", action, media)
+	}
+
+	// Current solved pages can carry the selected media in JavaScript instead
+	// of a hidden input. Be liberal about whitespace and quoted numbers.
+	js := `<form action='//dl3.vimm.net/' id='dl_form'></form><script>let allMedia = [{"ID" : "3811", "Region":"USA"}];</script>`
+	action, media = parseVimmDownloadForm(js)
+	if media != "3811" || action != "//dl3.vimm.net/" {
+		t.Errorf("JavaScript form action=%q media=%q", action, media)
+	}
+
+	// An unrelated page model must not win over Vimm's scoped media array.
+	js = `<script>const analytics = {"ID":9999};</script>
+		<form action="//dl3.vimm.net/" id="dl_form"></form>
+		<script>const allMedia = [{"ID":3811,"SortOrder":2},{"ID":"3812","SortOrder":1,"GoodTitle":"A [bracket] in a string"}];</script>`
+	action, media = parseVimmDownloadForm(js)
+	if media != "3812" || action != "//dl3.vimm.net/" {
+		t.Errorf("default JavaScript media action=%q media=%q, want 3812", action, media)
+	}
+
+	// Multiple entries with no rendered form value or explicit default are
+	// ambiguous; guessing from a select index can pick the wrong disc.
+	js = `<form action="//dl3.vimm.net/" id="dl_form"></form><script>let media=[{"ID":3811},{"ID":3812}]</script>`
+	_, media = parseVimmDownloadForm(js)
+	if media != "" {
+		t.Errorf("ambiguous media array chose %q, want no guess", media)
+	}
+
+	// Current captures have also used the shorter variable name.
+	js = `<form action="//dl3.vimm.net/" id="download_form"></form><script>const media=[{"ID":3811}]</script>`
+	action, media = parseVimmDownloadForm(js)
+	if media != "3811" || action != "//dl3.vimm.net/" {
+		t.Errorf("const media action=%q media=%q", action, media)
+	}
+
+	// A similarly named input outside the download form is not authoritative.
+	js = `<form id="tracking"><input name="mediaId" value="9999"></form>
+		<form action="//dl3.vimm.net/" id="dl_form"><input value="3811" name="mediaId"></form>`
+	action, media = parseVimmDownloadForm(js)
+	if media != "3811" || action != "//dl3.vimm.net/" {
+		t.Errorf("scoped form action=%q media=%q", action, media)
 	}
 }
 
@@ -111,6 +155,11 @@ func TestDownloadVimmGame_UsesGETNotPOST(t *testing.T) {
 	}
 	reg.Vimm.BaseURL = srv.URL + "/vault/"
 	cfg.Sources = reg
+	// A configured solver is a challenge fallback, not a proxy for normal
+	// pages. This deliberately points at a dead endpoint; the direct path must
+	// still complete without touching it.
+	cfg.FlareSolverrURL = "http://127.0.0.1:1"
+	cfg.FlareSolverrMaxTimeout = 10_000
 
 	jobs := newTestJobs(t)
 	m := New(cfg, jobs, nil)
@@ -290,6 +339,167 @@ func TestDownloadVimmGame_TurnstileGateIsNamed(t *testing.T) {
 	}
 	if strings.Contains(errMsg, "Could not find download form") {
 		t.Error("gate reported as a parsing miss")
+	}
+}
+
+func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
+	orig := vimmDownloadPause
+	vimmDownloadPause = 0
+	t.Cleanup(func() { vimmDownloadPause = orig })
+
+	var srv *httptest.Server
+	var solverCalls, downloadCalls int
+	var solverRequest struct {
+		Command       string `json:"cmd"`
+		URL           string `json:"url"`
+		MaxTimeout    int    `json:"maxTimeout"`
+		WaitInSeconds int    `json:"waitInSeconds"`
+	}
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/vault/"):
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			_, _ = io.WriteString(w, vimmChallengePageHTML)
+		case r.URL.Path == "/v1":
+			solverCalls++
+			if err := json.NewDecoder(r.Body).Decode(&solverRequest); err != nil {
+				t.Errorf("decode FlareSolverr request: %v", err)
+			}
+			page := fmt.Sprintf(`<html><body><form action="%s/download" id="dl_form"></form><script>let allMedia = [{"ID":3811,"Region":"USA"}];</script></body></html>`, srv.URL)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok",
+				"solution": map[string]interface{}{
+					"status": 200, "response": page, "userAgent": "solver-agent",
+				},
+			})
+		case r.URL.Path == "/download":
+			downloadCalls++
+			if r.Method != http.MethodGet || r.URL.Query().Get("mediaId") != "3811" {
+				t.Errorf("download request = %s %s, want GET ?mediaId=3811", r.Method, r.URL.String())
+			}
+			w.Header().Set("Content-Disposition", `attachment; filename="Solved Game.zip"`)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write([]byte("PK\x03\x04solved"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	// These Config values represent FLARESOLVERR_URL and
+	// FLARESOLVERR_MAX_TIMEOUT loaded at startup.
+	timeout := 12_345
+	m.cfg.FlareSolverrURL = srv.URL
+	m.cfg.FlareSolverrMaxTimeout = timeout
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	got := m.downloadVimmGame("4970", m.cfg.QBSavePath, jobID)
+	if got == "" {
+		job, _ := jobs.Get(jobID)
+		t.Fatalf("download failed: %+v", job)
+	}
+	if solverCalls != 1 || downloadCalls != 1 {
+		t.Fatalf("solver calls=%d download calls=%d, want one each", solverCalls, downloadCalls)
+	}
+	if solverRequest.Command != "request.get" || solverRequest.URL != srv.URL+"/vault/4970" {
+		t.Errorf("FlareSolverr request = %+v", solverRequest)
+	}
+	if solverRequest.MaxTimeout != timeout || solverRequest.WaitInSeconds != 5 {
+		t.Errorf("FlareSolverr timeouts = max %d wait %d", solverRequest.MaxTimeout, solverRequest.WaitInSeconds)
+	}
+	if filepath.Base(got) != "Solved Game.zip" {
+		t.Errorf("downloaded file = %q", filepath.Base(got))
+	}
+}
+
+func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
+	firstEntered := make(chan struct{})
+	secondEntered := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstEntered)
+			<-releaseFirst
+		case 2:
+			secondEntered <- struct{}{}
+		}
+		_, _ = io.WriteString(w, `{"status":"ok","solution":{"response":"<html>ok</html>"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := New(newTestConfig(t), newTestJobs(t), nil)
+	errs := make(chan error, 2)
+	go func() {
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/one", 10_000)
+		errs <- err
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first solver request did not arrive")
+	}
+
+	secondStarted := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/two", 10_000)
+		errs <- err
+	}()
+	<-secondStarted
+
+	concurrent := false
+	select {
+	case <-secondEntered:
+		concurrent = true
+	case <-time.After(150 * time.Millisecond):
+		// Expected: the second call is waiting for the one solver slot.
+	}
+	close(releaseFirst)
+	if !concurrent {
+		select {
+		case <-secondEntered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("second solver request did not run after the first completed")
+		}
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if concurrent {
+		t.Error("FlareSolverr requests ran concurrently")
+	}
+}
+
+func TestDownloadVimmGame_FlareSolverrStillSeesChallenge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "solution": map[string]interface{}{"response": vimmChallengePageHTML},
+			})
+			return
+		}
+		_, _ = io.WriteString(w, vimmChallengePageHTML)
+	}))
+	t.Cleanup(srv.Close)
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	m.cfg.FlareSolverrURL = srv.URL
+	m.cfg.FlareSolverrMaxTimeout = 10_000
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	if got := m.downloadVimmGame("4970", m.cfg.QBSavePath, jobID); got != "" {
+		t.Fatalf("challenge page must not produce a file, got %q", got)
+	}
+	job, _ := jobs.Get(jobID)
+	if errMsg, _ := job["error"].(string); errMsg != vimmFlareSolverrChallengeError {
+		t.Errorf("error = %q, want solver challenge explanation", errMsg)
 	}
 }
 

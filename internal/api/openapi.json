@@ -267,6 +267,7 @@
     "/api/test/qbittorrent":  {"post": {"summary": "Connectivity test: qBittorrent"}},
     "/api/test/sabnzbd":      {"post": {"summary": "Connectivity test: SABnzbd"}},
     "/api/test/nzbget":       {"post": {"summary": "Connectivity test: NZBGet"}},
+    "/api/test/flaresolverr": {"post": {"summary": "Connectivity test: FlareSolverr"}},
     "/api/test/transmission": {"post": {"summary": "Connectivity test: Transmission"}},
     "/api/test/deluge":       {"post": {"summary": "Connectivity test: Deluge"}},
     "/torznab/api": {

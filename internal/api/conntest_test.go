@@ -218,6 +218,52 @@ func TestConnectionTestNZBGet(t *testing.T) {
 	})
 }
 
+func TestConnectionTestFlareSolverr(t *testing.T) {
+	t.Run("not configured", func(t *testing.T) {
+		env := newTestEnv(t, nil)
+		rr := env.do("POST", "/api/test/flaresolverr", "")
+		wantStatus(t, rr, 200)
+		m := decodeMap(t, rr)
+		if m["success"] != false || m["error"] != "Not configured" {
+			t.Errorf("got %v, want success=false error=Not configured", m)
+		}
+	})
+
+	t.Run("success reports version", func(t *testing.T) {
+		var gotPath string
+		mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"msg":"FlareSolverr is ready!","version":"3.5.0"}`))
+		}))
+		defer mock.Close()
+
+		env := newTestEnv(t, func(c *config.Config) { c.FlareSolverrURL = mock.URL + "/v1" })
+		rr := env.do("POST", "/api/test/flaresolverr", "")
+		wantStatus(t, rr, 200)
+		m := decodeMap(t, rr)
+		if m["success"] != true || m["version"] != "3.5.0" {
+			t.Errorf("got %v, want success=true version=3.5.0", m)
+		}
+		if gotPath != "/" {
+			t.Errorf("health request path = %q, want /", gotPath)
+		}
+	})
+
+	t.Run("wrong service reports failure", func(t *testing.T) {
+		mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"msg":"not Flare Solver"}`))
+		}))
+		defer mock.Close()
+		env := newTestEnv(t, func(c *config.Config) { c.FlareSolverrURL = mock.URL })
+		rr := env.do("POST", "/api/test/flaresolverr", "")
+		wantStatus(t, rr, 200)
+		if m := decodeMap(t, rr); m["success"] != false {
+			t.Errorf("got %v, want success=false", m)
+		}
+	})
+}
+
 // Transmission and Deluge connectivity tests are admin-gated identically to
 // their qBittorrent/Prowlarr/Usenet siblings (see the 403 assertions in
 // TestMultiUserSessionFlow). Here we cover the pass-through-admin responses.
