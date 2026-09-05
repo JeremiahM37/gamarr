@@ -627,6 +627,9 @@ var verifyArchive = fileops.VerifyArchive
 // archive indirects fileops.Archive so a test can fail the import mid-walk.
 var archive = fileops.Archive
 
+// fileImport indirects fileops.Import so a test can fail the ROM arm's import.
+var fileImport = fileops.Import
+
 // archivedImportMode reports the mode an archive this import just wrote counts
 // as. Only for an archive written from src: one that was already there cannot be
 // told apart from an archive of another build.
@@ -1856,7 +1859,7 @@ func (m *Manager) importOptions() fileops.Options {
 // whether the torrent can be left seeding.
 func (m *Manager) importContent(src, dest string) (fileops.Mode, error) {
 	opt := m.importOptions()
-	return opt.Mode, fileops.Import(src, dest, opt)
+	return opt.Mode, fileImport(src, dest, opt)
 }
 
 func pathExists(p string) bool {
