@@ -809,3 +809,36 @@ func TestFolderImportSidecarRecordsNoWantedSet(t *testing.T) {
 		t.Error("a folder import's sidecar recorded an archive's wanted set")
 	}
 }
+
+// A file list with no common wrapper - flat bins beside an MD5/ folder - has
+// an empty root, and whole names are then what the walk's relative paths are.
+func TestWantedFilesWithNoCommonRootKeepsFullNames(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "fg-01.bin", Priority: 1},
+		{Name: "MD5/fitgirl-bins.md5", Priority: 1},
+		{Name: "fg-02.bin.!qB", Priority: 0},
+	})
+	m := New(cfg, jobs, qm.client())
+
+	got := m.wantedFiles(&qbit.Torrent{
+		Name: "Some Long Display Name That Matches Nothing",
+		Hash: "mixed-root", ContentPath: filepath.Join(cfg.QBSavePath, "whatever"),
+	}, cfg.QBSavePath)
+
+	if got == nil {
+		t.Fatal("wanted set = nil, want the priority-1 names")
+	}
+	if _, ok := got["fg-01.bin"]; !ok {
+		t.Error("the flat file is missing from the wanted set")
+	}
+	if _, ok := got["MD5/fitgirl-bins.md5"]; !ok {
+		t.Error("the MD5 file lost its folder prefix in the wanted set")
+	}
+	if _, ok := got["fg-02.bin.!qB"]; ok {
+		t.Error("the deselected file is in the wanted set")
+	}
+}
