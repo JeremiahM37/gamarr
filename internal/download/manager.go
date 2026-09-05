@@ -1027,7 +1027,7 @@ var vimmChallengeRe = regexp.MustCompile(`cf-turnstile|Checking if you are human
 // cause so the failure is a decision the user can act on, not a dead end.
 const vimmChallengeError = "Vimm's Lair requires a Cloudflare Turnstile check. Set FLARESOLVERR_URL to enable Vimm downloads, or try another source for this title."
 
-const vimmFlareSolverrChallengeError = "FlareSolverr returned Vimm's Turnstile page instead of the vault page. Check the FlareSolverr service and increase its max timeout."
+const vimmFlareSolverrChallengeError = "FlareSolverr returned Vimm's Turnstile page instead of the vault page. Check the service, adjust FLARESOLVERR_TABS_TILL_VERIFY, or increase its max timeout."
 
 // vimmIsChallenge reports whether a Vimm response is the Turnstile gate.
 func vimmIsChallenge(pageText string) bool {
