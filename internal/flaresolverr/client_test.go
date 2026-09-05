@@ -78,7 +78,7 @@ func TestFetch(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 20_000, 74)
+	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 55_000, 74)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestFetch(t *testing.T) {
 	if got.Session != calls[0].Session || calls[2].Session != calls[0].Session {
 		t.Errorf("session lifecycle = %+v", calls)
 	}
-	if got.MaxTimeout != 20_000 || got.WaitInSeconds != 5 {
+	if got.MaxTimeout != 55_000 || got.WaitInSeconds != 5 {
 		t.Errorf("timeouts = max %d wait %d", got.MaxTimeout, got.WaitInSeconds)
 	}
 	if got.TabsTillVerify == nil || *got.TabsTillVerify != 74 {
@@ -161,7 +161,7 @@ func TestFetchRetriesStaleElementInSameSession(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	solution, err := Fetch(context.Background(), srv.URL, "https://vimm.net/vault/3453", 20_000, 74)
+	solution, err := Fetch(context.Background(), srv.URL, "https://vimm.net/vault/3453", 55_000, 74)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestFetchRetriesStaleElementInSameSession(t *testing.T) {
 	if first.WaitInSeconds != 5 || followup.WaitInSeconds != 2 {
 		t.Errorf("request waits = %d then %d, want 5 then 2", first.WaitInSeconds, followup.WaitInSeconds)
 	}
-	if first.MaxTimeout != 20_000 || followup.MaxTimeout != 20_000 {
+	if first.MaxTimeout != 55_000 || followup.MaxTimeout != 55_000 {
 		t.Errorf("request max timeouts = %d then %d", first.MaxTimeout, followup.MaxTimeout)
 	}
 	if first.TabsTillVerify == nil || *first.TabsTillVerify != 74 {
@@ -207,8 +207,8 @@ func commandNames(calls []request) []string {
 }
 
 func TestRequestTimeoutIncludesSolverOverheadGrace(t *testing.T) {
-	want := 20_000*time.Millisecond + 15*time.Second
-	if got := requestTimeout(20_000); got != want {
+	want := 55_000*time.Millisecond + 15*time.Second
+	if got := requestTimeout(55_000); got != want {
 		t.Errorf("requestTimeout = %v, want %v", got, want)
 	}
 }

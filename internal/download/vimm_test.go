@@ -428,7 +428,7 @@ func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
 	m, jobs := newVimmManager(t, srv.URL+"/vault/")
 	// These Config values represent startup environment configuration. Leave
 	// tabs at the Config zero value to exercise the Vimm default of 74.
-	timeout := 20_000
+	timeout := 55_000
 	m.cfg.FlareSolverrURL = srv.URL
 	m.cfg.FlareSolverrMaxTimeout = timeout
 	jobID := newJobID()
@@ -505,7 +505,7 @@ func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
 	m := New(newTestConfig(t), newTestJobs(t), nil)
 	errs := make(chan error, 2)
 	go func() {
-		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/one", 20_000, 74)
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/one", 55_000, 74)
 		errs <- err
 	}()
 	select {
@@ -517,7 +517,7 @@ func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
 	secondStarted := make(chan struct{})
 	go func() {
 		close(secondStarted)
-		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/two", 20_000, 74)
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/two", 55_000, 74)
 		errs <- err
 	}()
 	<-secondStarted
@@ -580,7 +580,7 @@ func TestDownloadVimmGame_FlareSolverrStillSeesChallenge(t *testing.T) {
 	t.Cleanup(srv.Close)
 	m, jobs := newVimmManager(t, srv.URL+"/vault/")
 	m.cfg.FlareSolverrURL = srv.URL
-	m.cfg.FlareSolverrMaxTimeout = 20_000
+	m.cfg.FlareSolverrMaxTimeout = 55_000
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
 

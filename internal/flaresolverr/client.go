@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	// DefaultMaxTimeout matches Jackett's FlareSolverr default. Values are in
-	// milliseconds because that is the unit used by the FlareSolverr API.
+	// DefaultMaxTimeout leaves margin above the observed Vimm Turnstile solve.
+	// Values are milliseconds because that is the FlareSolverr API unit.
 	DefaultMaxTimeout = 55_000
 	// DefaultVimmTabsTillVerify is Vimm's manual-focus preset. Tab order is
 	// layout-dependent, so deployments can override it through configuration.
@@ -28,9 +28,9 @@ const (
 	// Twenty seconds is sufficient for the verified Vimm Turnstile flow while
 	// still leaving enough time for FlareSolverr to drive the browser.
 	MinMaxTimeout = 20_000
-	// MaxMaxTimeout prevents overflowing time.Duration and keeps a typo from
-	// tying up a download worker (and its browser) indefinitely.
-	MaxMaxTimeout = 600_000
+	// MaxMaxTimeout bounds the supported solve window so a typo cannot tie up a
+	// download worker (and its browser) longer than the recommended maximum.
+	MaxMaxTimeout = 55_000
 
 	MinTabsTillVerify = 1
 	// FlareSolverr has no documented upper limit. This generous bound catches

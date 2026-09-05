@@ -213,7 +213,7 @@ class _StubHandler(BaseHTTPRequestHandler):
                     phase = FLARESOLVERR_SESSIONS.get(session)
                     valid_common = (
                         request.get("url", "").endswith("/vault/1654")
-                        and request.get("maxTimeout") == 20000
+                        and request.get("maxTimeout") == 55000
                     )
                     if phase == "created" and valid_common:
                         if request.get("waitInSeconds") != 5 or request.get("tabs_till_verify") != 74:

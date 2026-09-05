@@ -67,7 +67,7 @@ func TestLoad_FromEnv(t *testing.T) {
 	os.Setenv("NZBGET_PASS", "secret")
 	os.Setenv("NZBGET_CATEGORY", "roms")
 	os.Setenv("FLARESOLVERR_URL", "http://flaresolverr:8191")
-	os.Setenv("FLARESOLVERR_MAX_TIMEOUT", "90000")
+	os.Setenv("FLARESOLVERR_MAX_TIMEOUT", "45000")
 	os.Setenv("FLARESOLVERR_TABS_TILL_VERIFY", "41")
 	defer func() {
 		os.Unsetenv("GAMARR_PORT")
@@ -116,7 +116,7 @@ func TestLoad_FromEnv(t *testing.T) {
 	if cfg.NZBGetURL != "http://nzbget:6789" || cfg.NZBGetUser != "gamarr" || cfg.NZBGetPass != "secret" || cfg.NZBGetCategory != "roms" {
 		t.Errorf("unexpected NZBGet config: url=%q user=%q pass=%q category=%q", cfg.NZBGetURL, cfg.NZBGetUser, cfg.NZBGetPass, cfg.NZBGetCategory)
 	}
-	if cfg.FlareSolverrURL != "http://flaresolverr:8191" || cfg.FlareSolverrMaxTimeout != 90_000 || cfg.FlareSolverrTabsTillVerify != 41 {
+	if cfg.FlareSolverrURL != "http://flaresolverr:8191" || cfg.FlareSolverrMaxTimeout != 45_000 || cfg.FlareSolverrTabsTillVerify != 41 {
 		t.Errorf("unexpected FlareSolverr config: url=%q timeout=%d tabs=%d", cfg.FlareSolverrURL, cfg.FlareSolverrMaxTimeout, cfg.FlareSolverrTabsTillVerify)
 	}
 }
@@ -133,7 +133,7 @@ func TestLoad_ExplicitEmptyQBURLDisablesQBittorrent(t *testing.T) {
 }
 
 func TestLoad_InvalidFlareSolverrTimeoutUsesDefault(t *testing.T) {
-	for _, value := range []string{"19999", "600001", "not-a-number"} {
+	for _, value := range []string{"19999", "55001", "not-a-number"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("FLARESOLVERR_MAX_TIMEOUT", value)
 			if got := Load().FlareSolverrMaxTimeout; got != 55_000 {

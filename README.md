@@ -139,7 +139,7 @@ services:
       - QB_PASS=changeme
       # Optional, for Vimm downloads behind Turnstile:
       # - FLARESOLVERR_URL=http://flaresolverr:8191
-      # - FLARESOLVERR_MAX_TIMEOUT=20000
+      # - FLARESOLVERR_MAX_TIMEOUT=55000
       # - FLARESOLVERR_TABS_TILL_VERIFY=74
     restart: unless-stopped
 ```
@@ -243,7 +243,7 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `PROWLARR_GAME_INDEXERS` | *(auto)* | Comma-separated indexer IDs to search. Unset means every enabled indexer that advertises game categories (see [Prowlarr indexers](#prowlarr-indexers)) |
 | `RAWG_API_KEY` | | RAWG.io API key (enables metadata, calendar) |
 | `FLARESOLVERR_URL` | | Optional FlareSolverr API base URL, for example `http://flaresolverr:8191` |
-| `FLARESOLVERR_MAX_TIMEOUT` | `55000` | Maximum FlareSolverr solve time in milliseconds (`20000`–`600000`) |
+| `FLARESOLVERR_MAX_TIMEOUT` | `55000` | Maximum FlareSolverr solve time in milliseconds (`20000`–`55000`) |
 | `FLARESOLVERR_TABS_TILL_VERIFY` | `74` | Tab presses used by FlareSolverr 3.5.0+ to focus Vimm's Turnstile verification control (`1`–`1000`) |
 
 #### Vimm downloads with FlareSolverr
@@ -270,7 +270,8 @@ browser session. If FlareSolverr reports a stale-element error after Turnstile
 submits, Gamarr retrieves the navigated page in the same session and then
 destroys that session, including on error paths. The default is `74` tab
 presses; because focus order is layout-dependent, override it when Vimm's page
-changes. A `20000` ms timeout is supported; the default remains `55000` ms.
+changes. The timeout defaults to its `55000` ms maximum; overrides down to the
+`20000` ms minimum are accepted.
 Use **Settings → Connection Tests → FlareSolverr** to verify the configured
 service is reachable.
 

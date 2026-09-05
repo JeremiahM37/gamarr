@@ -98,7 +98,7 @@ def test_flaresolverr_env_restores_vimm_download(gamarr_factory, stub_server, pa
         "vimm-flaresolverr",
         QB_URL="http://127.0.0.1:1/",
         FLARESOLVERR_URL=stub_server,
-        FLARESOLVERR_MAX_TIMEOUT="20000",
+        FLARESOLVERR_MAX_TIMEOUT="55000",
         FLARESOLVERR_TABS_TILL_VERIFY="74",
     )
     page.goto(app["base"], wait_until="networkidle")
@@ -126,7 +126,7 @@ def test_flaresolverr_env_restores_vimm_download(gamarr_factory, stub_server, pa
     first, followup = calls[1], calls[2]
     assert first["url"].endswith("/vault/1654")
     assert followup["url"] == first["url"]
-    assert first["maxTimeout"] == followup["maxTimeout"] == 20000
+    assert first["maxTimeout"] == followup["maxTimeout"] == 55000
     assert first["waitInSeconds"] == 5
     assert first["tabs_till_verify"] == 74
     assert followup["waitInSeconds"] == 2
