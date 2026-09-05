@@ -448,6 +448,16 @@ func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug str
 // organizeGame imports a finished torrent, reporting whether a failure is worth
 // another attempt later. Only a content path that is not there yet is: the
 // client may still be moving files into place when the download reads complete.
+// importMoved reports whether the content tree this attempt was reading has
+// been moved away by the client - the one transient shape an import failure
+// takes, since the client publishes a finished download by moving it. A tree
+// still in place with something missing inside is a real defect and stays
+// terminal rather than burning the retry loop on it.
+func importMoved(contentPath string) bool {
+	_, statErr := os.Stat(contentPath)
+	return errors.Is(statErr, os.ErrNotExist)
+}
+
 func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platSlug string, isPC bool) (retryable bool) {
 	contentPath := torrent.ContentPath
 	torrentName := torrent.Name
@@ -503,10 +513,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			})
-			// The client moves a finished torrent to its final path right after
-			// it reads complete, so files vanishing mid-import mean it published
-			// elsewhere, not that the content is gone.
-			return errors.Is(err, os.ErrNotExist)
+			return importMoved(contentPath)
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, "GameVault"),
@@ -536,7 +543,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			})
-			return errors.Is(err, os.ErrNotExist)
+			return importMoved(contentPath)
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, fmt.Sprintf("RomM (%s)", platf)),

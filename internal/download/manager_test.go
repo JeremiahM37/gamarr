@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1407,11 +1406,13 @@ func TestOrganizeTorrentRetriesAPathThatIsNotThereYet(t *testing.T) {
 	assertImportedCleanly(t, m, jobID)
 }
 
-// The client moves a finished torrent from the staging path to its final home
-// right after progress reads complete, so the first import can lose files
-// mid-walk even though the content path itself resolves. That failure has to
-// read as retryable: the loop re-reads the torrent and lands the published
-// payload, which is what the manual retry does by hand.
+// The client publishes a finished torrent by moving it to its final home right
+// after progress reads complete, so the first import can lose its tree
+// mid-walk even though the content path itself resolved. The failure is not
+// always an ENOENT - a cross-device publish that copies instead of renaming
+// surfaces as a census or write error - so the classification re-stats the
+// tree the attempt was reading. The staging tree holds nothing importable, so
+// only the re-read of the torrent's published path can complete the job.
 func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 	setImportRetries(t, 400, 5*time.Millisecond)
 	qm := newQbitMock(t)
@@ -1423,13 +1424,14 @@ func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 
 	stale := filepath.Join(cfg.QBSavePath, "temp", "The Witcher 3 [FitGirl Repack]")
 	published := filepath.Join(cfg.QBSavePath, "The Witcher 3 [FitGirl Repack]")
-	for _, d := range []string{stale, published} {
-		if err := os.MkdirAll(d, 0755); err != nil {
-			t.Fatalf("mkdir %s: %v", d, err)
-		}
-		if err := os.WriteFile(filepath.Join(d, "setup.exe"), []byte("installer"), 0644); err != nil {
-			t.Fatalf("write setup.exe: %v", err)
-		}
+	if err := os.MkdirAll(stale, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", stale, err)
+	}
+	if err := os.MkdirAll(published, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", published, err)
+	}
+	if err := os.WriteFile(filepath.Join(published, "setup.exe"), []byte("installer"), 0644); err != nil {
+		t.Fatalf("write setup.exe: %v", err)
 	}
 
 	// The client answers the loop's re-read with the published path, while the
@@ -1443,12 +1445,15 @@ func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 		"status": "downloading", "title": "The Witcher 3 [FitGirl Repack]", "info_hash": "w3-hash",
 	})
 
+	// First attempt reads the staging tree; the move takes the tree away under
+	// it and the error surfaces as a mismatch, not an ENOENT.
 	realArchive := archive
 	attempts := 0
 	archive = func(src, dest string, wanted fileops.WantedFiles) error {
 		attempts++
 		if attempts == 1 {
-			return &fs.PathError{Op: "lstat", Path: filepath.Join(src, "fg-02.bin"), Err: os.ErrNotExist}
+			os.RemoveAll(src)
+			return fmt.Errorf("archive of %s holds 0 files and 0 bytes, source has 1 and 9", src)
 		}
 		return realArchive(src, dest, wanted)
 	}
