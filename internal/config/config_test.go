@@ -133,7 +133,7 @@ func TestLoad_ExplicitEmptyQBURLDisablesQBittorrent(t *testing.T) {
 }
 
 func TestLoad_InvalidFlareSolverrTimeoutUsesDefault(t *testing.T) {
-	for _, value := range []string{"24999", "600001", "not-a-number"} {
+	for _, value := range []string{"19999", "600001", "not-a-number"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("FLARESOLVERR_MAX_TIMEOUT", value)
 			if got := Load().FlareSolverrMaxTimeout; got != 55_000 {

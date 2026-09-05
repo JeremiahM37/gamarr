@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -348,36 +349,72 @@ func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
 	t.Cleanup(func() { vimmDownloadPause = orig })
 
 	var srv *httptest.Server
-	var solverCalls, downloadCalls int
-	var solverRequest struct {
+	var solverRequests []struct {
 		Command        string `json:"cmd"`
 		URL            string `json:"url"`
+		Session        string `json:"session"`
 		MaxTimeout     int    `json:"maxTimeout"`
 		WaitInSeconds  int    `json:"waitInSeconds"`
-		TabsTillVerify int    `json:"tabs_till_verify"`
+		TabsTillVerify *int   `json:"tabs_till_verify"`
 	}
+	var downloadCalls int
+	var activeSession string
+	sessionDestroyed := false
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/vault/"):
 			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 			_, _ = io.WriteString(w, vimmChallengePageHTML)
 		case r.URL.Path == "/v1":
-			solverCalls++
+			var solverRequest struct {
+				Command        string `json:"cmd"`
+				URL            string `json:"url"`
+				Session        string `json:"session"`
+				MaxTimeout     int    `json:"maxTimeout"`
+				WaitInSeconds  int    `json:"waitInSeconds"`
+				TabsTillVerify *int   `json:"tabs_till_verify"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&solverRequest); err != nil {
 				t.Errorf("decode FlareSolverr request: %v", err)
 			}
-			page := fmt.Sprintf(`<html><body><form action="%s/download" id="dl_form"></form><script>let allMedia = [{"ID":3811,"Region":"USA"}];</script></body></html>`, srv.URL)
+			solverRequests = append(solverRequests, solverRequest)
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"status": "ok",
-				"solution": map[string]interface{}{
-					"status": 200, "response": page, "userAgent": "solver-agent",
-				},
-			})
+			switch solverRequest.Command {
+			case "sessions.create":
+				activeSession = solverRequest.Session
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status": "ok", "message": "Session created successfully.", "session": activeSession,
+				})
+			case "request.get":
+				if solverRequest.Session != activeSession {
+					http.Error(w, `{"status":"error","message":"wrong session"}`, http.StatusBadRequest)
+					return
+				}
+				if solverRequest.TabsTillVerify != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = io.WriteString(w, `{"status":"error","message":"Error: Error solving the challenge. Message: stale element reference: stale element not found"}`)
+					return
+				}
+				page := fmt.Sprintf(`<html><body><form action="%s/download" id="dl_form"></form><script>let allMedia = [{"ID":3328,"Region":"USA"}];</script></body></html>`, srv.URL)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status": "ok", "solution": map[string]interface{}{
+						"status": 200, "response": page, "userAgent": "solver-agent",
+					},
+				})
+			case "sessions.destroy":
+				if solverRequest.Session != activeSession {
+					t.Errorf("destroy session = %q, want %q", solverRequest.Session, activeSession)
+				}
+				sessionDestroyed = true
+				_, _ = io.WriteString(w, `{"status":"ok","message":"The session has been removed."}`)
+			}
 		case r.URL.Path == "/download":
 			downloadCalls++
-			if r.Method != http.MethodGet || r.URL.Query().Get("mediaId") != "3811" {
-				t.Errorf("download request = %s %s, want GET ?mediaId=3811", r.Method, r.URL.String())
+			if !sessionDestroyed {
+				t.Error("download started before the temporary FlareSolverr session was destroyed")
+			}
+			if r.Method != http.MethodGet || r.URL.Query().Get("mediaId") != "3328" {
+				t.Errorf("download request = %s %s, want GET ?mediaId=3328", r.Method, r.URL.String())
 			}
 			w.Header().Set("Content-Disposition", `attachment; filename="Solved Game.zip"`)
 			w.Header().Set("Content-Type", "application/zip")
@@ -391,7 +428,7 @@ func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
 	m, jobs := newVimmManager(t, srv.URL+"/vault/")
 	// These Config values represent startup environment configuration. Leave
 	// tabs at the Config zero value to exercise the Vimm default of 74.
-	timeout := 25_000
+	timeout := 20_000
 	m.cfg.FlareSolverrURL = srv.URL
 	m.cfg.FlareSolverrMaxTimeout = timeout
 	jobID := newJobID()
@@ -402,17 +439,27 @@ func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
 		job, _ := jobs.Get(jobID)
 		t.Fatalf("download failed: %+v", job)
 	}
-	if solverCalls != 1 || downloadCalls != 1 {
-		t.Fatalf("solver calls=%d download calls=%d, want one each", solverCalls, downloadCalls)
+	if len(solverRequests) != 4 || downloadCalls != 1 {
+		t.Fatalf("solver requests=%+v download calls=%d, want four lifecycle calls and one download", solverRequests, downloadCalls)
 	}
-	if solverRequest.Command != "request.get" || solverRequest.URL != srv.URL+"/vault/4970" {
-		t.Errorf("FlareSolverr request = %+v", solverRequest)
+	wantCommands := []string{"sessions.create", "request.get", "request.get", "sessions.destroy"}
+	for i, want := range wantCommands {
+		if solverRequests[i].Command != want {
+			t.Errorf("solver call %d command = %q, want %q", i, solverRequests[i].Command, want)
+		}
+		if solverRequests[i].Session != activeSession {
+			t.Errorf("solver call %d session = %q, want %q", i, solverRequests[i].Session, activeSession)
+		}
 	}
-	if solverRequest.MaxTimeout != timeout || solverRequest.WaitInSeconds != 5 {
-		t.Errorf("FlareSolverr timeouts = max %d wait %d", solverRequest.MaxTimeout, solverRequest.WaitInSeconds)
+	first, followup := solverRequests[1], solverRequests[2]
+	if first.URL != srv.URL+"/vault/4970" || followup.URL != first.URL {
+		t.Errorf("FlareSolverr URLs = %q then %q", first.URL, followup.URL)
 	}
-	if solverRequest.TabsTillVerify != 74 {
-		t.Errorf("FlareSolverr tabs_till_verify = %d, want 74", solverRequest.TabsTillVerify)
+	if first.MaxTimeout != timeout || first.WaitInSeconds != 5 || followup.MaxTimeout != timeout || followup.WaitInSeconds != 2 {
+		t.Errorf("FlareSolverr request timing = first (%d, %d), follow-up (%d, %d)", first.MaxTimeout, first.WaitInSeconds, followup.MaxTimeout, followup.WaitInSeconds)
+	}
+	if first.TabsTillVerify == nil || *first.TabsTillVerify != 74 || followup.TabsTillVerify != nil {
+		t.Errorf("FlareSolverr tabs = first %v, follow-up %v", first.TabsTillVerify, followup.TabsTillVerify)
 	}
 	if filepath.Base(got) != "Solved Game.zip" {
 		t.Errorf("downloaded file = %q", filepath.Base(got))
@@ -423,23 +470,42 @@ func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
 	firstEntered := make(chan struct{})
 	secondEntered := make(chan struct{}, 1)
 	releaseFirst := make(chan struct{})
-	var calls atomic.Int32
+	var getCalls atomic.Int32
+	var commandMu sync.Mutex
+	var commands []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch calls.Add(1) {
-		case 1:
-			close(firstEntered)
-			<-releaseFirst
-		case 2:
-			secondEntered <- struct{}{}
+		var got struct {
+			Command string `json:"cmd"`
+			Session string `json:"session"`
 		}
-		_, _ = io.WriteString(w, `{"status":"ok","solution":{"response":"<html>ok</html>"}}`)
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		commandMu.Lock()
+		commands = append(commands, got.Command)
+		commandMu.Unlock()
+		switch got.Command {
+		case "sessions.create":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "message": "Session created successfully.", "session": got.Session,
+			})
+		case "request.get":
+			switch getCalls.Add(1) {
+			case 1:
+				close(firstEntered)
+				<-releaseFirst
+			case 2:
+				secondEntered <- struct{}{}
+			}
+			_, _ = io.WriteString(w, `{"status":"ok","solution":{"response":"<html>ok</html>"}}`)
+		case "sessions.destroy":
+			_, _ = io.WriteString(w, `{"status":"ok"}`)
+		}
 	}))
 	t.Cleanup(srv.Close)
 
 	m := New(newTestConfig(t), newTestJobs(t), nil)
 	errs := make(chan error, 2)
 	go func() {
-		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/one", 25_000, 74)
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/one", 20_000, 74)
 		errs <- err
 	}()
 	select {
@@ -451,7 +517,7 @@ func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
 	secondStarted := make(chan struct{})
 	go func() {
 		close(secondStarted)
-		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/two", 25_000, 74)
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/two", 20_000, 74)
 		errs <- err
 	}()
 	<-secondStarted
@@ -479,14 +545,34 @@ func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
 	if concurrent {
 		t.Error("FlareSolverr requests ran concurrently")
 	}
+	commandMu.Lock()
+	defer commandMu.Unlock()
+	if strings.Join(commands, ",") != "sessions.create,request.get,sessions.destroy,sessions.create,request.get,sessions.destroy" {
+		t.Errorf("solver command order = %v, want two serialized session lifecycles", commands)
+	}
 }
 
 func TestDownloadVimmGame_FlareSolverrStillSeesChallenge(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1" {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"status": "ok", "solution": map[string]interface{}{"response": vimmChallengePageHTML},
-			})
+			var got struct {
+				Command string `json:"cmd"`
+				Session string `json:"session"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			switch got.Command {
+			case "sessions.create":
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status": "ok", "message": "Session created successfully.", "session": got.Session,
+				})
+			case "request.get":
+				solverChallenge := vimmChallengePageHTML + `<form id="dl_form" action="/download"><input name="mediaId" value="3328"></form>`
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status": "ok", "solution": map[string]interface{}{"response": solverChallenge},
+				})
+			case "sessions.destroy":
+				_, _ = io.WriteString(w, `{"status":"ok"}`)
+			}
 			return
 		}
 		_, _ = io.WriteString(w, vimmChallengePageHTML)
@@ -494,7 +580,7 @@ func TestDownloadVimmGame_FlareSolverrStillSeesChallenge(t *testing.T) {
 	t.Cleanup(srv.Close)
 	m, jobs := newVimmManager(t, srv.URL+"/vault/")
 	m.cfg.FlareSolverrURL = srv.URL
-	m.cfg.FlareSolverrMaxTimeout = 25_000
+	m.cfg.FlareSolverrMaxTimeout = 20_000
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
 

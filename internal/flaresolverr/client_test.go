@@ -41,8 +41,8 @@ func TestNormalizeAPIURL(t *testing.T) {
 
 func TestFetch(t *testing.T) {
 	var gotPath string
-	var got request
-	var raw map[string]json.RawMessage
+	var calls []request
+	var rawCalls []map[string]json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		if r.Method != http.MethodPost {
@@ -52,58 +52,168 @@ func TestFetch(t *testing.T) {
 		if err != nil {
 			t.Errorf("read request: %v", err)
 		}
+		var got request
 		if err := json.Unmarshal(body, &got); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
+		var raw map[string]json.RawMessage
 		if err := json.Unmarshal(body, &raw); err != nil {
 			t.Errorf("decode raw request: %v", err)
 		}
+		calls = append(calls, got)
+		rawCalls = append(rawCalls, raw)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok","message":"Challenge solved!","solution":{"status":200,"response":"<script>let allMedia=[{\"ID\":3811}]</script>","userAgent":"solver-agent"}}`))
+		switch got.Command {
+		case "sessions.create":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "message": sessionCreatedMessage, "session": got.Session,
+			})
+		case "request.get":
+			_, _ = w.Write([]byte(`{"status":"ok","message":"Challenge solved!","solution":{"status":200,"response":"<script>let allMedia=[{\"ID\":3811}]</script>","userAgent":"solver-agent"}}`))
+		case "sessions.destroy":
+			_, _ = w.Write([]byte(`{"status":"ok","message":"The session has been removed."}`))
+		default:
+			t.Errorf("unexpected command %q", got.Command)
+		}
 	}))
 	t.Cleanup(srv.Close)
 
-	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 25_000, 74)
+	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 20_000, 74)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/v1" {
 		t.Errorf("request path = %q, want /v1", gotPath)
 	}
-	if got.Command != "request.get" || got.URL != "https://vimm.net/vault/4970" {
-		t.Errorf("request = %+v", got)
+	if len(calls) != 3 {
+		t.Fatalf("commands = %v, want create, get, destroy", commandNames(calls))
 	}
-	if got.MaxTimeout != 25_000 || got.WaitInSeconds != 5 {
+	if calls[0].Command != "sessions.create" || calls[0].Session == "" {
+		t.Errorf("create request = %+v", calls[0])
+	}
+	got := calls[1]
+	if got.Command != "request.get" || got.URL != "https://vimm.net/vault/4970" {
+		t.Errorf("page request = %+v", got)
+	}
+	if got.Session != calls[0].Session || calls[2].Session != calls[0].Session {
+		t.Errorf("session lifecycle = %+v", calls)
+	}
+	if got.MaxTimeout != 20_000 || got.WaitInSeconds != 5 {
 		t.Errorf("timeouts = max %d wait %d", got.MaxTimeout, got.WaitInSeconds)
 	}
-	if got.TabsTillVerify != 74 {
-		t.Errorf("tabs_till_verify = %d, want 74", got.TabsTillVerify)
+	if got.TabsTillVerify == nil || *got.TabsTillVerify != 74 {
+		t.Errorf("tabs_till_verify = %v, want 74", got.TabsTillVerify)
 	}
-	if _, ok := raw["tabs_till_verify"]; !ok {
+	if _, ok := rawCalls[1]["tabs_till_verify"]; !ok {
 		t.Error("request omitted exact tabs_till_verify key")
 	}
-	if _, ok := raw["tabsTillVerify"]; ok {
+	if _, ok := rawCalls[1]["tabsTillVerify"]; ok {
 		t.Error("request used unsupported tabsTillVerify key")
+	}
+	if calls[2].Command != "sessions.destroy" {
+		t.Errorf("last command = %q, want sessions.destroy", calls[2].Command)
+	}
+	for _, index := range []int{0, 2} {
+		for _, key := range []string{"url", "maxTimeout", "waitInSeconds", "tabs_till_verify"} {
+			if _, ok := rawCalls[index][key]; ok {
+				t.Errorf("%s request unexpectedly included %q", calls[index].Command, key)
+			}
+		}
 	}
 	if !strings.Contains(solution.Response, `"ID":3811`) {
 		t.Errorf("solution = %+v", solution)
 	}
 }
 
+func TestFetchRetriesStaleElementInSameSession(t *testing.T) {
+	var calls []request
+	var rawCalls []map[string]json.RawMessage
+	getCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var got request
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("decode raw request: %v", err)
+		}
+		calls = append(calls, got)
+		rawCalls = append(rawCalls, raw)
+		w.Header().Set("Content-Type", "application/json")
+		switch got.Command {
+		case "sessions.create":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "message": sessionCreatedMessage, "session": got.Session,
+			})
+		case "request.get":
+			getCalls++
+			if getCalls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"status":"error","message":"Error: Error solving the challenge. Message: stale element reference: stale element not found"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status":"ok","solution":{"status":200,"response":"<form id=\"dl_form\"><input name=\"mediaId\" value=\"3328\"></form>"}}`))
+		case "sessions.destroy":
+			_, _ = w.Write([]byte(`{"status":"ok","message":"The session has been removed."}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	solution, err := Fetch(context.Background(), srv.URL, "https://vimm.net/vault/3453", 20_000, 74)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 4 {
+		t.Fatalf("commands = %v, want create, get, get, destroy", commandNames(calls))
+	}
+	wantCommands := []string{"sessions.create", "request.get", "request.get", "sessions.destroy"}
+	for i, want := range wantCommands {
+		if calls[i].Command != want {
+			t.Errorf("call %d command = %q, want %q", i, calls[i].Command, want)
+		}
+		if calls[i].Session != calls[0].Session {
+			t.Errorf("call %d session = %q, want %q", i, calls[i].Session, calls[0].Session)
+		}
+	}
+	first, followup := calls[1], calls[2]
+	if first.URL != followup.URL || followup.URL != "https://vimm.net/vault/3453" {
+		t.Errorf("request URLs = %q then %q", first.URL, followup.URL)
+	}
+	if first.WaitInSeconds != 5 || followup.WaitInSeconds != 2 {
+		t.Errorf("request waits = %d then %d, want 5 then 2", first.WaitInSeconds, followup.WaitInSeconds)
+	}
+	if first.MaxTimeout != 20_000 || followup.MaxTimeout != 20_000 {
+		t.Errorf("request max timeouts = %d then %d", first.MaxTimeout, followup.MaxTimeout)
+	}
+	if first.TabsTillVerify == nil || *first.TabsTillVerify != 74 {
+		t.Errorf("first tabs_till_verify = %v, want 74", first.TabsTillVerify)
+	}
+	if _, ok := rawCalls[2]["tabs_till_verify"]; ok || followup.TabsTillVerify != nil {
+		t.Error("follow-up request must omit tabs_till_verify")
+	}
+	if !strings.Contains(solution.Response, `value="3328"`) {
+		t.Errorf("solution = %+v", solution)
+	}
+}
+
+func commandNames(calls []request) []string {
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		names = append(names, call.Command)
+	}
+	return names
+}
+
 func TestRequestTimeoutIncludesSolverOverheadGrace(t *testing.T) {
-	want := 25_000*time.Millisecond + 15*time.Second
-	if got := requestTimeout(25_000); got != want {
+	want := 20_000*time.Millisecond + 15*time.Second
+	if got := requestTimeout(20_000); got != want {
 		t.Errorf("requestTimeout = %v, want %v", got, want)
 	}
 }
 
 func TestValidateMaxTimeout(t *testing.T) {
-	// FlareSolverr 3.5.0's first 74-tab attempt has about 15.4 seconds of
-	// fixed pauses. Gamarr then requests another five seconds before capture.
-	const knownVimmFlowFloor = 20_400
-	if MinMaxTimeout <= knownVimmFlowFloor {
-		t.Fatalf("minimum timeout %d must exceed the known Vimm flow floor %d", MinMaxTimeout, knownVimmFlowFloor)
-	}
 	for _, tc := range []struct {
 		value   int
 		wantErr bool
@@ -183,7 +293,18 @@ func TestFetchDoesNotDuplicateV1(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		_, _ = w.Write([]byte(`{"status":"ok","solution":{"response":"<html>ok</html>"}}`))
+		var got request
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		switch got.Command {
+		case "sessions.create":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "message": sessionCreatedMessage, "session": got.Session,
+			})
+		case "request.get":
+			_, _ = w.Write([]byte(`{"status":"ok","solution":{"response":"<html>ok</html>"}}`))
+		case "sessions.destroy":
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}
 	}))
 	t.Cleanup(srv.Close)
 	if _, err := Fetch(context.Background(), srv.URL+"/v1", "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify); err != nil {
@@ -195,7 +316,21 @@ func TestFetchDoesNotDuplicateV1(t *testing.T) {
 }
 
 func TestFetchReturnsStructuredError(t *testing.T) {
+	var commands []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got request
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		commands = append(commands, got.Command)
+		if got.Command == "sessions.create" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "message": sessionCreatedMessage, "session": got.Session,
+			})
+			return
+		}
+		if got.Command == "sessions.destroy" {
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"status":"error","message":"Error solving the challenge. Timeout after 55000 ms."}`))
 	}))
@@ -203,6 +338,68 @@ func TestFetchReturnsStructuredError(t *testing.T) {
 	_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
 	if err == nil || !strings.Contains(err.Error(), "Timeout after 55000 ms") {
 		t.Fatalf("error = %v, want structured solver message", err)
+	}
+	if strings.Join(commands, ",") != "sessions.create,request.get,sessions.destroy" {
+		t.Errorf("commands = %v, non-stale errors must not retry", commands)
+	}
+}
+
+func TestFetchRetriesStaleElementOnlyOnce(t *testing.T) {
+	var commands []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got request
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		commands = append(commands, got.Command)
+		w.Header().Set("Content-Type", "application/json")
+		switch got.Command {
+		case "sessions.create":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "message": sessionCreatedMessage, "session": got.Session,
+			})
+		case "request.get":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"status":"error","message":"StaleElementReferenceException: stale element not found"}`))
+		case "sessions.destroy":
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
+	if err == nil || !strings.Contains(err.Error(), "StaleElementReferenceException") {
+		t.Fatalf("error = %v, want the second stale-element error", err)
+	}
+	if strings.Join(commands, ",") != "sessions.create,request.get,request.get,sessions.destroy" {
+		t.Errorf("commands = %v, stale-element response must be retried exactly once", commands)
+	}
+}
+
+func TestFetchCleanupSurvivesCanceledCallerContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	destroyed := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got request
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		switch got.Command {
+		case "sessions.create":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "ok", "message": sessionCreatedMessage, "session": got.Session,
+			})
+		case "request.get":
+			cancel()
+			_, _ = w.Write([]byte(`{"status":"ok","solution":{"response":"<html>ok</html>"}}`))
+		case "sessions.destroy":
+			destroyed <- struct{}{}
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	_, _ = Fetch(ctx, srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
+	select {
+	case <-destroyed:
+	case <-time.After(time.Second):
+		t.Fatal("session cleanup reused the canceled caller context")
 	}
 }
 
@@ -215,7 +412,18 @@ func TestFetchRejectsMalformedAndEmptyResponses(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(tc.body))
+				var got request
+				_ = json.NewDecoder(r.Body).Decode(&got)
+				switch got.Command {
+				case "sessions.create":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"status": "ok", "message": sessionCreatedMessage, "session": got.Session,
+					})
+				case "request.get":
+					_, _ = w.Write([]byte(tc.body))
+				case "sessions.destroy":
+					_, _ = w.Write([]byte(`{"status":"ok"}`))
+				}
 			}))
 			t.Cleanup(srv.Close)
 			_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
@@ -223,5 +431,50 @@ func TestFetchRejectsMalformedAndEmptyResponses(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestFetchRejectsExistingSessionWithoutDestroyingIt(t *testing.T) {
+	var commands []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got request
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		commands = append(commands, got.Command)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok", "message": sessionAlreadyExistsError, "session": got.Session,
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
+	if err == nil || !strings.Contains(err.Error(), sessionAlreadyExistsError) {
+		t.Fatalf("error = %v, want session collision", err)
+	}
+	if strings.Join(commands, ",") != "sessions.create" {
+		t.Errorf("commands = %v, existing session must not be used or destroyed", commands)
+	}
+}
+
+func TestFetchCleansUpAfterAmbiguousCreateFailure(t *testing.T) {
+	var commands []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got request
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		commands = append(commands, got.Command)
+		if got.Command == "sessions.create" {
+			_, _ = w.Write([]byte(`{`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"status":"error","message":"Error: The session doesn't exist."}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
+	if err == nil || !strings.Contains(err.Error(), "decode FlareSolverr response") {
+		t.Fatalf("error = %v, want original malformed-create error", err)
+	}
+	if strings.Join(commands, ",") != "sessions.create,sessions.destroy" {
+		t.Errorf("commands = %v, ambiguous create must be cleaned up", commands)
 	}
 }

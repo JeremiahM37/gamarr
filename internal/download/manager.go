@@ -1318,6 +1318,13 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 			usedFlareSolverr = true
 		}
 	}
+	if usedFlareSolverr && vimmIsChallenge(pageText) {
+		slog.Warn("FlareSolverr returned Vimm's Turnstile page", "game_id", gameID)
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error", "error": vimmFlareSolverrChallengeError,
+		})
+		return ""
+	}
 
 	if strings.Contains(pageText, "unavailable at the request of") {
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{

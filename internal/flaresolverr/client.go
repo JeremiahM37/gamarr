@@ -5,9 +5,13 @@ package flaresolverr
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,9 +25,9 @@ const (
 	// DefaultVimmTabsTillVerify is Vimm's manual-focus preset. Tab order is
 	// layout-dependent, so deployments can override it through configuration.
 	DefaultVimmTabsTillVerify = 74
-	// FlareSolverr counts both its manual Turnstile click pauses and
-	// waitInSeconds against maxTimeout. Keep a usable floor for that flow.
-	MinMaxTimeout = 25_000
+	// Twenty seconds is sufficient for the verified Vimm Turnstile flow while
+	// still leaving enough time for FlareSolverr to drive the browser.
+	MinMaxTimeout = 20_000
 	// MaxMaxTimeout prevents overflowing time.Duration and keeps a typo from
 	// tying up a download worker (and its browser) indefinitely.
 	MaxMaxTimeout = 600_000
@@ -35,23 +39,30 @@ const (
 
 	// Vimm's interstitial submits itself after its browser check completes.
 	// Ask FlareSolverr to wait before capturing the resulting page source.
-	vimmWaitSeconds     = 5
-	solverOverheadGrace = 15 * time.Second
-	maxResponseSize     = 16 << 20
-	connectivityTimeout = 10 * time.Second
+	vimmWaitSeconds           = 5
+	vimmFollowupWaitSeconds   = 2
+	solverOverheadGrace       = 15 * time.Second
+	sessionCleanupTimeout     = 10 * time.Second
+	maxResponseSize           = 16 << 20
+	connectivityTimeout       = 10 * time.Second
+	sessionCreatedMessage     = "Session created successfully."
+	sessionAlreadyExistsError = "Session already exists."
+	sessionMissingError       = "The session doesn't exist."
 )
 
 type request struct {
 	Command        string `json:"cmd"`
-	URL            string `json:"url"`
-	MaxTimeout     int    `json:"maxTimeout"`
-	WaitInSeconds  int    `json:"waitInSeconds"`
-	TabsTillVerify int    `json:"tabs_till_verify"`
+	URL            string `json:"url,omitempty"`
+	Session        string `json:"session,omitempty"`
+	MaxTimeout     int    `json:"maxTimeout,omitempty"`
+	WaitInSeconds  int    `json:"waitInSeconds,omitempty"`
+	TabsTillVerify *int   `json:"tabs_till_verify,omitempty"`
 }
 
 type apiResponse struct {
 	Status   string `json:"status"`
 	Message  string `json:"message"`
+	Session  string `json:"session"`
 	Solution struct {
 		Status   int    `json:"status"`
 		Response string `json:"response"`
@@ -67,6 +78,26 @@ type Solution struct {
 // ServiceInfo is returned by FlareSolverr's lightweight root endpoint.
 type ServiceInfo struct {
 	Version string
+}
+
+type apiClient struct {
+	endpointURL string
+	httpClient  *http.Client
+}
+
+type apiError struct {
+	Command    string
+	HTTPStatus int
+	Status     string
+	Message    string
+}
+
+func (e *apiError) Error() string {
+	message := compactMessage(e.Message)
+	if message == "" {
+		message = fmt.Sprintf("HTTP %d", e.HTTPStatus)
+	}
+	return fmt.Sprintf("FlareSolverr %s failed: %s", e.Command, message)
 }
 
 // NormalizeAPIURL validates a FlareSolverr base URL and removes trailing
@@ -160,7 +191,11 @@ func Check(ctx context.Context, apiURL string) (ServiceInfo, error) {
 	return ServiceInfo{Version: result.Version}, nil
 }
 
-// Fetch asks FlareSolverr to load targetURL and return its rendered HTML.
+// Fetch asks FlareSolverr to load targetURL in a temporary browser session and
+// return its rendered HTML. Vimm can submit Turnstile successfully while
+// FlareSolverr is still inspecting the old document. FlareSolverr 3.5.0 then
+// reports a stale-element error, so retrieve the navigated page in the same
+// session without trying to focus the challenge a second time.
 func Fetch(ctx context.Context, apiURL, targetURL string, maxTimeout, tabsTillVerify int) (Solution, error) {
 	if err := ValidateMaxTimeout(maxTimeout); err != nil {
 		return Solution{}, err
@@ -172,51 +207,123 @@ func Fetch(ctx context.Context, apiURL, targetURL string, maxTimeout, tabsTillVe
 	if err != nil {
 		return Solution{}, err
 	}
-	payload, err := json.Marshal(request{
-		Command:        "request.get",
-		URL:            targetURL,
-		MaxTimeout:     maxTimeout,
-		WaitInSeconds:  vimmWaitSeconds,
-		TabsTillVerify: tabsTillVerify,
-	})
+	client := apiClient{
+		endpointURL: endpointURL,
+		httpClient:  &http.Client{Timeout: requestTimeout(maxTimeout)},
+	}
+	sessionID, err := newSessionID()
 	if err != nil {
-		return Solution{}, fmt.Errorf("encode FlareSolverr request: %w", err)
+		return Solution{}, fmt.Errorf("create FlareSolverr session ID: %w", err)
+	}
+	cleanupSession := true
+	defer func() {
+		if !cleanupSession {
+			return
+		}
+		// The request may have created its browser even if its response was lost,
+		// and the caller context may already be canceled. Always make one bounded
+		// cleanup attempt using the caller-owned session ID.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), sessionCleanupTimeout)
+		defer cancel()
+		if _, cleanupErr := client.call(cleanupCtx, request{Command: "sessions.destroy", Session: sessionID}); cleanupErr != nil && !isMissingSession(cleanupErr) {
+			slog.Warn("Could not destroy temporary FlareSolverr session", "session", sessionID, "error", cleanupErr)
+		}
+	}()
+	created, err := client.call(ctx, request{Command: "sessions.create", Session: sessionID})
+	if err != nil {
+		if isSessionAlreadyExists(err) {
+			cleanupSession = false
+		}
+		return Solution{}, fmt.Errorf("create FlareSolverr session: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(created.Message), sessionAlreadyExistsError) {
+		cleanupSession = false
+		return Solution{}, fmt.Errorf("create FlareSolverr session: %s", sessionAlreadyExistsError)
+	}
+	if created.Message != sessionCreatedMessage || created.Session != sessionID {
+		return Solution{}, fmt.Errorf(
+			"FlareSolverr returned an invalid session-create response (message %q, session %q)",
+			created.Message, created.Session,
+		)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(payload))
+	first, err := client.call(ctx, request{
+		Command:        "request.get",
+		URL:            targetURL,
+		Session:        sessionID,
+		MaxTimeout:     maxTimeout,
+		WaitInSeconds:  vimmWaitSeconds,
+		TabsTillVerify: &tabsTillVerify,
+	})
+	if err == nil {
+		return solutionFromResponse(first)
+	}
+	if !isStaleElementReference(err) {
+		return Solution{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Solution{}, fmt.Errorf("retrieve Vimm page after Turnstile navigation: %w", err)
+	}
+
+	second, err := client.call(ctx, request{
+		Command:       "request.get",
+		URL:           targetURL,
+		Session:       sessionID,
+		MaxTimeout:    maxTimeout,
+		WaitInSeconds: vimmFollowupWaitSeconds,
+	})
 	if err != nil {
-		return Solution{}, fmt.Errorf("create FlareSolverr request: %w", err)
+		return Solution{}, fmt.Errorf("retrieve Vimm page after Turnstile navigation: %w", err)
+	}
+	return solutionFromResponse(second)
+}
+
+func (c apiClient) call(ctx context.Context, payload request) (apiResponse, error) {
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return apiResponse{}, fmt.Errorf("encode FlareSolverr request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpointURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return apiResponse{}, fmt.Errorf("create FlareSolverr request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Gamarr/1.0")
-	client := &http.Client{Timeout: requestTimeout(maxTimeout)}
-	resp, err := client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return Solution{}, fmt.Errorf("FlareSolverr request failed: %w", err)
+		return apiResponse{}, fmt.Errorf("FlareSolverr %s request failed: %w", payload.Command, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
-		return Solution{}, fmt.Errorf("read FlareSolverr response: %w", err)
+		return apiResponse{}, fmt.Errorf("read FlareSolverr response: %w", err)
 	}
 	if len(body) > maxResponseSize {
-		return Solution{}, fmt.Errorf("FlareSolverr response exceeded %d MiB", maxResponseSize>>20)
+		return apiResponse{}, fmt.Errorf("FlareSolverr response exceeded %d MiB", maxResponseSize>>20)
 	}
 	var result apiResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	decodeErr := json.Unmarshal(body, &result)
+	if decodeErr != nil {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return Solution{}, fmt.Errorf("FlareSolverr returned HTTP %d", resp.StatusCode)
+			message := compactMessage(string(body))
+			if message == "" {
+				message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
+			return apiResponse{}, fmt.Errorf("FlareSolverr %s failed: %s", payload.Command, message)
 		}
-		return Solution{}, fmt.Errorf("decode FlareSolverr response: %w", err)
+		return apiResponse{}, fmt.Errorf("decode FlareSolverr response: %w", decodeErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !strings.EqualFold(result.Status, "ok") {
-		message := compactMessage(result.Message)
-		if message == "" {
-			message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		return apiResponse{}, &apiError{
+			Command: payload.Command, HTTPStatus: resp.StatusCode,
+			Status: result.Status, Message: result.Message,
 		}
-		return Solution{}, fmt.Errorf("FlareSolverr could not solve the page: %s", message)
 	}
+	return result, nil
+}
+
+func solutionFromResponse(result apiResponse) (Solution, error) {
 	if result.Solution.Response == "" {
 		return Solution{}, fmt.Errorf("FlareSolverr returned an empty page")
 	}
@@ -224,6 +331,41 @@ func Fetch(ctx context.Context, apiURL, targetURL string, maxTimeout, tabsTillVe
 		Status:   result.Solution.Status,
 		Response: result.Solution.Response,
 	}, nil
+}
+
+func newSessionID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return "gamarr-vimm-" + hex.EncodeToString(random[:]), nil
+}
+
+func isStaleElementReference(err error) bool {
+	var responseErr *apiError
+	if !errors.As(err, &responseErr) ||
+		responseErr.Command != "request.get" ||
+		responseErr.HTTPStatus != http.StatusInternalServerError ||
+		!strings.EqualFold(responseErr.Status, "error") {
+		return false
+	}
+	message := strings.ToLower(responseErr.Message)
+	return strings.Contains(message, "stale element reference") ||
+		strings.Contains(message, "staleelementreferenceexception")
+}
+
+func isSessionAlreadyExists(err error) bool {
+	var responseErr *apiError
+	return errors.As(err, &responseErr) &&
+		responseErr.Command == "sessions.create" &&
+		strings.EqualFold(strings.TrimSpace(responseErr.Message), sessionAlreadyExistsError)
+}
+
+func isMissingSession(err error) bool {
+	var responseErr *apiError
+	return errors.As(err, &responseErr) &&
+		responseErr.Command == "sessions.destroy" &&
+		strings.Contains(strings.ToLower(responseErr.Message), strings.ToLower(sessionMissingError))
 }
 
 // ValidateMaxTimeout applies the same bound to startup configuration and

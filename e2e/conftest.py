@@ -107,6 +107,8 @@ VIMM_CHALLENGE_HTML = """<!DOCTYPE html><html><head><title>Vimm's Lair</title></
 TORRENTS: list[dict] = []
 DELETE_CALLS: list[dict] = []
 FLARESOLVERR_CALLS: list[dict] = []
+FLARESOLVERR_SESSIONS: dict[str, str] = {}
+FLARESOLVERR_SOLVED_AND_DESTROYED: set[str] = set()
 SWARM_LOCK = threading.Lock()
 
 
@@ -174,25 +176,91 @@ class _StubHandler(BaseHTTPRequestHandler):
                 TORRENTS.clear()
                 DELETE_CALLS.clear()
                 FLARESOLVERR_CALLS.clear()
+                FLARESOLVERR_SESSIONS.clear()
+                FLARESOLVERR_SOLVED_AND_DESTROYED.clear()
             self._send(200, b'{"ok":true}', "application/json")
-        # ── FlareSolverr: return a rendered Vimm page with a JS media ID ──
+        elif path == "/stub/flaresolverr-reset":
+            with SWARM_LOCK:
+                FLARESOLVERR_CALLS.clear()
+                FLARESOLVERR_SESSIONS.clear()
+                FLARESOLVERR_SOLVED_AND_DESTROYED.clear()
+            self._send(200, b'{"ok":true}', "application/json")
+        # ── FlareSolverr 3.5.0: stale after Turnstile navigation, then the
+        # surviving browser session exposes the rendered Vimm page. ─────────
         elif path == "/v1":
             request = json.loads(body.decode())
+            command = request.get("cmd")
+            session = request.get("session", "")
+            code = 200
             with SWARM_LOCK:
                 FLARESOLVERR_CALLS.append(request)
-            if request.get("tabs_till_verify") == 41:
-                page = (
-                    f'<html><body><form action="{base}/vimm-download" id="dl_form"></form>'
-                    '<script>let allMedia = [{"ID":3811,"Region":"USA"}];</script>'
-                    '</body></html>'
-                )
-            else:
-                page = VIMM_CHALLENGE_HTML
-            response = json.dumps({
-                "status": "ok", "message": "Challenge solved!",
-                "solution": {"status": 200, "response": page, "userAgent": "e2e-solver"},
-            }).encode()
-            self._send(200, response, "application/json")
+                if command == "sessions.create":
+                    if not session:
+                        code = 400
+                        response = {"status": "error", "message": "missing session"}
+                    elif session in FLARESOLVERR_SESSIONS:
+                        response = {
+                            "status": "ok", "message": "Session already exists.",
+                            "session": session,
+                        }
+                    else:
+                        FLARESOLVERR_SESSIONS[session] = "created"
+                        response = {
+                            "status": "ok", "message": "Session created successfully.",
+                            "session": session,
+                        }
+                elif command == "request.get":
+                    phase = FLARESOLVERR_SESSIONS.get(session)
+                    valid_common = (
+                        request.get("url", "").endswith("/vault/1654")
+                        and request.get("maxTimeout") == 20000
+                    )
+                    if phase == "created" and valid_common:
+                        if request.get("waitInSeconds") != 5 or request.get("tabs_till_verify") != 74:
+                            code = 400
+                            response = {"status": "error", "message": "invalid first request"}
+                        else:
+                            FLARESOLVERR_SESSIONS[session] = "stale"
+                            code = 500
+                            response = {
+                                "status": "error",
+                                "message": "Error: Error solving the challenge. Message: stale element reference: stale element not found",
+                            }
+                    elif phase == "stale" and valid_common:
+                        if request.get("waitInSeconds") != 2 or "tabs_till_verify" in request:
+                            code = 400
+                            response = {"status": "error", "message": "invalid follow-up request"}
+                        else:
+                            FLARESOLVERR_SESSIONS[session] = "solved"
+                            page = (
+                                f'<html><body><form action="{base}/vimm-download" id="dl_form">'
+                                '<input type="hidden" name="mediaId" value="3328"></form>'
+                                '<script>let allMedia = [{"ID":3328,"Region":"USA"}];</script>'
+                                '</body></html>'
+                            )
+                            response = {
+                                "status": "ok", "message": "Challenge solved!",
+                                "solution": {
+                                    "status": 200, "response": page,
+                                    "userAgent": "e2e-solver",
+                                },
+                            }
+                    else:
+                        code = 400
+                        response = {"status": "error", "message": "invalid session state"}
+                elif command == "sessions.destroy":
+                    phase = FLARESOLVERR_SESSIONS.pop(session, None)
+                    if phase is None:
+                        code = 500
+                        response = {"status": "error", "message": "Error: The session doesn't exist."}
+                    else:
+                        if phase == "solved":
+                            FLARESOLVERR_SOLVED_AND_DESTROYED.add(session)
+                        response = {"status": "ok", "message": "The session has been removed."}
+                else:
+                    code = 400
+                    response = {"status": "error", "message": "unsupported command"}
+            self._send(code, json.dumps(response).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -258,7 +326,14 @@ class _StubHandler(BaseHTTPRequestHandler):
                 self._send(404, b"no such rom", "text/plain")
         elif path == "/vimm-download":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            if params.get("mediaId") != ["3811"]:
+            with SWARM_LOCK:
+                session_was_cleaned_up = bool(FLARESOLVERR_SOLVED_AND_DESTROYED)
+                if session_was_cleaned_up:
+                    FLARESOLVERR_SOLVED_AND_DESTROYED.pop()
+            if not session_was_cleaned_up:
+                self._send(409, b"solver session was not destroyed", "text/plain")
+                return
+            if params.get("mediaId") != ["3328"]:
                 self._send(400, b"missing mediaId", "text/plain")
                 return
             body = _rom_zip("Solved Vimm.zip")

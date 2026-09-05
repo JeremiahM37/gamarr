@@ -90,15 +90,16 @@ def test_repeated_vimm_failures_degrade_the_source(ui):
 
 
 def test_flaresolverr_env_restores_vimm_download(gamarr_factory, stub_server, page):
-    """Env configuration tests connected, then feeds the ID to the DDL path."""
+    """A stale first solve is recovered in-session, then feeds the DDL path."""
+    _api(stub_server, "/stub/flaresolverr-reset", {})
     # Extra session-lived instances must not watch the suite's shared torrent
     # stub; this test exercises only the direct-download path.
     app = gamarr_factory(
         "vimm-flaresolverr",
         QB_URL="http://127.0.0.1:1/",
         FLARESOLVERR_URL=stub_server,
-        FLARESOLVERR_MAX_TIMEOUT="25000",
-        FLARESOLVERR_TABS_TILL_VERIFY="41",
+        FLARESOLVERR_MAX_TIMEOUT="20000",
+        FLARESOLVERR_TABS_TILL_VERIFY="74",
     )
     page.goto(app["base"], wait_until="networkidle")
     page.locator('#main-nav button[data-tab="settings"]').click()
@@ -115,9 +116,18 @@ def test_flaresolverr_env_restores_vimm_download(gamarr_factory, stub_server, pa
 
     calls = json.loads(urllib.request.urlopen(
         f"{stub_server}/stub/flaresolverr-calls", timeout=5).read())
-    call = calls[-1]
-    assert call["cmd"] == "request.get"
-    assert call["url"].endswith("/vault/1654")
-    assert call["maxTimeout"] == 25000
-    assert call["waitInSeconds"] == 5
-    assert call["tabs_till_verify"] == 41
+    assert [call["cmd"] for call in calls] == [
+        "sessions.create", "request.get", "request.get", "sessions.destroy",
+    ]
+    session = calls[0]["session"]
+    assert session
+    assert all(call["session"] == session for call in calls)
+
+    first, followup = calls[1], calls[2]
+    assert first["url"].endswith("/vault/1654")
+    assert followup["url"] == first["url"]
+    assert first["maxTimeout"] == followup["maxTimeout"] == 20000
+    assert first["waitInSeconds"] == 5
+    assert first["tabs_till_verify"] == 74
+    assert followup["waitInSeconds"] == 2
+    assert "tabs_till_verify" not in followup
