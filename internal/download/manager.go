@@ -480,7 +480,10 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			})
-			return false
+			// The client moves a finished torrent to its final path right after
+			// it reads complete, so files vanishing mid-import mean it published
+			// elsewhere, not that the content is gone.
+			return errors.Is(err, os.ErrNotExist)
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, "GameVault"),
@@ -501,7 +504,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			})
-			return false
+			return errors.Is(err, os.ErrNotExist)
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, fmt.Sprintf("RomM (%s)", platf)),
@@ -552,7 +555,7 @@ func (m *Manager) importToVault(src string) (string, fileops.Mode, error) {
 
 	if m.vaultArchiveEnabled() && fileops.Archivable(src) {
 		dest := fileops.ArchiveDest(base)
-		if err := fileops.Archive(src, dest); err != nil {
+		if err := archive(src, dest); err != nil {
 			slog.Error("vault archive failed, download left in place",
 				"src", sanitizeLog(src), "dest", sanitizeLog(dest), "error", err)
 			return dest, fileops.ModeCopy, err
@@ -567,6 +570,9 @@ func (m *Manager) importToVault(src string) (string, fileops.Mode, error) {
 // that authorises dropping a download. It is otherwise unreachable, since the
 // only caller runs it on an archive Archive has just written successfully.
 var verifyArchive = fileops.VerifyArchive
+
+// archive indirects fileops.Archive so a test can fail the import mid-walk.
+var archive = fileops.Archive
 
 // archivedImportMode reports the mode an archive this import just wrote counts
 // as. Only for an archive written from src: one that was already there cannot be

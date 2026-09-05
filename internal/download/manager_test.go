@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1401,6 +1402,64 @@ func TestOrganizeTorrentRetriesAPathThatIsNotThereYet(t *testing.T) {
 	waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
 	if err := <-staged; err != nil {
 		t.Fatalf("stage the published files: %v", err)
+	}
+	assertImportedCleanly(t, m, jobID)
+}
+
+// The client moves a finished torrent from the staging path to its final home
+// right after progress reads complete, so the first import can lose files
+// mid-walk even though the content path itself resolves. That failure has to
+// read as retryable: the loop re-reads the torrent and lands the published
+// payload, which is what the manual retry does by hand.
+func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	// The vault archive is where the walk loses the race on a live FitGirl grab.
+	cfg.VaultArchiveEnabled = true
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	stale := filepath.Join(cfg.QBSavePath, "temp", "The Witcher 3 [FitGirl Repack]")
+	published := filepath.Join(cfg.QBSavePath, "The Witcher 3 [FitGirl Repack]")
+	for _, d := range []string{stale, published} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "setup.exe"), []byte("installer"), 0644); err != nil {
+			t.Fatalf("write setup.exe: %v", err)
+		}
+	}
+
+	// The client answers the loop's re-read with the published path, while the
+	// import still holds the struct captured at progress 1.0.
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "The Witcher 3 [FitGirl Repack]", Hash: "w3-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: published,
+	}})
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "downloading", "title": "The Witcher 3 [FitGirl Repack]", "info_hash": "w3-hash",
+	})
+
+	realArchive := archive
+	attempts := 0
+	archive = func(src, dest string) error {
+		attempts++
+		if attempts == 1 {
+			return &fs.PathError{Op: "lstat", Path: filepath.Join(src, "fg-02.bin"), Err: os.ErrNotExist}
+		}
+		return realArchive(src, dest)
+	}
+	t.Cleanup(func() { archive = realArchive })
+
+	m.importFinishedTorrent("job watch", jobID, qbit.Torrent{
+		Name: "The Witcher 3 [FitGirl Repack]", Hash: "w3-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: stale,
+	}, "PC", "", true)
+
+	if attempts < 2 {
+		t.Errorf("archive attempts = %d, want the failed one retried at the published path", attempts)
 	}
 	assertImportedCleanly(t, m, jobID)
 }
