@@ -91,8 +91,15 @@ def test_ddl_download_pipeline_to_library(ui, app):
 
     # The job must reach the downloads view and complete. The downloads tab
     # self-refreshes every 5s; expect() retries until the status lands.
+    #
+    # Scope the wait to this job's own card. The app instance is shared across
+    # the session, so by now the list already holds completed rows from the
+    # seeding tests, and a page-wide "completed" match passes before the DDL
+    # worker has even organized the file (seen in CI: the file landed 20 ms
+    # after the assertion below had already failed).
     _goto_tab(page, "downloads")
-    expect(page.locator("#downloads")).to_contain_text("completed", timeout=60_000)
+    card = page.locator("#downloads > div", has_text="Tetris")
+    expect(card).to_contain_text("completed", timeout=60_000)
 
     # The ROM physically landed in the roms dir.
     rom_files = list(app["roms_dir"].rglob("*Tetris*"))
