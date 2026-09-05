@@ -72,7 +72,7 @@ func TestOrganizeGameArchivesVaultFolder(t *testing.T) {
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
 	torrent := &qbit.Torrent{Name: "007 First Light (2025)", Hash: "h1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	dest := filepath.Join(cfg.GamesVaultPath, "007 First Light (2025).tar")
 	got := tarEntries(t, dest)
@@ -173,7 +173,7 @@ func TestOrganizeGameCompletesWhenTheArchiveIsAlreadyThere(t *testing.T) {
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Recovered Game", Hash: "h9", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Recovered Game", Hash: "h9", ContentPath: content}, "PC", "", true, 1)
 
 	job, _ := jobs.Get(jobID)
 	if status, _ := job["status"].(string); status != "completed" {
@@ -212,7 +212,7 @@ func TestArchiveImportHonoursMoveMode(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Moved Game", Hash: "mv1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Moved Game", Hash: "mv1", ContentPath: content}, "PC", "", true, 1)
 
 	if got := tarEntries(t, filepath.Join(cfg.GamesVaultPath, "Moved Game.tar")); got["setup.exe"] != "installer" {
 		t.Fatalf("archive contents = %v, want the source files", got)
@@ -242,7 +242,7 @@ func TestArchiveImportReportsACopyUnderPreservingModes(t *testing.T) {
 			jobID := newJobID()
 			m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-			m.organizeGame(jobID, &qbit.Torrent{Name: "Verb Game", Hash: "vb1", ContentPath: content}, "PC", "", true)
+			m.organizeGame(jobID, &qbit.Torrent{Name: "Verb Game", Hash: "vb1", ContentPath: content}, "PC", "", true, 1)
 
 			job, _ := m.Jobs().Get(jobID)
 			if detail, _ := job["detail"].(string); detail != "Copied to GameVault" {
@@ -271,7 +271,7 @@ func TestArchiveImportKeepsTheDownloadWhenVerifyFails(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Unverified Game", Hash: "uv1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Unverified Game", Hash: "uv1", ContentPath: content}, "PC", "", true, 1)
 
 	for _, call := range qm.deleteCalls() {
 		if call.deleteFiles {
@@ -312,7 +312,7 @@ func TestArchiveAlreadyInVaultKeepsTheDownload(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Stored Game", Hash: "st1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Stored Game", Hash: "st1", ContentPath: content}, "PC", "", true, 1)
 
 	for _, call := range qm.deleteCalls() {
 		if call.deleteFiles {
@@ -368,7 +368,7 @@ func TestVaultArchiveSettingDrivesTheImport(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Setting Game", Hash: "vs1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Setting Game", Hash: "vs1", ContentPath: content}, "PC", "", true, 1)
 
 	if pathExists(filepath.Join(cfg.GamesVaultPath, "Setting Game.tar")) {
 		t.Error("archived despite the stored setting being off")
@@ -424,7 +424,7 @@ func TestOrganizeGameReportsTheOccupantNotTheArchiveName(t *testing.T) {
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h7", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h7", ContentPath: content}, "PC", "", true, 1)
 
 	job, _ := jobs.Get(jobID)
 	if status, _ := job["status"].(string); status != "completed" {
@@ -473,7 +473,7 @@ func TestOrganizeGameRefusesAnOccupantThatIsNotTheArchive(t *testing.T) {
 			jobID := newJobID()
 			jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-			m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "hx", ContentPath: content}, "PC", "", true)
+			m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "hx", ContentPath: content}, "PC", "", true, 1)
 
 			job, _ := jobs.Get(jobID)
 			if status, _ := job["status"].(string); status != "error" {
@@ -503,7 +503,7 @@ func TestOrganizeGameDoesNotStoreTwiceWithArchiveOff(t *testing.T) {
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h8", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h8", ContentPath: content}, "PC", "", true, 1)
 
 	if pathExists(filepath.Join(cfg.GamesVaultPath, "Game")) {
 		t.Error("stored the game a second time as a folder beside the archive")
@@ -687,7 +687,7 @@ func TestOrganizeGameArchivesOnlyPriorityWantedFiles(t *testing.T) {
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
 	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "pf1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	got := tarEntries(t, filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar"))
 	if got["setup.exe"] != "installer" || got["fg-01.bin"] != "payload" {

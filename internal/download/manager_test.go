@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -376,7 +377,7 @@ func TestOrganizeGame(t *testing.T) {
 	t.Run("missing content path errors", func(t *testing.T) {
 		m, _, jobID := setupOrganizeJob(t)
 		torrent := &qbit.Torrent{Name: "Ghost", Hash: "gh", ContentPath: "/nonexistent/nope"}
-		m.organizeGame(jobID, torrent, "PC", "", true)
+		m.organizeGame(jobID, torrent, "PC", "", true, 1)
 		job, _ := m.Jobs().Get(jobID)
 		if status, _ := job["status"].(string); status != "error" {
 			t.Errorf("status = %q, want error", status)
@@ -389,7 +390,7 @@ func TestOrganizeGame(t *testing.T) {
 		writeFileT(t, filepath.Join(content, "data.dat"), []byte("???"))
 		torrent := &qbit.Torrent{Name: "mysterious-thing", Hash: "mh", ContentPath: content}
 
-		m.organizeGame(jobID, torrent, "", "", false)
+		m.organizeGame(jobID, torrent, "", "", false, 1)
 
 		job, _ := m.Jobs().Get(jobID)
 		if status, _ := job["status"].(string); status != "completed" {
@@ -412,7 +413,7 @@ func TestOrganizeGame(t *testing.T) {
 		writeFileT(t, filepath.Join(content, "game.gba"), []byte("gba-rom"))
 		torrent := &qbit.Torrent{Name: "handheld-game", Hash: "dh", ContentPath: content}
 
-		m.organizeGame(jobID, torrent, "", "", false)
+		m.organizeGame(jobID, torrent, "", "", false, 1)
 
 		job, _ := m.Jobs().Get(jobID)
 		if status, _ := job["status"].(string); status != "completed" {
@@ -433,7 +434,7 @@ func TestOrganizeGame(t *testing.T) {
 		writeFileT(t, filepath.Join(content, "game.bin2"), []byte("rom"))
 		torrent := &qbit.Torrent{Name: "meta-game", Hash: "mm", ContentPath: content}
 
-		m.organizeGame(jobID, torrent, "", "", false)
+		m.organizeGame(jobID, torrent, "", "", false, 1)
 
 		job, _ := m.Jobs().Get(jobID)
 		if slug, _ := job["platform_slug"].(string); slug != "snes" {
@@ -447,7 +448,7 @@ func TestOrganizeGame(t *testing.T) {
 		writeFileT(t, filepath.Join(savePath, "SavedGame", "rom.sfc"), []byte("rom"))
 		torrent := &qbit.Torrent{Name: "SavedGame", Hash: "sp", SavePath: savePath}
 
-		m.organizeGame(jobID, torrent, "SNES", "snes", false)
+		m.organizeGame(jobID, torrent, "SNES", "snes", false, 1)
 
 		job, _ := m.Jobs().Get(jobID)
 		if status, _ := job["status"].(string); status != "completed" {
@@ -468,7 +469,7 @@ func TestOrganizeGame(t *testing.T) {
 		writeFileT(t, filepath.Join(content, "setup.exe"), []byte("x"))
 		torrent := &qbit.Torrent{Name: "Blocked.Game-CODEX", Hash: "bf", ContentPath: content}
 
-		m.organizeGame(jobID, torrent, "PC", "", true)
+		m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 		job, _ := m.Jobs().Get(jobID)
 		if status, _ := job["status"].(string); status != "error" {
@@ -1578,10 +1579,242 @@ func TestRomImportRetriesWhenTheClientMovesThePayload(t *testing.T) {
 	if attempts < 2 {
 		t.Errorf("import attempts = %d, want the failed one retried at the published path", attempts)
 	}
-	waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+	job := waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+	detail, _ := job["detail"].(string)
+	errMsg, _ := job["error"].(string)
+	if detail != "Moved to RomM (SNES)" || errMsg != "" {
+		t.Errorf("job = {detail:%q error:%q}, want the moved receipt and nothing left over from a failed attempt",
+			detail, errMsg)
+	}
 	if !pathExists(filepath.Join(cfg.GamesRomsPath, "snes", "Super Game (USA)", "game.sfc")) {
 		t.Error("game file not at the ROM destination after the retried import")
 	}
+}
+
+// A cross-device publish depletes the source over minutes, so the first
+// attempt can hit an ENOENT while the tree is still standing. That attempt
+// holds one retry cycle: the re-read hands back the published path and the
+// next attempt lands it.
+func TestImportHoldsOneCycleWhenTheSourceDepletes(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	stale := filepath.Join(cfg.QBSavePath, "temp", "Super Game (USA)")
+	published := filepath.Join(cfg.QBSavePath, "Super Game (USA)")
+	if err := os.MkdirAll(stale, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", stale, err)
+	}
+	if err := os.MkdirAll(published, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", published, err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "game1.sfc"), []byte("rom-data"), 0644); err != nil {
+		t.Fatalf("write game1.sfc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(published, "game1.sfc"), []byte("rom-data"), 0644); err != nil {
+		t.Fatalf("write game1.sfc: %v", err)
+	}
+
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Super Game (USA)", Hash: "depl-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: published,
+	}})
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "downloading", "title": "Super Game (USA)", "info_hash": "depl-hash",
+	})
+
+	// First attempt hits a file the copy-publish has already deleted, with the
+	// tree still standing around it.
+	realImport := fileImport
+	attempts := 0
+	fileImport = func(src, dest string, opt fileops.Options) error {
+		attempts++
+		if attempts == 1 {
+			os.Remove(filepath.Join(src, "game1.sfc"))
+			return &fs.PathError{Op: "open", Path: filepath.Join(src, "game1.sfc"), Err: os.ErrNotExist}
+		}
+		return realImport(src, dest, opt)
+	}
+	t.Cleanup(func() { fileImport = realImport })
+
+	m.importFinishedTorrent("job watch", jobID, qbit.Torrent{
+		Name: "Super Game (USA)", Hash: "depl-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: stale,
+	}, "SNES", "snes", false)
+
+	if attempts < 2 {
+		t.Errorf("import attempts = %d, want the held one retried at the published path", attempts)
+	}
+	waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+	if !pathExists(filepath.Join(cfg.GamesRomsPath, "snes", "Super Game (USA)", "game1.sfc")) {
+		t.Error("game file not at the ROM destination after the held import")
+	}
+}
+
+// The hold is one cycle, not a policy: an ENOENT that keeps recurring with the
+// tree standing is a real defect and terminates on the second attempt, with
+// the real cause in the row and no give-up detail.
+func TestImportWithAPersistingBrokenSourceStopsAfterTheHold(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	content := filepath.Join(cfg.QBSavePath, "Super Game (USA)")
+	if err := os.MkdirAll(content, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", content, err)
+	}
+	if err := os.WriteFile(filepath.Join(content, "game1.sfc"), []byte("rom-data"), 0644); err != nil {
+		t.Fatalf("write game1.sfc: %v", err)
+	}
+
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Super Game (USA)", Hash: "persist-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: content,
+	}})
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "downloading", "title": "Super Game (USA)", "info_hash": "persist-hash",
+	})
+
+	realImport := fileImport
+	attempts := 0
+	fileImport = func(src, dest string, opt fileops.Options) error {
+		attempts++
+		return &fs.PathError{Op: "open", Path: filepath.Join(src, "game1.sfc"), Err: os.ErrNotExist}
+	}
+	t.Cleanup(func() { fileImport = realImport })
+
+	m.importFinishedTorrent("job watch", jobID, qbit.Torrent{
+		Name: "Super Game (USA)", Hash: "persist-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: content,
+	}, "SNES", "snes", false)
+
+	if attempts != 2 {
+		t.Errorf("import attempts = %d, want exactly 2: the first held, the second terminal", attempts)
+	}
+	job, ok := m.Jobs().Get(jobID)
+	if !ok {
+		t.Fatalf("job %s not found", jobID)
+	}
+	status, _ := job["status"].(string)
+	detail, _ := job["detail"].(string)
+	errMsg, _ := job["error"].(string)
+	if status != "error" {
+		t.Errorf("status = %q, want a terminal error", status)
+	}
+	if !strings.Contains(errMsg, "does not exist") {
+		t.Errorf("error = %q, want the real cause named", errMsg)
+	}
+	if strings.Contains(detail, "Gave up") {
+		t.Errorf("detail = %q, want no give-up: the second attempt is terminal", detail)
+	}
+}
+
+// The partial-destination cleanup has to carry real debris for its guard to
+// mean anything: a retry against uncleared debris dies on the existing tree,
+// and a dest that predated the import must survive the failure untouched.
+func TestRomImportClearsOnlyItsOwnDebrisBeforeTheRetry(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+
+	newFixture := func(t *testing.T, preSeed string) (*Manager, string, string, qbit.Torrent, *int) {
+		qm := newQbitMock(t)
+		cfg := newTestConfig(t)
+		cfg.QBURL = "configured"
+		m := New(cfg, newTestJobs(t), qm.client())
+
+		stale := filepath.Join(cfg.QBSavePath, "temp", "Super Game (USA)")
+		published := filepath.Join(cfg.QBSavePath, "Super Game (USA)")
+		if err := os.MkdirAll(stale, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", stale, err)
+		}
+		if err := os.MkdirAll(published, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", published, err)
+		}
+		if err := os.WriteFile(filepath.Join(published, "game1.sfc"), []byte("rom-data"), 0644); err != nil {
+			t.Fatalf("write game1.sfc: %v", err)
+		}
+
+		dest := filepath.Join(cfg.GamesRomsPath, "snes", "Super Game (USA)")
+		if preSeed != "" {
+			if err := os.MkdirAll(dest, 0755); err != nil {
+				t.Fatalf("mkdir dest: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dest, preSeed), []byte("keep me"), 0644); err != nil {
+				t.Fatalf("write %s: %v", preSeed, err)
+			}
+		}
+
+		// The client answers the loop's re-read with the published path, while
+		// the import holds the struct captured against the staging path.
+		captured := qbit.Torrent{
+			Name: "Super Game (USA)", Hash: "debris-hash", Progress: 1.0,
+			SavePath: cfg.QBSavePath, ContentPath: stale,
+		}
+		qm.setTorrents([]qbit.Torrent{{
+			Name: "Super Game (USA)", Hash: "debris-hash", Progress: 1.0,
+			SavePath: cfg.QBSavePath, ContentPath: published,
+		}})
+		jobID := newJobID()
+		m.Jobs().Set(jobID, map[string]interface{}{
+			"status": "downloading", "title": "Super Game (USA)", "info_hash": "debris-hash",
+		})
+
+		// The first attempt lands one debris file in dest, then the client's
+		// move takes the staging tree away under it.
+		realImport := fileImport
+		attempts := 0
+		fileImport = func(src, dest string, opt fileops.Options) error {
+			attempts++
+			if attempts == 1 {
+				os.MkdirAll(dest, 0755)
+				os.WriteFile(filepath.Join(dest, "partial.sfc"), []byte("debris"), 0644)
+				os.RemoveAll(src)
+				return fmt.Errorf("copy of %s interrupted by the client", src)
+			}
+			return realImport(src, dest, opt)
+		}
+		t.Cleanup(func() { fileImport = realImport })
+		return m, jobID, dest, captured, &attempts
+	}
+
+	t.Run("debris is cleared before the retry", func(t *testing.T) {
+		m, jobID, dest, captured, attempts := newFixture(t, "")
+
+		m.importFinishedTorrent("job watch", jobID, captured, "SNES", "snes", false)
+
+		if *attempts < 2 {
+			t.Fatalf("import attempts = %d, want the debris attempt retried", *attempts)
+		}
+		waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+		if pathExists(filepath.Join(dest, "partial.sfc")) {
+			t.Error("the failed attempt's debris survived into the published import")
+		}
+		if !pathExists(filepath.Join(dest, "game1.sfc")) {
+			t.Error("game file not at the ROM destination after the retried import")
+		}
+	})
+
+	t.Run("a pre-existing dest is left alone", func(t *testing.T) {
+		m, jobID, dest, captured, attempts := newFixture(t, "marker.txt")
+
+		m.importFinishedTorrent("job watch", jobID, captured, "SNES", "snes", false)
+
+		if *attempts < 2 {
+			t.Fatalf("import attempts = %d, want the failure handled and the import retried", *attempts)
+		}
+		waitJobStatus(t, m.Jobs(), jobID, "completed", minPollTimeout)
+		if !pathExists(filepath.Join(dest, "marker.txt")) {
+			t.Error("the pre-existing dest was removed by the failure handling")
+		}
+		if !pathExists(filepath.Join(dest, "game1.sfc")) {
+			t.Error("game file not at the ROM destination after the retried import")
+		}
+	})
 }
 
 // assertImportedCleanly checks the whole job row rather than the status alone.
