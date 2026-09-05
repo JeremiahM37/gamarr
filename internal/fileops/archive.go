@@ -20,6 +20,10 @@ const TarExt = ".tar"
 // partialSuffix marks an archive that is still being written.
 const partialSuffix = ".partial"
 
+// qBPartSuffix marks a file the download client preallocated but never
+// downloaded: the zero-filled placeholder left where a deselected pack sits.
+const qBPartSuffix = ".!qB"
+
 // ErrDestinationOccupied reports that the library already holds something at
 // this destination. One sentinel covers the vault in either layout and the ROM
 // library, so a caller cannot match one path and miss the other.
@@ -281,6 +285,9 @@ func census(src string) (files, bytes int64, err error) {
 			return err
 		}
 		if info.Mode().IsRegular() {
+			if strings.HasSuffix(info.Name(), qBPartSuffix) {
+				return nil
+			}
 			files++
 			bytes += info.Size()
 		}
@@ -333,6 +340,11 @@ func writeTree(tw *tar.Writer, src string) (files, bytes int64, err error) {
 		// neither absolute nor contain "..", but it costs nothing.
 		if !filepath.IsLocal(rel) {
 			return fmt.Errorf("unsafe path %q escapes %q", rel, src)
+		}
+		// qBittorrent leaves the placeholder at full preallocated size for a
+		// file that was deselected; a wanted file never carries the suffix.
+		if strings.HasSuffix(info.Name(), qBPartSuffix) {
+			return nil
 		}
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			// Skipping one and returning success is the worse failure: on the

@@ -157,6 +157,34 @@ func TestArchiveHoldsEveryInputFile(t *testing.T) {
 	}
 }
 
+// A deselected pack is a zero-filled placeholder at its full preallocated
+// extent carrying the client's partial suffix. It never belongs in the vault
+// archive, and the census that authorises dropping the download has to count
+// the tar the same way the walk wrote it.
+func TestArchiveSkipsQbPlaceholders(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+	writeFile(t, filepath.Join(src, "fg-01.bin"), "PART ONE")
+	writeFile(t, filepath.Join(src, "fg-02.bin"+qBPartSuffix), "PLACEHOLDER")
+
+	dest := ArchiveDest(filepath.Join(root, "vault", "Days Gone"))
+	if err := Archive(src, dest); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := readTar(t, dest)
+	if _, ok := got["fg-02.bin"+qBPartSuffix]; ok {
+		t.Error("tar carries the deselected pack placeholder")
+	}
+	if got["setup.exe"] != "SETUP" || got["fg-01.bin"] != "PART ONE" {
+		t.Errorf("tar lost a wanted file: %v", got)
+	}
+	if err := VerifyArchive(dest, src); err != nil {
+		t.Errorf("VerifyArchive: %v", err)
+	}
+}
+
 // twoFileArchive builds a source of two regular files and its archive.
 func twoFileArchive(t *testing.T) (string, string, int64) {
 	t.Helper()
