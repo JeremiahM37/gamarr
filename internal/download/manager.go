@@ -448,6 +448,10 @@ func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug str
 // organizeGame imports a finished torrent, reporting whether a failure is worth
 // another attempt later. Only a content path that is not there yet is: the
 // client may still be moving files into place when the download reads complete.
+// retryHint is the row detail a terminal import failure carries: the payload
+// is still in the client, so the operator can land it by hand.
+const retryHint = "The download is still in the client, so use Retry once the files are in place."
+
 // importMoved reports whether the content tree this attempt was reading has
 // been moved away by the client - the one transient shape an import failure
 // takes, since the client publishes a finished download by moving it. A tree
@@ -541,10 +545,15 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		dest, mode, archived, err := m.importToVault(contentPath, wanted, attempt)
 		importMode = mode
 		if err != nil {
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			transient := importTransient(contentPath, err, attempt)
+			row := map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
-			})
-			return importTransient(contentPath, err, attempt)
+			}
+			if !transient {
+				row["detail"] = retryHint
+			}
+			m.jobs.UpdateMulti(jobID, row)
+			return transient
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, "GameVault"),
@@ -572,17 +581,25 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		mode, err := m.importContent(contentPath, dest)
 		importMode = mode
 		if err != nil {
-			m.jobs.UpdateMulti(jobID, map[string]interface{}{
-				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
-			})
-			if !destExisted && importTransient(contentPath, err, attempt) {
+			// Evaluated once and reused: the tree can vanish between two live
+			// stats, and a cleanup skipped that way would leave the job's own
+			// debris reading as pre-existing on every later attempt.
+			transient := importTransient(contentPath, err, attempt)
+			if transient && !destExisted {
 				// A retried import against this attempt's partial output dies
 				// on an existing link or reads it as occupied. destExisted is
 				// a check, not a lock: it only ever saw this dest absent
 				// before the import started.
 				removePartialDest(dest)
 			}
-			return importTransient(contentPath, err, attempt)
+			row := map[string]interface{}{
+				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
+			}
+			if !transient {
+				row["detail"] = retryHint
+			}
+			m.jobs.UpdateMulti(jobID, row)
+			return transient
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, fmt.Sprintf("RomM (%s)", platf)),

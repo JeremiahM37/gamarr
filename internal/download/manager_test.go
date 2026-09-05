@@ -1710,6 +1710,9 @@ func TestImportWithAPersistingBrokenSourceStopsAfterTheHold(t *testing.T) {
 	if !strings.Contains(errMsg, "does not exist") {
 		t.Errorf("error = %q, want the real cause named", errMsg)
 	}
+	if !strings.Contains(detail, "use Retry") {
+		t.Errorf("detail = %q, want the retry hint a terminal row carries", detail)
+	}
 	if strings.Contains(detail, "Gave up") {
 		t.Errorf("detail = %q, want no give-up: the second attempt is terminal", detail)
 	}
