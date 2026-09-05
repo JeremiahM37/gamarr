@@ -720,3 +720,94 @@ func TestDDLWorker_RecordsVimmDownloadSuccess(t *testing.T) {
 		t.Error("a delivered file should clear the degraded flag")
 	}
 }
+
+func TestRetryJobRestartsVimmDownloadOnTheSameRow(t *testing.T) {
+	var available atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/vault/") && !available.Load():
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			_, _ = io.WriteString(w, vimmChallengePageHTML)
+		case strings.HasPrefix(r.URL.Path, "/vault/"):
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			_, _ = io.WriteString(w, vimmGamePageHTML)
+		case r.URL.Path == "/download":
+			w.Header().Set("Content-Disposition", `attachment; filename="retry-fixture.zip"`)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write([]byte("PK\x03\x04retry-fixture"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	search.ResetCircuit("vimm")
+	t.Cleanup(func() { search.ResetCircuit("vimm") })
+
+	// Let a failed retry cross the threshold. RetryJob deliberately bypasses
+	// discovery's open circuit; a later successful delivery then recovers both
+	// the degraded flag and the circuit itself.
+	search.RecordDownloadFail("vimm", "earlier gate")
+	jobID := m.DownloadDDL("", "4970", "Vimm Retry Fixture", "SNES", "snes", false)
+	failed := waitJobStatus(t, jobs, jobID, "error", minPollTimeout)
+	if failed["vimm_id"] != "4970" || failed["source_type"] != "ddl" {
+		t.Fatalf("job did not retain its replay inputs: %v", failed)
+	}
+	waitFor(t, minPollTimeout, "the initial Vimm worker to finish", func() bool {
+		_, busy := m.activeDDL.Load(jobID)
+		return !busy
+	})
+
+	ok, msg := m.RetryJob(jobID)
+	if !ok {
+		t.Fatalf("RetryJob refused a replayable Vimm job: %s", msg)
+	}
+	waitJobStatus(t, jobs, jobID, "error", minPollTimeout)
+	waitFor(t, minPollTimeout, "the failed Vimm retry to finish", func() bool {
+		_, busy := m.activeDDL.Load(jobID)
+		return !busy
+	})
+	if !search.IsCircuitOpen("vimm") || !search.IsDownloadDegraded("vimm") {
+		t.Fatal("fixture did not begin with a degraded, open Vimm source")
+	}
+
+	available.Store(true)
+	ok, msg = m.RetryJob(jobID)
+	if !ok {
+		t.Fatalf("RetryJob refused a replayable Vimm job: %s", msg)
+	}
+	if msg != "Retrying (#2)" {
+		t.Errorf("second retry message = %q, want Retrying (#2)", msg)
+	}
+	completed := waitJobStatus(t, jobs, jobID, "completed", minPollTimeout)
+	if completed["error"] != nil && completed["error"] != "" {
+		t.Errorf("completed retry retained error %v", completed["error"])
+	}
+	if got := jobRetryCount(completed); got != 2 {
+		t.Errorf("retry_count = %d, want 2", got)
+	}
+	if got := len(jobs.Items()); got != 1 {
+		t.Errorf("job rows = %d, want the retry to reuse its existing row", got)
+	}
+	if search.IsCircuitOpen("vimm") || search.IsDownloadDegraded("vimm") {
+		t.Error("successful Vimm retry did not restore source health")
+	}
+}
+
+func TestRetryJobRefusesWhileVimmWorkerIsStillActive(t *testing.T) {
+	m, jobs := newVimmManager(t, "http://127.0.0.1:1/vault/")
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{
+		"status": "error", "title": "Vimm Retry Fixture", "source_type": "ddl", "vimm_id": "4970",
+	})
+	m.activeDDL.Store(jobID, struct{}{})
+	t.Cleanup(func() { m.activeDDL.Delete(jobID) })
+
+	if ok, msg := m.RetryJob(jobID); ok || !strings.Contains(strings.ToLower(msg), "already running") {
+		t.Fatalf("retry while active = (%v, %q), want an already-running refusal", ok, msg)
+	}
+	job, _ := jobs.Get(jobID)
+	if job["status"] != "error" || job["error"] != nil {
+		t.Errorf("refused retry changed the job: %v", job)
+	}
+}

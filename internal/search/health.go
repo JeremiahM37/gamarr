@@ -119,12 +119,18 @@ func RecordDownloadSuccess(name string) {
 	healthMu.Lock()
 	defer healthMu.Unlock()
 	h := getOrCreateHealth(name)
+	now := float64(time.Now().Unix())
+	wasOpen := now < h.circuitOpenUntil
 	h.DownloadOK++
 	h.downloadFailStreak = 0
-	h.LastSuccessAt = float64(time.Now().Unix())
+	h.LastSuccessAt = now
+	h.circuitOpenUntil = 0
 	h.Score += 5
 	if h.Score > 100 {
 		h.Score = 100
+	}
+	if wasOpen {
+		slog.Info("source recovered after a successful download", "source", name)
 	}
 }
 

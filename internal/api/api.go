@@ -739,6 +739,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 				ETA:      t.ETA,
 				Hash:     t.Hash,
 				InfoHash: infoHash,
+				CanRetry: jobCanRetry(matchedJob.Data),
 			})
 		} else {
 			status := t.State
@@ -778,10 +779,17 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 			Error:    errMsg,
 			Detail:   detail,
 			InfoHash: infoHash,
+			CanRetry: jobCanRetry(item.Data),
 		})
 	}
 
 	writeJSON(w, 200, map[string]interface{}{"downloads": downloads})
+}
+
+func jobCanRetry(data map[string]interface{}) bool {
+	infoHash, _ := data["info_hash"].(string)
+	vimmID, _ := data["vimm_id"].(string)
+	return infoHash != "" || vimmID != ""
 }
 
 func jTitle(data map[string]interface{}) string {

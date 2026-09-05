@@ -57,8 +57,16 @@ def test_vimm_download_names_the_gate(ui):
     expect(card).to_contain_text("Turnstile", timeout=SLOW_MS)
     assert "Could not find download form" not in card.inner_text()
 
+    retry = card.get_by_role("button", name="Retry")
+    expect(retry).to_be_visible()
+    retry.click()
+    expect(page.locator("#toast-container")).to_contain_text("Retrying (#1)")
+    expect(card).to_contain_text("Turnstile", timeout=SLOW_MS)
+    # A retry reuses the failed row instead of creating a duplicate card.
+    expect(page.locator("#downloads > div", has_text=title)).to_have_count(1)
+
     health = _vimm_health(base)
-    assert health.get("download_fail", 0) >= 1, health
+    assert health.get("download_fail", 0) >= 2, health
     assert health.get("last_error_kind") == "download", health
     assert "Turnstile" in health.get("last_error", ""), health
     assert health.get("score", 100) < 100, health

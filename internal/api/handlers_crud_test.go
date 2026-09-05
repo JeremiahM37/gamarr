@@ -1182,11 +1182,11 @@ func TestAdminDashboard(t *testing.T) {
 	}
 }
 
-// The Retry button is gated on the payload saying the job has a torrent to
-// resolve. `hash` cannot answer that: it is a LIVE torrent matched to the row by
-// fuzzy title, so a release whose name differs from the job title - which is any
-// title carrying a colon, apostrophe or ampersand - loses the button while the
-// backend would retry it fine.
+// The backend derives can_retry from the torrent recorded by the job. `hash`
+// cannot answer that: it is a LIVE torrent matched to the row by fuzzy title,
+// so a release whose name differs from the job title - which is any title
+// carrying a colon, apostrophe or ampersand - would otherwise lose the button
+// while the backend can retry it fine.
 func TestDownloadsReportTheJobsOwnInfoHash(t *testing.T) {
 	qb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1234,5 +1234,39 @@ func TestDownloadsReportTheJobsOwnInfoHash(t *testing.T) {
 		if got, _ := row["info_hash"].(string); got != want {
 			t.Errorf("job %s info_hash = %q, want %q", jobID, got, want)
 		}
+		if row["can_retry"] != true {
+			t.Errorf("job %s can_retry = %v, want true", jobID, row["can_retry"])
+		}
+	}
+}
+
+func TestDownloadsReportVimmRetryabilityWithoutExposingItsID(t *testing.T) {
+	env := newTestEnv(t, nil)
+	env.jobs.Set("vimm", map[string]interface{}{
+		"status": "error", "title": "Vimm Retry Fixture", "source_type": "ddl", "vimm_id": "4970",
+	})
+	env.jobs.Set("legacy-ddl", map[string]interface{}{
+		"status": "error", "title": "Legacy DDL Fixture", "source_type": "ddl",
+	})
+
+	rr := env.do("GET", "/api/downloads", "")
+	wantStatus(t, rr, 200)
+	entries, _ := decodeMap(t, rr)["downloads"].([]interface{})
+	rows := map[string]map[string]interface{}{}
+	for _, entry := range entries {
+		row, _ := entry.(map[string]interface{})
+		if id, _ := row["job_id"].(string); id != "" {
+			rows[id] = row
+		}
+	}
+
+	if rows["vimm"]["can_retry"] != true {
+		t.Errorf("Vimm row can_retry = %v, want true", rows["vimm"]["can_retry"])
+	}
+	if _, exposed := rows["vimm"]["vimm_id"]; exposed {
+		t.Error("downloads response exposed the private Vimm vault ID")
+	}
+	if _, retryable := rows["legacy-ddl"]["can_retry"]; retryable {
+		t.Errorf("legacy row without replay inputs reported retryable: %v", rows["legacy-ddl"])
 	}
 }

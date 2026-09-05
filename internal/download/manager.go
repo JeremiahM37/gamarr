@@ -66,6 +66,12 @@ type Manager struct {
 	// avoids a batch of Vimm jobs exhausting a small solver container; file
 	// downloads can proceed concurrently as soon as each media ID is known.
 	flareSolverrMu sync.Mutex
+
+	// activeDDL holds job IDs whose direct-download worker is still running.
+	// Vimm's inner downloader can publish an error just before the outer worker
+	// returns, so the persisted status alone cannot safely exclude a second
+	// click during that small window.
+	activeDDL sync.Map
 }
 
 // New creates a new download Manager.
@@ -263,15 +269,23 @@ func (m *Manager) resolveAddedHash(knownBefore map[string]bool, title string) (s
 // DownloadDDL starts a direct download.
 func (m *Manager) DownloadDDL(url, vimmID, title, platf, platSlug string, isPC bool) string {
 	jobID := newJobID()
-	m.jobs.Set(jobID, map[string]interface{}{
+	job := map[string]interface{}{
 		"status":        "downloading",
 		"title":         title,
 		"platform":      platf,
 		"platform_slug": platSlug,
 		"is_pc":         isPC,
+		"source_type":   "ddl",
 		"error":         nil,
 		"detail":        "Starting direct download...",
-	})
+	}
+	// A Vimm vault ID is stable and sufficient to replay the existing download
+	// path. Keep it on the private job row so retries survive page reloads and
+	// process restarts without exposing it through the downloads response.
+	if vimmID != "" {
+		job["vimm_id"] = vimmID
+	}
+	m.jobs.Set(jobID, job)
 	go m.ddlDownloadWorker(jobID, url, vimmID, title, platf, platSlug, isPC)
 	return jobID
 }
@@ -825,6 +839,18 @@ func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, p
 }
 
 func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug string, isPC bool) {
+	if _, busy := m.activeDDL.LoadOrStore(jobID, struct{}{}); busy {
+		slog.Warn("a direct-download worker is already running", "job_id", jobID)
+		return
+	}
+	defer m.activeDDL.Delete(jobID)
+	m.runDDLDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug, isPC)
+}
+
+// runDDLDownloadWorker performs a direct download after its caller has claimed
+// the job in activeDDL. RetryJob claims before changing the persisted status so
+// two simultaneous retry requests cannot both report success.
+func (m *Manager) runDDLDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug string, isPC bool) {
 	staging := m.cfg.QBSavePath
 	if err := os.MkdirAll(staging, 0755); err != nil {
 		slog.Error("cannot create staging dir", "path", staging, "error", err)

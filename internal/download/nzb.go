@@ -410,6 +410,9 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 	if status != "error" && status != "interrupted" && status != "dead_letter" {
 		return false, fmt.Sprintf("Job not in failed state (status=%s)", status)
 	}
+	if vimmID := strVal(job, "vimm_id"); vimmID != "" {
+		return m.retryVimmJob(jobID, job, vimmID)
+	}
 	hash := strVal(job, "info_hash")
 	if hash == "" {
 		return false, "This job has no torrent recorded, so there is nothing to import again"
@@ -432,10 +435,7 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 		return false, "An import is already running for this download"
 	}
 
-	retryCount := 0
-	if rc, ok := job["retry_count"].(float64); ok {
-		retryCount = int(rc)
-	}
+	retryCount := jobRetryCount(job)
 	isPC, _ := job["is_pc"].(bool)
 
 	m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -447,6 +447,41 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 	m.jobs.LogActivity("download_retried", strVal(job, "title"), fmt.Sprintf("Retry #%d", retryCount+1), jobID, nil)
 	go m.importFinishedTorrent("retry", jobID, torrent, strVal(job, "platform"), strVal(job, "platform_slug"), isPC)
 	return true, fmt.Sprintf("Retrying (#%d)", retryCount+1)
+}
+
+func (m *Manager) retryVimmJob(jobID string, job map[string]interface{}, vimmID string) (bool, string) {
+	if _, busy := m.activeDDL.LoadOrStore(jobID, struct{}{}); busy {
+		return false, "A direct-download retry is already running for this job"
+	}
+
+	retryCount := jobRetryCount(job)
+	isPC, _ := job["is_pc"].(bool)
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{
+		"status":      "downloading",
+		"error":       nil,
+		"detail":      fmt.Sprintf("Retry #%d", retryCount+1),
+		"retry_count": retryCount + 1,
+	})
+	m.jobs.LogActivity("download_retried", strVal(job, "title"), fmt.Sprintf("Retry #%d", retryCount+1), jobID, nil)
+
+	go func() {
+		defer m.activeDDL.Delete(jobID)
+		m.runDDLDownloadWorker(jobID, "", vimmID, strVal(job, "title"), strVal(job, "platform"), strVal(job, "platform_slug"), isPC)
+	}()
+	return true, fmt.Sprintf("Retrying (#%d)", retryCount+1)
+}
+
+func jobRetryCount(job map[string]interface{}) int {
+	switch rc := job["retry_count"].(type) {
+	case int:
+		return rc
+	case int64:
+		return int(rc)
+	case float64:
+		return int(rc)
+	default:
+		return 0
+	}
 }
 
 func strVal(m map[string]interface{}, key string) string {
@@ -461,10 +496,7 @@ func (m *Manager) AutoRetryFailed() {
 		if status != "error" {
 			continue
 		}
-		retryCount := 0
-		if rc, ok := item.Data["retry_count"].(float64); ok {
-			retryCount = int(rc)
-		}
+		retryCount := jobRetryCount(item.Data)
 		if retryCount >= m.cfg.MaxRetries {
 			// Move to dead letter (status is always "error" here).
 			m.jobs.UpdateMulti(item.ID, map[string]interface{}{
