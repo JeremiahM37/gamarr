@@ -30,7 +30,10 @@ type Torrent struct {
 
 // TorrentFile represents a file within a torrent.
 type TorrentFile struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	Priority int    `json:"priority"`
+	Index    int    `json:"index"`
 }
 
 // Client is a qBittorrent API client with session-based cookie auth.

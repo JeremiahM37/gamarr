@@ -159,7 +159,7 @@ func TestOrganizeGameCompletesWhenTheArchiveIsAlreadyThere(t *testing.T) {
 	// A real archive of this content, not a stand-in: the accept has to be
 	// distinguishable from any file happening to sit at that name.
 	staged := filepath.Join(t.TempDir(), "staged.tar")
-	if err := fileops.Archive(content, staged); err != nil {
+	if err := fileops.Archive(content, staged, nil); err != nil {
 		t.Fatalf("build fixture archive: %v", err)
 	}
 	published := filepath.Join(cfg.GamesVaultPath, "Recovered Game.tar")
@@ -254,7 +254,7 @@ func TestArchiveImportReportsACopyUnderPreservingModes(t *testing.T) {
 // The archive is the only thing that authorises dropping the download, so a
 // verify that fails has to keep it even under move.
 func TestArchiveImportKeepsTheDownloadWhenVerifyFails(t *testing.T) {
-	verifyArchive = func(string, string) error { return errors.New("cannot read the published archive") }
+	verifyArchive = func(string, string, fileops.WantedFiles) error { return errors.New("cannot read the published archive") }
 	t.Cleanup(func() { verifyArchive = fileops.VerifyArchive })
 
 	cfg := newTestConfig(t)
@@ -297,7 +297,7 @@ func TestArchiveAlreadyInVaultKeepsTheDownload(t *testing.T) {
 	// A real archive of this content, so the accept rests on the census rather
 	// than on something merely sitting at the name.
 	staged := filepath.Join(t.TempDir(), "staged.tar")
-	if err := fileops.Archive(content, staged); err != nil {
+	if err := fileops.Archive(content, staged, nil); err != nil {
 		t.Fatalf("build fixture archive: %v", err)
 	}
 	if err := os.Rename(staged, filepath.Join(cfg.GamesVaultPath, "Stored Game.tar")); err != nil {
@@ -561,7 +561,7 @@ func TestOrganizeNZBCompletesWhenTheArchiveIsAlreadyThere(t *testing.T) {
 	writeFileT(t, filepath.Join(storage, "fg-01.bin"), []byte(strings.Repeat("payload", 512)))
 
 	staged := filepath.Join(t.TempDir(), "staged.tar")
-	if err := fileops.Archive(storage, staged); err != nil {
+	if err := fileops.Archive(storage, staged, nil); err != nil {
 		t.Fatalf("build fixture archive: %v", err)
 	}
 	published := filepath.Join(cfg.GamesVaultPath, "PC Game.tar")
@@ -657,5 +657,40 @@ func TestOrganizeNZBCompletesFromExistingArchive(t *testing.T) {
 	}
 	if !m.Jobs().LibraryHasSourceID("nzb:" + dest) {
 		t.Error("existing archive was not tracked in the library")
+	}
+}
+
+// The wanted set comes from the client's priorities at organize time, so a
+// deselected pack is excluded whatever its name - including one that carries
+// the client's partial suffix after a late deselection left real bytes in it.
+func TestOrganizeGameArchivesOnlyPriorityWantedFiles(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Filtered Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(content, "fg-01.bin"), []byte("payload"))
+	writeFileT(t, filepath.Join(content, "fg-02.bin.!qB"), []byte("leftover fragment"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Filtered Game/setup.exe", Priority: 1},
+		{Name: "Filtered Game/fg-01.bin", Priority: 1},
+		{Name: "Filtered Game/fg-02.bin.!qB", Priority: 0},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "pf1", ContentPath: content}
+	m.organizeGame(jobID, torrent, "PC", "", true)
+
+	got := tarEntries(t, filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar"))
+	if got["setup.exe"] != "installer" || got["fg-01.bin"] != "payload" {
+		t.Errorf("archive contents = %v, want the wanted files", got)
+	}
+	if _, ok := got["fg-02.bin.!qB"]; ok {
+		t.Error("the deselected fragment was archived despite priority 0")
 	}
 }

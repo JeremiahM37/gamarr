@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"gamarr/internal/fileops"
 	"gamarr/internal/platform"
 	"gamarr/internal/qbit"
 )
@@ -1444,12 +1445,12 @@ func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 
 	realArchive := archive
 	attempts := 0
-	archive = func(src, dest string) error {
+	archive = func(src, dest string, wanted fileops.WantedFiles) error {
 		attempts++
 		if attempts == 1 {
 			return &fs.PathError{Op: "lstat", Path: filepath.Join(src, "fg-02.bin"), Err: os.ErrNotExist}
 		}
-		return realArchive(src, dest)
+		return realArchive(src, dest, wanted)
 	}
 	t.Cleanup(func() { archive = realArchive })
 

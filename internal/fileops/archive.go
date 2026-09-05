@@ -20,9 +20,21 @@ const TarExt = ".tar"
 // partialSuffix marks an archive that is still being written.
 const partialSuffix = ".partial"
 
-// qBPartSuffix marks a file the download client preallocated but never
-// downloaded: the zero-filled placeholder left where a deselected pack sits.
-const qBPartSuffix = ".!qB"
+// WantedFiles holds the archive's intended contents, keyed by path relative
+// to the import source, with each file's size. A nil map means the caller has
+// no selection information - usenet, DDL, or a client read that failed - and
+// every regular file is then included.
+type WantedFiles map[string]int64
+
+// WantedBytes sums the sizes the set declares, for callers verifying an
+// archive without the source present.
+func (w WantedFiles) WantedBytes() int64 {
+	var total int64
+	for _, size := range w {
+		total += size
+	}
+	return total
+}
 
 // ErrDestinationOccupied reports that the library already holds something at
 // this destination. One sentinel covers the vault in either layout and the ROM
@@ -64,7 +76,7 @@ func ArchiveHolds(path, src string) bool {
 	if err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
-	_, wantBytes, err := censusOf(src)
+	_, wantBytes, err := censusOf(src, nil)
 	return err == nil && fi.Size() >= wantBytes
 }
 
@@ -80,7 +92,7 @@ func ArchiveHolds(path, src string) bool {
 // Counts and sizes come from the same census Archive wrote from, so both sides
 // count regular files and neither counts the directory entries the tar also
 // carries.
-func VerifyArchive(dest, src string) error {
+func VerifyArchive(dest, src string, wanted WantedFiles) error {
 	fi, err := os.Lstat(dest)
 	if err != nil {
 		return err
@@ -88,7 +100,7 @@ func VerifyArchive(dest, src string) error {
 	if !fi.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", dest)
 	}
-	wantFiles, wantBytes, err := censusOf(src)
+	wantFiles, wantBytes, err := censusOf(src, wanted)
 	if err != nil {
 		return err
 	}
@@ -168,10 +180,10 @@ func Archivable(src string) bool {
 // VerifyArchive on top of that: what a write reported and what the destination
 // now holds are separate questions. Durability past that point belongs to
 // whatever storage backs the vault.
-func Archive(src, dest string) error {
+func Archive(src, dest string, wanted WantedFiles) error {
 	defer lockDest(dest)()
 
-	wantFiles, wantBytes, err := censusOf(src)
+	wantFiles, wantBytes, err := censusOf(src, wanted)
 	if err != nil {
 		return err
 	}
@@ -193,7 +205,7 @@ func Archive(src, dest string) error {
 	}
 	partial := f.Name()
 
-	gotFiles, gotBytes, err := writeTar(f, src)
+	gotFiles, gotBytes, err := writeTar(f, src, wanted)
 	if err == nil && (gotFiles != wantFiles || gotBytes != wantBytes) {
 		err = fmt.Errorf("archive of %s holds %d files and %d bytes, source has %d and %d",
 			src, gotFiles, gotBytes, wantFiles, wantBytes)
@@ -279,26 +291,33 @@ var censusOf = census
 
 // census counts the regular files under src and their total size: the figures a
 // finished archive has to match before it can stand in for the source.
-func census(src string) (files, bytes int64, err error) {
-	err = filepath.Walk(src, func(_ string, info fs.FileInfo, err error) error {
+func census(src string, wanted WantedFiles) (files, bytes int64, err error) {
+	err = filepath.Walk(src, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.Mode().IsRegular() {
-			if strings.HasSuffix(info.Name(), qBPartSuffix) {
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
+		}
+		if wanted != nil {
+			if _, keep := wanted[rel]; !keep {
 				return nil
 			}
-			files++
-			bytes += info.Size()
 		}
+		files++
+		bytes += info.Size()
 		return nil
 	})
 	return files, bytes, err
 }
 
-func writeTar(f *os.File, src string) (files, bytes int64, err error) {
+func writeTar(f *os.File, src string, wanted WantedFiles) (files, bytes int64, err error) {
 	tw := tar.NewWriter(f)
-	files, bytes, err = writeTree(tw, src)
+	files, bytes, err = writeTree(tw, src, wanted)
 	// tar buffers, so a short write on the final entry surfaces at Close.
 	if cerr := tw.Close(); err == nil {
 		err = cerr
@@ -322,9 +341,10 @@ func writeGNUHeader(tw *tar.Writer, hdr *tar.Header) error {
 	return tw.WriteHeader(hdr)
 }
 
-// writeTree adds every file under src to tw, named relative to src, and reports
-// what it wrote so the caller can compare against the source.
-func writeTree(tw *tar.Writer, src string) (files, bytes int64, err error) {
+// writeTree adds the wanted files under src to tw, named relative to src, and
+// reports what it wrote so the caller can compare against the census. A nil
+// wanted set includes every file.
+func writeTree(tw *tar.Writer, src string, wanted WantedFiles) (files, bytes int64, err error) {
 	err = filepath.Walk(src, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -341,10 +361,10 @@ func writeTree(tw *tar.Writer, src string) (files, bytes int64, err error) {
 		if !filepath.IsLocal(rel) {
 			return fmt.Errorf("unsafe path %q escapes %q", rel, src)
 		}
-		// qBittorrent leaves the placeholder at full preallocated size for a
-		// file that was deselected; a wanted file never carries the suffix.
-		if strings.HasSuffix(info.Name(), qBPartSuffix) {
-			return nil
+		if wanted != nil {
+			if _, keep := wanted[rel]; !keep {
+				return nil
+			}
 		}
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			// Skipping one and returning success is the worse failure: on the

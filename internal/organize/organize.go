@@ -83,7 +83,7 @@ func (p *Pipeline) organizePC(sourcePath string) (string, error) {
 	}
 
 	if archive {
-		if err := fileops.Archive(sourcePath, dest); err != nil {
+		if err := fileops.Archive(sourcePath, dest, nil); err != nil {
 			// dest, not sourcePath: a caller that files this in the library on an
 			// already-exists error would otherwise record the download staging
 			// path, which is a row pointing at something meant to be released.

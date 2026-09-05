@@ -308,7 +308,7 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 	if archive {
 		mode = fileops.ModeCopy
 		dest = fileops.ArchiveDest(dest)
-		err = fileops.Archive(storagePath, dest)
+		err = fileops.Archive(storagePath, dest, nil)
 	} else {
 		err = moveContent(storagePath, dest)
 	}
