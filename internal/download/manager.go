@@ -1251,20 +1251,24 @@ func vimmLooksLikeFile(r *http.Response) bool {
 }
 
 // flareSolverrOptions resolves the environment-only startup configuration.
-func (m *Manager) flareSolverrOptions() (string, int) {
+func (m *Manager) flareSolverrOptions() (string, int, int) {
 	maxTimeout := m.cfg.FlareSolverrMaxTimeout
 	if flaresolverr.ValidateMaxTimeout(maxTimeout) != nil {
 		maxTimeout = flaresolverr.DefaultMaxTimeout
 	}
-	return strings.TrimSpace(m.cfg.FlareSolverrURL), maxTimeout
+	tabsTillVerify := m.cfg.FlareSolverrTabsTillVerify
+	if flaresolverr.ValidateTabsTillVerify(tabsTillVerify) != nil {
+		tabsTillVerify = flaresolverr.DefaultVimmTabsTillVerify
+	}
+	return strings.TrimSpace(m.cfg.FlareSolverrURL), maxTimeout, tabsTillVerify
 }
 
-func (m *Manager) fetchWithFlareSolverr(ctx context.Context, apiURL, targetURL string, maxTimeout int) (flaresolverr.Solution, error) {
+func (m *Manager) fetchWithFlareSolverr(ctx context.Context, apiURL, targetURL string, maxTimeout, tabsTillVerify int) (flaresolverr.Solution, error) {
 	// Jackett serializes solver requests too: every call launches a browser,
 	// and an auto-download batch should not exhaust the solver's memory.
 	m.flareSolverrMu.Lock()
 	defer m.flareSolverrMu.Unlock()
-	return flaresolverr.Fetch(ctx, apiURL, targetURL, maxTimeout)
+	return flaresolverr.Fetch(ctx, apiURL, targetURL, maxTimeout, tabsTillVerify)
 }
 
 func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
@@ -1296,10 +1300,10 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 
 	usedFlareSolverr := false
 	if vimmIsChallenge(pageText) {
-		apiURL, maxTimeout := m.flareSolverrOptions()
+		apiURL, maxTimeout, tabsTillVerify := m.flareSolverrOptions()
 		if apiURL != "" {
 			m.jobs.Update(jobID, "detail", "Fetching Vimm page through FlareSolverr...")
-			solution, solveErr := m.fetchWithFlareSolverr(context.Background(), apiURL, gameURL, maxTimeout)
+			solution, solveErr := m.fetchWithFlareSolverr(context.Background(), apiURL, gameURL, maxTimeout, tabsTillVerify)
 			if solveErr != nil {
 				slog.Warn("FlareSolverr could not fetch Vimm vault page", "game_id", gameID, "error", solveErr)
 				m.jobs.UpdateMulti(jobID, map[string]interface{}{

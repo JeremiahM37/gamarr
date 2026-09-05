@@ -180,11 +180,14 @@ class _StubHandler(BaseHTTPRequestHandler):
             request = json.loads(body.decode())
             with SWARM_LOCK:
                 FLARESOLVERR_CALLS.append(request)
-            page = (
-                f'<html><body><form action="{base}/vimm-download" id="dl_form"></form>'
-                '<script>let allMedia = [{"ID":3811,"Region":"USA"}];</script>'
-                '</body></html>'
-            )
+            if request.get("tabs_till_verify") == 41:
+                page = (
+                    f'<html><body><form action="{base}/vimm-download" id="dl_form"></form>'
+                    '<script>let allMedia = [{"ID":3811,"Region":"USA"}];</script>'
+                    '</body></html>'
+                )
+            else:
+                page = VIMM_CHALLENGE_HTML
             response = json.dumps({
                 "status": "ok", "message": "Challenge solved!",
                 "solution": {"status": 200, "response": page, "userAgent": "e2e-solver"},
@@ -347,6 +350,7 @@ def _boot_gamarr(stub_server, gamarr_binary, data, env_overrides: dict) -> dict:
         # external service. Individual tests override these values as needed.
         "FLARESOLVERR_URL": "",
         "FLARESOLVERR_MAX_TIMEOUT": "55000",
+        "FLARESOLVERR_TABS_TILL_VERIFY": "37",
         **env_overrides,
     }
     log = open(data / "gamarr.log", "w")

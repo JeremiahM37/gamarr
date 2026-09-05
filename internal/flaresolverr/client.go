@@ -18,12 +18,20 @@ const (
 	// DefaultMaxTimeout matches Jackett's FlareSolverr default. Values are in
 	// milliseconds because that is the unit used by the FlareSolverr API.
 	DefaultMaxTimeout = 55_000
-	// FlareSolverr counts waitInSeconds against maxTimeout. Keep enough room
-	// for Gamarr's five-second post-challenge wait plus browser startup.
-	MinMaxTimeout = 10_000
+	// DefaultVimmTabsTillVerify is Vimm's manual-focus preset. Tab order is
+	// layout-dependent, so deployments can override it through configuration.
+	DefaultVimmTabsTillVerify = 37
+	// FlareSolverr counts both its manual Turnstile click pauses and
+	// waitInSeconds against maxTimeout. Keep a usable floor for that flow.
+	MinMaxTimeout = 20_000
 	// MaxMaxTimeout prevents overflowing time.Duration and keeps a typo from
 	// tying up a download worker (and its browser) indefinitely.
 	MaxMaxTimeout = 600_000
+
+	MinTabsTillVerify = 1
+	// FlareSolverr has no documented upper limit. This generous bound catches
+	// accidental extra digits while still allowing unusual page layouts.
+	MaxTabsTillVerify = 1_000
 
 	// Vimm's interstitial submits itself after its browser check completes.
 	// Ask FlareSolverr to wait before capturing the resulting page source.
@@ -34,10 +42,11 @@ const (
 )
 
 type request struct {
-	Command       string `json:"cmd"`
-	URL           string `json:"url"`
-	MaxTimeout    int    `json:"maxTimeout"`
-	WaitInSeconds int    `json:"waitInSeconds"`
+	Command        string `json:"cmd"`
+	URL            string `json:"url"`
+	MaxTimeout     int    `json:"maxTimeout"`
+	WaitInSeconds  int    `json:"waitInSeconds"`
+	TabsTillVerify int    `json:"tabs_till_verify"`
 }
 
 type apiResponse struct {
@@ -152,8 +161,11 @@ func Check(ctx context.Context, apiURL string) (ServiceInfo, error) {
 }
 
 // Fetch asks FlareSolverr to load targetURL and return its rendered HTML.
-func Fetch(ctx context.Context, apiURL, targetURL string, maxTimeout int) (Solution, error) {
+func Fetch(ctx context.Context, apiURL, targetURL string, maxTimeout, tabsTillVerify int) (Solution, error) {
 	if err := ValidateMaxTimeout(maxTimeout); err != nil {
+		return Solution{}, err
+	}
+	if err := ValidateTabsTillVerify(tabsTillVerify); err != nil {
 		return Solution{}, err
 	}
 	endpointURL, err := endpoint(apiURL)
@@ -161,10 +173,11 @@ func Fetch(ctx context.Context, apiURL, targetURL string, maxTimeout int) (Solut
 		return Solution{}, err
 	}
 	payload, err := json.Marshal(request{
-		Command:       "request.get",
-		URL:           targetURL,
-		MaxTimeout:    maxTimeout,
-		WaitInSeconds: vimmWaitSeconds,
+		Command:        "request.get",
+		URL:            targetURL,
+		MaxTimeout:     maxTimeout,
+		WaitInSeconds:  vimmWaitSeconds,
+		TabsTillVerify: tabsTillVerify,
 	})
 	if err != nil {
 		return Solution{}, fmt.Errorf("encode FlareSolverr request: %w", err)
@@ -221,6 +234,19 @@ func ValidateMaxTimeout(maxTimeout int) error {
 	}
 	if maxTimeout > MaxMaxTimeout {
 		return fmt.Errorf("FlareSolverr max timeout must be at most %d ms", MaxMaxTimeout)
+	}
+	return nil
+}
+
+// ValidateTabsTillVerify rejects values that cannot move focus to a control.
+// FlareSolverr itself does not publish an upper bound; its maxTimeout remains
+// the guard against an excessively large intentional override.
+func ValidateTabsTillVerify(tabsTillVerify int) error {
+	if tabsTillVerify < MinTabsTillVerify {
+		return fmt.Errorf("FlareSolverr tabs till verify must be at least %d", MinTabsTillVerify)
+	}
+	if tabsTillVerify > MaxTabsTillVerify {
+		return fmt.Errorf("FlareSolverr tabs till verify must be at most %d", MaxTabsTillVerify)
 	}
 	return nil
 }

@@ -140,6 +140,7 @@ services:
       # Optional, for Vimm downloads behind Turnstile:
       # - FLARESOLVERR_URL=http://flaresolverr:8191
       # - FLARESOLVERR_MAX_TIMEOUT=55000
+      # - FLARESOLVERR_TABS_TILL_VERIFY=37
     restart: unless-stopped
 ```
 
@@ -242,7 +243,8 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `PROWLARR_GAME_INDEXERS` | *(auto)* | Comma-separated indexer IDs to search. Unset means every enabled indexer that advertises game categories (see [Prowlarr indexers](#prowlarr-indexers)) |
 | `RAWG_API_KEY` | | RAWG.io API key (enables metadata, calendar) |
 | `FLARESOLVERR_URL` | | Optional FlareSolverr API base URL, for example `http://flaresolverr:8191` |
-| `FLARESOLVERR_MAX_TIMEOUT` | `55000` | Maximum FlareSolverr solve time in milliseconds (`10000`–`600000`) |
+| `FLARESOLVERR_MAX_TIMEOUT` | `55000` | Maximum FlareSolverr solve time in milliseconds (`20000`–`600000`) |
+| `FLARESOLVERR_TABS_TILL_VERIFY` | `37` | Tab presses used by FlareSolverr 3.5.0+ to focus Vimm's Turnstile verification control (`1`–`1000`) |
 
 #### Vimm downloads with FlareSolverr
 
@@ -259,11 +261,14 @@ When both apps run in Docker, attach them to the same Docker network; a Compose
 service named `flaresolverr` is then reachable from Gamarr at
 `http://flaresolverr:8191`.
 
-Set `FLARESOLVERR_URL` and, optionally, `FLARESOLVERR_MAX_TIMEOUT`, then restart
+Use FlareSolverr 3.5.0 or newer. Set `FLARESOLVERR_URL` and, optionally,
+`FLARESOLVERR_MAX_TIMEOUT` and `FLARESOLVERR_TABS_TILL_VERIFY`, then restart
 Gamarr. The URL may be either the service base (such as
 `http://flaresolverr:8191`) or its `/v1` endpoint. Gamarr calls FlareSolverr only
-after it recognizes Vimm's Turnstile page. Use **Settings → Connection Tests →
-FlareSolverr** to verify the configured service is reachable.
+after it recognizes Vimm's Turnstile page. The default is `37` tab presses;
+because focus order is layout-dependent, override it when Vimm's page changes.
+Use **Settings → Connection Tests → FlareSolverr** to verify the configured
+service is reachable.
 
 FlareSolverr support is best-effort: an interactive CAPTCHA can still time out.
 When FlareSolverr is disabled or cannot return the vault page, the Vimm download

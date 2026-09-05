@@ -3,6 +3,7 @@ package flaresolverr
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,20 +42,28 @@ func TestNormalizeAPIURL(t *testing.T) {
 func TestFetch(t *testing.T) {
 	var gotPath string
 	var got request
+	var raw map[string]json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
 			t.Errorf("decode request: %v", err)
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Errorf("decode raw request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok","message":"Challenge solved!","solution":{"status":200,"response":"<script>let allMedia=[{\"ID\":3811}]</script>","userAgent":"solver-agent"}}`))
 	}))
 	t.Cleanup(srv.Close)
 
-	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 12_345)
+	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 25_000, 37)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +73,17 @@ func TestFetch(t *testing.T) {
 	if got.Command != "request.get" || got.URL != "https://vimm.net/vault/4970" {
 		t.Errorf("request = %+v", got)
 	}
-	if got.MaxTimeout != 12_345 || got.WaitInSeconds != 5 {
+	if got.MaxTimeout != 25_000 || got.WaitInSeconds != 5 {
 		t.Errorf("timeouts = max %d wait %d", got.MaxTimeout, got.WaitInSeconds)
+	}
+	if got.TabsTillVerify != 37 {
+		t.Errorf("tabs_till_verify = %d, want 37", got.TabsTillVerify)
+	}
+	if _, ok := raw["tabs_till_verify"]; !ok {
+		t.Error("request omitted exact tabs_till_verify key")
+	}
+	if _, ok := raw["tabsTillVerify"]; ok {
+		t.Error("request used unsupported tabsTillVerify key")
 	}
 	if !strings.Contains(solution.Response, `"ID":3811`) {
 		t.Errorf("solution = %+v", solution)
@@ -73,15 +91,18 @@ func TestFetch(t *testing.T) {
 }
 
 func TestRequestTimeoutIncludesSolverOverheadGrace(t *testing.T) {
-	want := 12_345*time.Millisecond + 15*time.Second
-	if got := requestTimeout(12_345); got != want {
+	want := 25_000*time.Millisecond + 15*time.Second
+	if got := requestTimeout(25_000); got != want {
 		t.Errorf("requestTimeout = %v, want %v", got, want)
 	}
 }
 
 func TestValidateMaxTimeout(t *testing.T) {
-	if MinMaxTimeout <= vimmWaitSeconds*1_000 {
-		t.Fatalf("minimum timeout %d must leave time beyond the %d-second wait", MinMaxTimeout, vimmWaitSeconds)
+	// FlareSolverr 3.5.0's first 37-tab attempt has about 11.7 seconds of
+	// fixed pauses. Gamarr then requests another five seconds before capture.
+	const knownVimmFlowFloor = 16_700
+	if MinMaxTimeout <= knownVimmFlowFloor {
+		t.Fatalf("minimum timeout %d must exceed the known Vimm flow floor %d", MinMaxTimeout, knownVimmFlowFloor)
 	}
 	for _, tc := range []struct {
 		value   int
@@ -94,6 +115,24 @@ func TestValidateMaxTimeout(t *testing.T) {
 	} {
 		if err := ValidateMaxTimeout(tc.value); (err != nil) != tc.wantErr {
 			t.Errorf("ValidateMaxTimeout(%d) error = %v, wantErr %v", tc.value, err, tc.wantErr)
+		}
+	}
+}
+
+func TestValidateTabsTillVerify(t *testing.T) {
+	for _, tc := range []struct {
+		value   int
+		wantErr bool
+	}{
+		{value: -1, wantErr: true},
+		{value: 0, wantErr: true},
+		{value: 1},
+		{value: DefaultVimmTabsTillVerify},
+		{value: MaxTabsTillVerify},
+		{value: MaxTabsTillVerify + 1, wantErr: true},
+	} {
+		if err := ValidateTabsTillVerify(tc.value); (err != nil) != tc.wantErr {
+			t.Errorf("ValidateTabsTillVerify(%d) error = %v, wantErr %v", tc.value, err, tc.wantErr)
 		}
 	}
 }
@@ -147,7 +186,7 @@ func TestFetchDoesNotDuplicateV1(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"ok","solution":{"response":"<html>ok</html>"}}`))
 	}))
 	t.Cleanup(srv.Close)
-	if _, err := Fetch(context.Background(), srv.URL+"/v1", "https://example.test", DefaultMaxTimeout); err != nil {
+	if _, err := Fetch(context.Background(), srv.URL+"/v1", "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/v1" {
@@ -161,7 +200,7 @@ func TestFetchReturnsStructuredError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"error","message":"Error solving the challenge. Timeout after 55000 ms."}`))
 	}))
 	t.Cleanup(srv.Close)
-	_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout)
+	_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
 	if err == nil || !strings.Contains(err.Error(), "Timeout after 55000 ms") {
 		t.Fatalf("error = %v, want structured solver message", err)
 	}
@@ -179,7 +218,7 @@ func TestFetchRejectsMalformedAndEmptyResponses(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			t.Cleanup(srv.Close)
-			_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout)
+			_, err := Fetch(context.Background(), srv.URL, "https://example.test", DefaultMaxTimeout, DefaultVimmTabsTillVerify)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}

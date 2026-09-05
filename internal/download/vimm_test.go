@@ -159,7 +159,7 @@ func TestDownloadVimmGame_UsesGETNotPOST(t *testing.T) {
 	// pages. This deliberately points at a dead endpoint; the direct path must
 	// still complete without touching it.
 	cfg.FlareSolverrURL = "http://127.0.0.1:1"
-	cfg.FlareSolverrMaxTimeout = 10_000
+	cfg.FlareSolverrMaxTimeout = 20_000
 
 	jobs := newTestJobs(t)
 	m := New(cfg, jobs, nil)
@@ -350,10 +350,11 @@ func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
 	var srv *httptest.Server
 	var solverCalls, downloadCalls int
 	var solverRequest struct {
-		Command       string `json:"cmd"`
-		URL           string `json:"url"`
-		MaxTimeout    int    `json:"maxTimeout"`
-		WaitInSeconds int    `json:"waitInSeconds"`
+		Command        string `json:"cmd"`
+		URL            string `json:"url"`
+		MaxTimeout     int    `json:"maxTimeout"`
+		WaitInSeconds  int    `json:"waitInSeconds"`
+		TabsTillVerify int    `json:"tabs_till_verify"`
 	}
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -388,9 +389,9 @@ func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	m, jobs := newVimmManager(t, srv.URL+"/vault/")
-	// These Config values represent FLARESOLVERR_URL and
-	// FLARESOLVERR_MAX_TIMEOUT loaded at startup.
-	timeout := 12_345
+	// These Config values represent startup environment configuration. Leave
+	// tabs at the Config zero value to exercise the Vimm default of 37.
+	timeout := 25_000
 	m.cfg.FlareSolverrURL = srv.URL
 	m.cfg.FlareSolverrMaxTimeout = timeout
 	jobID := newJobID()
@@ -409,6 +410,9 @@ func TestDownloadVimmGame_UsesFlareSolverrMediaID(t *testing.T) {
 	}
 	if solverRequest.MaxTimeout != timeout || solverRequest.WaitInSeconds != 5 {
 		t.Errorf("FlareSolverr timeouts = max %d wait %d", solverRequest.MaxTimeout, solverRequest.WaitInSeconds)
+	}
+	if solverRequest.TabsTillVerify != 37 {
+		t.Errorf("FlareSolverr tabs_till_verify = %d, want 37", solverRequest.TabsTillVerify)
 	}
 	if filepath.Base(got) != "Solved Game.zip" {
 		t.Errorf("downloaded file = %q", filepath.Base(got))
@@ -435,7 +439,7 @@ func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
 	m := New(newTestConfig(t), newTestJobs(t), nil)
 	errs := make(chan error, 2)
 	go func() {
-		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/one", 10_000)
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/one", 20_000, 37)
 		errs <- err
 	}()
 	select {
@@ -447,7 +451,7 @@ func TestFetchWithFlareSolverrSerializesRequests(t *testing.T) {
 	secondStarted := make(chan struct{})
 	go func() {
 		close(secondStarted)
-		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/two", 10_000)
+		_, err := m.fetchWithFlareSolverr(context.Background(), srv.URL, "https://example.test/two", 20_000, 37)
 		errs <- err
 	}()
 	<-secondStarted
@@ -490,7 +494,7 @@ func TestDownloadVimmGame_FlareSolverrStillSeesChallenge(t *testing.T) {
 	t.Cleanup(srv.Close)
 	m, jobs := newVimmManager(t, srv.URL+"/vault/")
 	m.cfg.FlareSolverrURL = srv.URL
-	m.cfg.FlareSolverrMaxTimeout = 10_000
+	m.cfg.FlareSolverrMaxTimeout = 20_000
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
 
