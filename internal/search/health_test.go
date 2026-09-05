@@ -309,9 +309,15 @@ func TestRecordDownloadSuccess_ClearsDegraded(t *testing.T) {
 	for i := 0; i < circuitThreshold; i++ {
 		RecordDownloadFail("dl-source", "gate")
 	}
+	if !IsCircuitOpen("dl-source") {
+		t.Fatal("download failures should open the circuit before recovery")
+	}
 	RecordDownloadSuccess("dl-source")
 	if IsDownloadDegraded("dl-source") {
 		t.Error("a successful download should clear the degraded flag")
+	}
+	if IsCircuitOpen("dl-source") {
+		t.Error("a successful download should close the circuit")
 	}
 	if GetSourceHealth("dl-source").DownloadDegraded {
 		t.Error("snapshot still reports degraded after success")

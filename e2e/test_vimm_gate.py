@@ -57,8 +57,16 @@ def test_vimm_download_names_the_gate(ui):
     expect(card).to_contain_text("Turnstile", timeout=SLOW_MS)
     assert "Could not find download form" not in card.inner_text()
 
+    retry = card.get_by_role("button", name="Retry")
+    expect(retry).to_be_visible()
+    retry.click()
+    expect(page.locator("#toast-container")).to_contain_text("Retrying (#1)")
+    expect(card).to_contain_text("Turnstile", timeout=SLOW_MS)
+    # A retry reuses the failed row instead of creating a duplicate card.
+    expect(page.locator("#downloads > div", has_text=title)).to_have_count(1)
+
     health = _vimm_health(base)
-    assert health.get("download_fail", 0) >= 1, health
+    assert health.get("download_fail", 0) >= 2, health
     assert health.get("last_error_kind") == "download", health
     assert "Turnstile" in health.get("last_error", ""), health
     assert health.get("score", 100) < 100, health
@@ -87,3 +95,47 @@ def test_repeated_vimm_failures_degrade_the_source(ui):
     expect(badge).to_have_text("downloads failing", timeout=SLOW_MS)
     expect(badge).to_have_attribute("title", re.compile("Turnstile"))
     expect(page.locator('#settings-sources [data-source-degraded="myrient"]')).to_have_count(0)
+
+
+def test_flaresolverr_env_restores_vimm_download(gamarr_factory, stub_server, page):
+    """A stale first solve is recovered in-session, then feeds the DDL path."""
+    _api(stub_server, "/stub/flaresolverr-reset", {})
+    # Extra session-lived instances must not watch the suite's shared torrent
+    # stub; this test exercises only the direct-download path.
+    app = gamarr_factory(
+        "vimm-flaresolverr",
+        QB_URL="http://127.0.0.1:1/",
+        FLARESOLVERR_URL=stub_server,
+        FLARESOLVERR_MAX_TIMEOUT="55000",
+        FLARESOLVERR_TABS_TILL_VERIFY="74",
+    )
+    page.goto(app["base"], wait_until="networkidle")
+    page.locator('#main-nav button[data-tab="settings"]').click()
+    page.locator("#test-flaresolverr-status").locator("xpath=ancestor-or-self::button").click()
+    expect(page.locator("#test-flaresolverr-status")).to_have_text(
+        "Connected (3.5.0-e2e)", timeout=SLOW_MS)
+
+    title = "FlareSolverr Vimm Game"
+    _start_vimm_download(app["base"], title)
+    page.locator('#main-nav button[data-tab="downloads"]').click()
+    card = page.locator("#downloads > div", has_text=title)
+    expect(card).to_contain_text("completed", timeout=SLOW_MS)
+    assert "Turnstile" not in card.inner_text()
+
+    calls = json.loads(urllib.request.urlopen(
+        f"{stub_server}/stub/flaresolverr-calls", timeout=5).read())
+    assert [call["cmd"] for call in calls] == [
+        "sessions.create", "request.get", "request.get", "sessions.destroy",
+    ]
+    session = calls[0]["session"]
+    assert session
+    assert all(call["session"] == session for call in calls)
+
+    first, followup = calls[1], calls[2]
+    assert first["url"].endswith("/vault/1654")
+    assert followup["url"] == first["url"]
+    assert first["maxTimeout"] == followup["maxTimeout"] == 55000
+    assert first["waitInSeconds"] == 5
+    assert first["tabs_till_verify"] == 74
+    assert followup["waitInSeconds"] == 2
+    assert "tabs_till_verify" not in followup

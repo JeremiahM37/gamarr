@@ -73,6 +73,10 @@ type DownloadEntry struct {
 	// by. Hash above is a live torrent matched to this row by title, so the two
 	// disagree whenever the title and the torrent name differ.
 	InfoHash string `json:"info_hash,omitempty"`
+	// CanRetry is computed by the backend from private persisted inputs. The UI
+	// need not receive a Vimm vault ID or direct URL merely to decide whether to
+	// show the action.
+	CanRetry bool `json:"can_retry,omitempty"`
 }
 
 // DownloadRequest is the POST body for /api/download.

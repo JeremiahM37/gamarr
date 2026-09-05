@@ -102,6 +102,7 @@ func TestDownloadEntry_JSON(t *testing.T) {
 		Status:   "downloading",
 		Progress: 45.5,
 		Speed:    "5.0 MB/s",
+		CanRetry: true,
 	}
 
 	data, _ := json.Marshal(e)
@@ -113,6 +114,9 @@ func TestDownloadEntry_JSON(t *testing.T) {
 	}
 	if decoded["progress"].(float64) != 45.5 {
 		t.Errorf("progress=%v", decoded["progress"])
+	}
+	if decoded["can_retry"] != true {
+		t.Errorf("can_retry=%v", decoded["can_retry"])
 	}
 }
 

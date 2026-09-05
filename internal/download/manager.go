@@ -3,6 +3,7 @@
 package download
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"gamarr/internal/config"
 	"gamarr/internal/db"
 	"gamarr/internal/fileops"
+	"gamarr/internal/flaresolverr"
 	"gamarr/internal/nzbget"
 	"gamarr/internal/platform"
 	"gamarr/internal/qbit"
@@ -58,6 +61,17 @@ type Manager struct {
 	// does not, so after a restart every row needs a watcher again and the row
 	// cannot stand in for the claim.
 	watching sync.Map
+
+	// A FlareSolverr request launches a browser. Serializing those requests
+	// avoids a batch of Vimm jobs exhausting a small solver container; file
+	// downloads can proceed concurrently as soon as each media ID is known.
+	flareSolverrMu sync.Mutex
+
+	// activeDDL holds job IDs whose direct-download worker is still running.
+	// Vimm's inner downloader can publish an error just before the outer worker
+	// returns, so the persisted status alone cannot safely exclude a second
+	// click during that small window.
+	activeDDL sync.Map
 }
 
 // New creates a new download Manager.
@@ -255,15 +269,23 @@ func (m *Manager) resolveAddedHash(knownBefore map[string]bool, title string) (s
 // DownloadDDL starts a direct download.
 func (m *Manager) DownloadDDL(url, vimmID, title, platf, platSlug string, isPC bool) string {
 	jobID := newJobID()
-	m.jobs.Set(jobID, map[string]interface{}{
+	job := map[string]interface{}{
 		"status":        "downloading",
 		"title":         title,
 		"platform":      platf,
 		"platform_slug": platSlug,
 		"is_pc":         isPC,
+		"source_type":   "ddl",
 		"error":         nil,
 		"detail":        "Starting direct download...",
-	})
+	}
+	// A Vimm vault ID is stable and sufficient to replay the existing download
+	// path. Keep it on the private job row so retries survive page reloads and
+	// process restarts without exposing it through the downloads response.
+	if vimmID != "" {
+		job["vimm_id"] = vimmID
+	}
+	m.jobs.Set(jobID, job)
 	go m.ddlDownloadWorker(jobID, url, vimmID, title, platf, platSlug, isPC)
 	return jobID
 }
@@ -823,6 +845,18 @@ func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, p
 }
 
 func (m *Manager) ddlDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug string, isPC bool) {
+	if _, busy := m.activeDDL.LoadOrStore(jobID, struct{}{}); busy {
+		slog.Warn("a direct-download worker is already running", "job_id", jobID)
+		return
+	}
+	defer m.activeDDL.Delete(jobID)
+	m.runDDLDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug, isPC)
+}
+
+// runDDLDownloadWorker performs a direct download after its caller has claimed
+// the job in activeDDL. RetryJob claims before changing the persisted status so
+// two simultaneous retry requests cannot both report success.
+func (m *Manager) runDDLDownloadWorker(jobID, dlURL, vimmID, title, platf, platSlug string, isPC bool) {
 	staging := m.cfg.QBSavePath
 	if err := os.MkdirAll(staging, 0755); err != nil {
 		slog.Error("cannot create staging dir", "path", staging, "error", err)
@@ -1003,23 +1037,31 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	return fp, nil
 }
 
-var vimmFormRe = regexp.MustCompile(`<form[^>]*id=["']dl_form["'][^>]*>`)
-var vimmActionRe = regexp.MustCompile(`action="([^"]+)"`)
-var vimmMediaRe = regexp.MustCompile(`name="mediaId"\s+value="(\d+)"`)
-var vimmJSMediaRe = regexp.MustCompile(`"ID":(\d+)`)
+// The live vault page names the form dl-form (hyphen); dl_form is what older
+// captures and the JS submit handler use. Accept every spelling seen so far.
+var vimmFormRe = regexp.MustCompile(`(?is)(<form\b[^>]*\bid=["'](?:dl[-_]form|download_form)["'][^>]*>)(.*?)</form\s*>`)
+var vimmActionRe = regexp.MustCompile(`(?i)\baction\s*=\s*["']([^"']+)["']`)
+var vimmInputRe = regexp.MustCompile(`(?is)<input\b[^>]*>`)
+var vimmMediaNameRe = regexp.MustCompile(`(?i)\bname\s*=\s*["']mediaId["']`)
+var vimmValueRe = regexp.MustCompile(`(?i)\bvalue\s*=\s*["'](\d+)["']`)
+var vimmMediaAssignmentRe = regexp.MustCompile(`(?i)\b(?:const|let|var)\s+(?:allMedia|media)\s*=\s*`)
+var vimmJSMediaRe = regexp.MustCompile(`(?i)["']ID["']\s*:\s*["']?(\d+)`)
+var vimmPositiveIDRe = regexp.MustCompile(`^[1-9]\d*$`)
 var vimmDLRe = regexp.MustCompile(`(//dl\d*\.vimm\.net/[^"']*)`)
 var vimmCDFilenameRe = regexp.MustCompile(`filename="?([^";\n]+)"?`)
 
 // Vimm's Lair fronts its vault pages with a Cloudflare Turnstile challenge and
 // only renders the download form to a session that passed it. A plain HTTP
 // client never gets the form, so a page carrying these markers is the gate
-// itself, not a parsing miss. Turnstile exists to withhold that token from
-// automated browsers; gamarr does not try to defeat it.
+// itself, not a parsing miss. A configured FlareSolverr instance can render
+// the page; without one the existing actionable failure remains.
 var vimmChallengeRe = regexp.MustCompile(`cf-turnstile|Checking if you are human`)
 
 // vimmChallengeError is the job error for a Turnstile-gated page. It names the
 // cause so the failure is a decision the user can act on, not a dead end.
-const vimmChallengeError = "Vimm's Lair requires a Cloudflare Turnstile check that only a real browser can pass; gamarr cannot download from Vimm. Try another source for this title."
+const vimmChallengeError = "Vimm's Lair requires a Cloudflare Turnstile check. Set FLARESOLVERR_URL to enable Vimm downloads, or try another source for this title."
+
+const vimmFlareSolverrChallengeError = "FlareSolverr returned Vimm's Turnstile page instead of the vault page. Check the service, adjust FLARESOLVERR_TABS_TILL_VERIFY, or increase its max timeout."
 
 // vimmIsChallenge reports whether a Vimm response is the Turnstile gate.
 func vimmIsChallenge(pageText string) bool {
@@ -1031,18 +1073,24 @@ func vimmIsChallenge(pageText string) bool {
 var vimmDownloadPause = 3 * time.Second
 
 func parseVimmDownloadForm(pageText string) (actionURL, mediaID string) {
-	if formTag := vimmFormRe.FindString(pageText); formTag != "" {
-		if m := vimmActionRe.FindStringSubmatch(formTag); m != nil {
+	if form := vimmFormRe.FindStringSubmatch(pageText); form != nil {
+		if m := vimmActionRe.FindStringSubmatch(form[1]); m != nil {
 			actionURL = m[1]
 		}
-	}
-	if m := vimmMediaRe.FindStringSubmatch(pageText); m != nil {
-		mediaID = m[1]
+		// This hidden field is the authoritative selected/default release. Scope
+		// it to the download form so another form cannot supply a false ID.
+		for _, input := range vimmInputRe.FindAllString(form[2], -1) {
+			if !vimmMediaNameRe.MatchString(input) {
+				continue
+			}
+			if m := vimmValueRe.FindStringSubmatch(input); m != nil && vimmPositiveIDRe.MatchString(m[1]) {
+				mediaID = m[1]
+				break
+			}
+		}
 	}
 	if mediaID == "" {
-		if m := vimmJSMediaRe.FindStringSubmatch(pageText); m != nil {
-			mediaID = m[1]
-		}
+		mediaID = vimmMediaIDFromScript(pageText)
 	}
 	if actionURL == "" {
 		if m := vimmDLRe.FindStringSubmatch(pageText); m != nil && mediaID != "" {
@@ -1050,6 +1098,124 @@ func parseVimmDownloadForm(pageText string) (actionURL, mediaID string) {
 		}
 	}
 	return actionURL, mediaID
+}
+
+// vimmMediaIDFromScript reads only Vimm's declared media array. Looking for a
+// generic "ID" across the whole page can select analytics or ad data instead.
+// A multi-disc page has two independent selectors, so without the rendered
+// hidden field only a single entry or its explicit SortOrder=1 default is safe.
+func vimmMediaIDFromScript(pageText string) string {
+	for _, loc := range vimmMediaAssignmentRe.FindAllStringIndex(pageText, -1) {
+		array := javascriptArrayAt(pageText, loc[1])
+		if array == "" {
+			continue
+		}
+		var entries []struct {
+			ID        json.RawMessage `json:"ID"`
+			SortOrder json.RawMessage `json:"SortOrder"`
+		}
+		if err := json.Unmarshal([]byte(array), &entries); err == nil {
+			valid := make([]struct {
+				id        string
+				sortOrder int
+			}, 0, len(entries))
+			for _, entry := range entries {
+				id := vimmJSONDecimal(entry.ID)
+				if id == "" || id == "0" {
+					continue
+				}
+				sortOrder, _ := strconv.Atoi(vimmJSONDecimal(entry.SortOrder))
+				valid = append(valid, struct {
+					id        string
+					sortOrder int
+				}{id: id, sortOrder: sortOrder})
+			}
+			if len(valid) == 1 {
+				return valid[0].id
+			}
+			defaultID := ""
+			for _, entry := range valid {
+				if entry.sortOrder != 1 {
+					continue
+				}
+				if defaultID != "" {
+					defaultID = ""
+					break
+				}
+				defaultID = entry.id
+			}
+			if defaultID != "" {
+				return defaultID
+			}
+			continue
+		}
+
+		// Older page captures are not always strict JSON. Retain a conservative
+		// fallback only when the scoped array contains exactly one ID.
+		matches := vimmJSMediaRe.FindAllStringSubmatch(array, -1)
+		if len(matches) == 1 && vimmPositiveIDRe.MatchString(matches[0][1]) {
+			return matches[0][1]
+		}
+	}
+	return ""
+}
+
+func vimmJSONDecimal(raw json.RawMessage) string {
+	value := strings.TrimSpace(string(raw))
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		var decoded string
+		if json.Unmarshal(raw, &decoded) != nil {
+			return ""
+		}
+		value = decoded
+	}
+	if !vimmPositiveIDRe.MatchString(value) {
+		return ""
+	}
+	return value
+}
+
+// javascriptArrayAt returns the balanced array immediately after a variable
+// assignment, ignoring brackets inside quoted strings.
+func javascriptArrayAt(text string, offset int) string {
+	for offset < len(text) && (text[offset] == ' ' || text[offset] == '\t' || text[offset] == '\r' || text[offset] == '\n') {
+		offset++
+	}
+	if offset >= len(text) || text[offset] != '[' {
+		return ""
+	}
+	start, depth := offset, 0
+	var quote byte
+	escaped := false
+	for i := offset; i < len(text); i++ {
+		c := text[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return text[start : i+1]
+			}
+		}
+	}
+	return ""
 }
 
 func resolveVimmAction(gameURL, action string) string {
@@ -1118,6 +1284,27 @@ func vimmLooksLikeFile(r *http.Response) bool {
 	return !strings.Contains(ct, "text/html")
 }
 
+// flareSolverrOptions resolves the environment-only startup configuration.
+func (m *Manager) flareSolverrOptions() (string, int, int) {
+	maxTimeout := m.cfg.FlareSolverrMaxTimeout
+	if flaresolverr.ValidateMaxTimeout(maxTimeout) != nil {
+		maxTimeout = flaresolverr.DefaultMaxTimeout
+	}
+	tabsTillVerify := m.cfg.FlareSolverrTabsTillVerify
+	if flaresolverr.ValidateTabsTillVerify(tabsTillVerify) != nil {
+		tabsTillVerify = flaresolverr.DefaultVimmTabsTillVerify
+	}
+	return strings.TrimSpace(m.cfg.FlareSolverrURL), maxTimeout, tabsTillVerify
+}
+
+func (m *Manager) fetchWithFlareSolverr(ctx context.Context, apiURL, targetURL string, maxTimeout, tabsTillVerify int) (flaresolverr.Solution, error) {
+	// Jackett serializes solver requests too: every call launches a browser,
+	// and an auto-download batch should not exhaust the solver's memory.
+	m.flareSolverrMu.Lock()
+	defer m.flareSolverrMu.Unlock()
+	return flaresolverr.Fetch(ctx, apiURL, targetURL, maxTimeout, tabsTillVerify)
+}
+
 func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	jar, _ := cookiejar.New(nil)
 	transport := &http.Transport{
@@ -1145,6 +1332,34 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	resp.Body.Close()
 	pageText := string(body)
 
+	usedFlareSolverr := false
+	if vimmIsChallenge(pageText) {
+		apiURL, maxTimeout, tabsTillVerify := m.flareSolverrOptions()
+		if apiURL != "" {
+			m.jobs.Update(jobID, "detail", "Fetching Vimm page through FlareSolverr...")
+			solution, solveErr := m.fetchWithFlareSolverr(context.Background(), apiURL, gameURL, maxTimeout, tabsTillVerify)
+			if solveErr != nil {
+				slog.Warn("FlareSolverr could not fetch Vimm vault page", "game_id", gameID, "error", solveErr)
+				m.jobs.UpdateMulti(jobID, map[string]interface{}{
+					"status": "error", "error": solveErr.Error(),
+				})
+				return ""
+			}
+			// Only rendered HTML crosses this boundary. The media ID is sufficient
+			// for Vimm's existing download endpoint, so solver cookies/UA are not
+			// mixed into the separate direct-download session.
+			pageText = solution.Response
+			usedFlareSolverr = true
+		}
+	}
+	if usedFlareSolverr && vimmIsChallenge(pageText) {
+		slog.Warn("FlareSolverr returned Vimm's Turnstile page", "game_id", gameID)
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error", "error": vimmFlareSolverrChallengeError,
+		})
+		return ""
+	}
+
 	if strings.Contains(pageText, "unavailable at the request of") {
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "error", "error": "Game removed by DMCA takedown",
@@ -1161,8 +1376,14 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	if actionURL == "" || mediaID == "" {
 		errMsg := "Could not find download form on Vimm"
 		if vimmIsChallenge(pageText) {
-			errMsg = vimmChallengeError
+			if usedFlareSolverr {
+				errMsg = vimmFlareSolverrChallengeError
+			} else {
+				errMsg = vimmChallengeError
+			}
 			slog.Warn("Vimm vault page is Turnstile-gated; download form withheld", "game_id", gameID)
+		} else if usedFlareSolverr {
+			errMsg = "FlareSolverr returned a Vimm page without a download media ID"
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "error", "error": errMsg,

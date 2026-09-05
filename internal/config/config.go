@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gamarr/internal/fileops"
+	"gamarr/internal/flaresolverr"
 	"gamarr/internal/sources"
 )
 
@@ -92,6 +93,12 @@ type Config struct {
 
 	// RAWG.io metadata
 	RAWGAPIKey string
+
+	// FlareSolverr is optional and is used to retrieve browser-rendered Vimm
+	// vault pages when the ordinary request receives its Turnstile gate.
+	FlareSolverrURL            string
+	FlareSolverrMaxTimeout     int
+	FlareSolverrTabsTillVerify int
 
 	// External services
 	GameVaultURL string
@@ -218,6 +225,10 @@ func Load() *Config {
 
 		RAWGAPIKey: envStr("RAWG_API_KEY", ""),
 
+		FlareSolverrURL:            envStr("FLARESOLVERR_URL", ""),
+		FlareSolverrMaxTimeout:     envFlareSolverrMaxTimeout(),
+		FlareSolverrTabsTillVerify: envFlareSolverrTabsTillVerify(),
+
 		GameVaultURL: envStr("GAMEVAULT_URL", ""),
 		RomMURL:      envStr("ROMM_URL", ""),
 
@@ -343,6 +354,24 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func envFlareSolverrMaxTimeout() int {
+	value := envInt("FLARESOLVERR_MAX_TIMEOUT", flaresolverr.DefaultMaxTimeout)
+	if err := flaresolverr.ValidateMaxTimeout(value); err != nil {
+		slog.Warn("invalid FlareSolverr timeout, using default", "error", err, "default", flaresolverr.DefaultMaxTimeout)
+		return flaresolverr.DefaultMaxTimeout
+	}
+	return value
+}
+
+func envFlareSolverrTabsTillVerify() int {
+	value := envInt("FLARESOLVERR_TABS_TILL_VERIFY", flaresolverr.DefaultVimmTabsTillVerify)
+	if err := flaresolverr.ValidateTabsTillVerify(value); err != nil {
+		slog.Warn("invalid FlareSolverr tabs till verify, using default", "error", err, "default", flaresolverr.DefaultVimmTabsTillVerify)
+		return flaresolverr.DefaultVimmTabsTillVerify
+	}
+	return value
 }
 
 // envImportMode reads an import mode, falling back to the default (move) with

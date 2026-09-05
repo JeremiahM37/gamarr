@@ -442,7 +442,7 @@ function renderDownloads(downloads) {
     const hash = esc(d.hash || ''), jobId = esc(d.job_id || '');
     let actions = '';
     if (d.status === 'completed_unorganized' && d.hash) actions = `<button data-action="organizeTorrent" data-hash="${hash}" data-job-id="${jobId}" class="text-xs bg-indigo-600/20 text-indigo-400 px-2 py-1 rounded hover:bg-indigo-600/30">Organize</button>`;
-    if (['error','interrupted','dead_letter'].includes(d.status) && d.job_id && d.info_hash) actions += `<button data-action="retryJob" data-job-id="${jobId}" class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded hover:bg-yellow-600/30">Retry</button>`;
+    if (['error','interrupted','dead_letter'].includes(d.status) && d.job_id && d.can_retry) actions += `<button data-action="retryJob" data-job-id="${jobId}" class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded hover:bg-yellow-600/30">Retry</button>`;
     if (d.hash) actions += `<button data-action="removeDownload" data-hash="${hash}" data-job-id="${jobId}" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Remove</button>`;
     else if (d.job_id) actions += `<button data-action="removeJob" data-job-id="${jobId}" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Dismiss</button>`;
     return `<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -636,7 +636,7 @@ async function testConn(service) {
   el.textContent = 'Testing...'; el.className = 'text-xs text-yellow-400 mt-1';
   try {
     const d = await (await api(`/api/test/${service}`, {method:'POST'})).json();
-    if (d.success) { el.textContent = 'Connected'; el.className = 'text-xs text-emerald-400 mt-1'; }
+    if (d.success) { el.textContent = service === 'flaresolverr' && d.version ? `Connected (${d.version})` : 'Connected'; el.className = 'text-xs text-emerald-400 mt-1'; }
     else { el.textContent = d.error || 'Failed'; el.className = 'text-xs text-red-400 mt-1'; }
   } catch(e) { el.textContent = 'Error'; el.className = 'text-xs text-red-400 mt-1'; }
 }

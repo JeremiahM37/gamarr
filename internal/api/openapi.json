@@ -173,7 +173,10 @@
       }
     },
     "/api/downloads": {
-      "get": {"summary": "List active and recent downloads"}
+      "get": {
+        "summary": "List active and recent downloads",
+        "description": "Job entries include can_retry=true when the server retained enough private state to replay the failed operation."
+      }
     },
     "/api/downloads/{jobID}/retry": {
       "post": {
@@ -267,6 +270,7 @@
     "/api/test/qbittorrent":  {"post": {"summary": "Connectivity test: qBittorrent"}},
     "/api/test/sabnzbd":      {"post": {"summary": "Connectivity test: SABnzbd"}},
     "/api/test/nzbget":       {"post": {"summary": "Connectivity test: NZBGet"}},
+    "/api/test/flaresolverr": {"post": {"summary": "Connectivity test: FlareSolverr"}},
     "/api/test/transmission": {"post": {"summary": "Connectivity test: Transmission"}},
     "/api/test/deluge":       {"post": {"summary": "Connectivity test: Deluge"}},
     "/torznab/api": {

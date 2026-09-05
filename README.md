@@ -137,6 +137,10 @@ services:
       - QB_URL=http://qbittorrent:8080
       - QB_USER=admin
       - QB_PASS=changeme
+      # Optional, for Vimm downloads behind Turnstile:
+      # - FLARESOLVERR_URL=http://flaresolverr:8191
+      # - FLARESOLVERR_MAX_TIMEOUT=55000
+      # - FLARESOLVERR_TABS_TILL_VERIFY=74
     restart: unless-stopped
 ```
 
@@ -238,17 +242,44 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `PROWLARR_API_KEY` | | Prowlarr API key |
 | `PROWLARR_GAME_INDEXERS` | *(auto)* | Comma-separated indexer IDs to search. Unset means every enabled indexer that advertises game categories (see [Prowlarr indexers](#prowlarr-indexers)) |
 | `RAWG_API_KEY` | | RAWG.io API key (enables metadata, calendar) |
+| `FLARESOLVERR_URL` | | Optional FlareSolverr API base URL, for example `http://flaresolverr:8191` |
+| `FLARESOLVERR_MAX_TIMEOUT` | `55000` | Maximum FlareSolverr solve time in milliseconds (`20000`–`55000`) |
+| `FLARESOLVERR_TABS_TILL_VERIFY` | `74` | Tab presses used by FlareSolverr 3.5.0+ to focus Vimm's Turnstile verification control (`1`–`1000`) |
 
-#### Vimm's Lair is search-only
+#### Vimm downloads with FlareSolverr
 
 Vimm's Lair now gates its download form behind Cloudflare Turnstile, a
-CAPTCHA built to withhold the form from automated browsers, so gamarr can
-search Vimm but cannot download from it. Gamarr does not try to bypass it.
-A Vimm download fails with an error that says so, counts against the
-source's health on `/api/sources` (`download_fail`, `download_degraded`),
-and after three consecutive failures the scheduler skips Vimm results in
-favour of the next deliverable match from another source. Use a Prowlarr
-indexer for titles that only Vimm carries.
+browser check that withholds the media ID from a normal HTTP request. Gamarr
+can optionally ask a separately deployed FlareSolverr instance for the
+rendered vault page. It extracts the media ID from that page, then uses the
+existing direct-download path; the game file itself does not pass through
+FlareSolverr.
+
+Install FlareSolverr using its
+[official Docker instructions](https://github.com/FlareSolverr/FlareSolverr#docker).
+When both apps run in Docker, attach them to the same Docker network; a Compose
+service named `flaresolverr` is then reachable from Gamarr at
+`http://flaresolverr:8191`.
+
+Use FlareSolverr 3.5.0 or newer. Set `FLARESOLVERR_URL` and, optionally,
+`FLARESOLVERR_MAX_TIMEOUT` and `FLARESOLVERR_TABS_TILL_VERIFY`, then restart
+Gamarr. The URL may be either the service base (such as
+`http://flaresolverr:8191`) or its `/v1` endpoint. Gamarr calls FlareSolverr only
+after it recognizes Vimm's Turnstile page. Each gated page gets a temporary
+browser session. If FlareSolverr reports a stale-element error after Turnstile
+submits, Gamarr retrieves the navigated page in the same session and then
+destroys that session, including on error paths. The default is `74` tab
+presses; because focus order is layout-dependent, override it when Vimm's page
+changes. The timeout defaults to its `55000` ms maximum; overrides down to the
+`20000` ms minimum are accepted.
+Use **Settings → Connection Tests → FlareSolverr** to verify the configured
+service is reachable.
+
+FlareSolverr support is best-effort: an interactive CAPTCHA can still time out.
+When FlareSolverr is disabled or cannot return the vault page, the Vimm download
+fails with an actionable error and counts against source health. After three
+consecutive failures, the scheduler skips Vimm in favour of another deliverable
+result.
 
 #### Prowlarr indexers
 

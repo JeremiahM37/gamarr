@@ -11,6 +11,7 @@ import (
 
 	"gamarr/internal/db"
 	"gamarr/internal/fileops"
+	"gamarr/internal/flaresolverr"
 	"gamarr/internal/search"
 )
 
@@ -264,6 +265,19 @@ func (s *Server) handleTestNZBGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]interface{}{"success": true, "version": version})
+}
+
+func (s *Server) handleTestFlareSolverr(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(s.cfg.FlareSolverrURL) == "" {
+		writeJSON(w, 200, map[string]interface{}{"success": false, "error": "Not configured"})
+		return
+	}
+	info, err := flaresolverr.Check(r.Context(), s.cfg.FlareSolverrURL)
+	if err != nil {
+		writeJSON(w, 200, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"success": true, "version": info.Version})
 }
 
 // ── Source Health ─────────────────────────────────────────────────────────────
