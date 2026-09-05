@@ -41,8 +41,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ExtractArchives {
 		t.Error("ExtractArchives should default to false")
 	}
-	if cfg.FlareSolverrURL != "" || cfg.FlareSolverrMaxTimeout != 55_000 || cfg.FlareSolverrTabsTillVerify != 37 {
-		t.Errorf("FlareSolverr defaults = (%q, %d, %d), want disabled, 55000, 37", cfg.FlareSolverrURL, cfg.FlareSolverrMaxTimeout, cfg.FlareSolverrTabsTillVerify)
+	if cfg.FlareSolverrURL != "" || cfg.FlareSolverrMaxTimeout != 55_000 || cfg.FlareSolverrTabsTillVerify != 74 {
+		t.Errorf("FlareSolverr defaults = (%q, %d, %d), want disabled, 55000, 74", cfg.FlareSolverrURL, cfg.FlareSolverrMaxTimeout, cfg.FlareSolverrTabsTillVerify)
 	}
 
 	// No default indexer IDs: Prowlarr numbers indexers per install, so any
@@ -133,7 +133,7 @@ func TestLoad_ExplicitEmptyQBURLDisablesQBittorrent(t *testing.T) {
 }
 
 func TestLoad_InvalidFlareSolverrTimeoutUsesDefault(t *testing.T) {
-	for _, value := range []string{"19999", "600001", "not-a-number"} {
+	for _, value := range []string{"24999", "600001", "not-a-number"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("FLARESOLVERR_MAX_TIMEOUT", value)
 			if got := Load().FlareSolverrMaxTimeout; got != 55_000 {
@@ -147,8 +147,8 @@ func TestLoad_InvalidFlareSolverrTabsUsesDefault(t *testing.T) {
 	for _, value := range []string{"-1", "0", "1001", "not-a-number"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("FLARESOLVERR_TABS_TILL_VERIFY", value)
-			if got := Load().FlareSolverrTabsTillVerify; got != 37 {
-				t.Errorf("tabs till verify = %d, want 37", got)
+			if got := Load().FlareSolverrTabsTillVerify; got != 74 {
+				t.Errorf("tabs till verify = %d, want 74", got)
 			}
 		})
 	}

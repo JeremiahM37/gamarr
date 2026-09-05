@@ -63,7 +63,7 @@ func TestFetch(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 25_000, 37)
+	solution, err := Fetch(context.Background(), srv.URL+"/", "https://vimm.net/vault/4970", 25_000, 74)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +76,8 @@ func TestFetch(t *testing.T) {
 	if got.MaxTimeout != 25_000 || got.WaitInSeconds != 5 {
 		t.Errorf("timeouts = max %d wait %d", got.MaxTimeout, got.WaitInSeconds)
 	}
-	if got.TabsTillVerify != 37 {
-		t.Errorf("tabs_till_verify = %d, want 37", got.TabsTillVerify)
+	if got.TabsTillVerify != 74 {
+		t.Errorf("tabs_till_verify = %d, want 74", got.TabsTillVerify)
 	}
 	if _, ok := raw["tabs_till_verify"]; !ok {
 		t.Error("request omitted exact tabs_till_verify key")
@@ -98,9 +98,9 @@ func TestRequestTimeoutIncludesSolverOverheadGrace(t *testing.T) {
 }
 
 func TestValidateMaxTimeout(t *testing.T) {
-	// FlareSolverr 3.5.0's first 37-tab attempt has about 11.7 seconds of
+	// FlareSolverr 3.5.0's first 74-tab attempt has about 15.4 seconds of
 	// fixed pauses. Gamarr then requests another five seconds before capture.
-	const knownVimmFlowFloor = 16_700
+	const knownVimmFlowFloor = 20_400
 	if MinMaxTimeout <= knownVimmFlowFloor {
 		t.Fatalf("minimum timeout %d must exceed the known Vimm flow floor %d", MinMaxTimeout, knownVimmFlowFloor)
 	}

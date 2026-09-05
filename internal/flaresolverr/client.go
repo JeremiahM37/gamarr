@@ -20,10 +20,10 @@ const (
 	DefaultMaxTimeout = 55_000
 	// DefaultVimmTabsTillVerify is Vimm's manual-focus preset. Tab order is
 	// layout-dependent, so deployments can override it through configuration.
-	DefaultVimmTabsTillVerify = 37
+	DefaultVimmTabsTillVerify = 74
 	// FlareSolverr counts both its manual Turnstile click pauses and
 	// waitInSeconds against maxTimeout. Keep a usable floor for that flow.
-	MinMaxTimeout = 20_000
+	MinMaxTimeout = 25_000
 	// MaxMaxTimeout prevents overflowing time.Duration and keeps a typo from
 	// tying up a download worker (and its browser) indefinitely.
 	MaxMaxTimeout = 600_000

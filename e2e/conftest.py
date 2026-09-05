@@ -350,7 +350,7 @@ def _boot_gamarr(stub_server, gamarr_binary, data, env_overrides: dict) -> dict:
         # external service. Individual tests override these values as needed.
         "FLARESOLVERR_URL": "",
         "FLARESOLVERR_MAX_TIMEOUT": "55000",
-        "FLARESOLVERR_TABS_TILL_VERIFY": "37",
+        "FLARESOLVERR_TABS_TILL_VERIFY": "74",
         **env_overrides,
     }
     log = open(data / "gamarr.log", "w")
