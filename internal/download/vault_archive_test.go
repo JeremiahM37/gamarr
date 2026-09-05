@@ -666,6 +666,10 @@ func TestOrganizeNZBCompletesFromExistingArchive(t *testing.T) {
 // The wanted set comes from the client's priorities at organize time, so a
 // deselected pack is excluded whatever its name - including one that carries
 // the client's partial suffix after a late deselection left real bytes in it.
+// The torrent's display name is deliberately divergent from the on-disk root:
+// a magnet's dn and the .torrent's internal folder name differ in the wild
+// (measured live, where the divergence collapsed an MD5 subtree out of the
+// set), so the root is derived from the file list, not from either name.
 func TestOrganizeGameArchivesOnlyPriorityWantedFiles(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.VaultArchiveEnabled = true
@@ -674,24 +678,33 @@ func TestOrganizeGameArchivesOnlyPriorityWantedFiles(t *testing.T) {
 	content := filepath.Join(t.TempDir(), "Filtered Game")
 	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
 	writeFileT(t, filepath.Join(content, "fg-01.bin"), []byte("payload"))
+	writeFileT(t, filepath.Join(content, "MD5", "fitgirl-bins.md5"), []byte("hashes"))
 	writeFileT(t, filepath.Join(content, "fg-02.bin.!qB"), []byte("leftover fragment"))
 
 	qm := newQbitMock(t)
 	qm.setFiles([]qbit.TorrentFile{
 		{Name: "Filtered Game/setup.exe", Size: int64(len("installer")), Priority: 1},
 		{Name: "Filtered Game/fg-01.bin", Size: int64(len("payload")), Priority: 1},
+		{Name: "Filtered Game/MD5/fitgirl-bins.md5", Size: int64(len("hashes")), Priority: 1},
 		{Name: "Filtered Game/fg-02.bin.!qB", Size: int64(len("leftover fragment")), Priority: 0},
 	})
 	m := New(cfg, jobs, qm.client())
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "pf1", ContentPath: content}
+	// Diverges from the file list's root folder on purpose.
+	torrent := &qbit.Torrent{
+		Name: "Filtered Game: Deluxe Edition (v1.0, MULTi10) [FitGirl Repack, Selective Download]",
+		Hash: "pf1", ContentPath: content,
+	}
 	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	got := tarEntries(t, filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar"))
 	if got["setup.exe"] != "installer" || got["fg-01.bin"] != "payload" {
 		t.Errorf("archive contents = %v, want the wanted files", got)
+	}
+	if got["MD5/fitgirl-bins.md5"] != "hashes" {
+		t.Error("the MD5 subtree was dropped from the wanted set")
 	}
 	if _, ok := got["fg-02.bin.!qB"]; ok {
 		t.Error("the deselected fragment was archived despite priority 0")

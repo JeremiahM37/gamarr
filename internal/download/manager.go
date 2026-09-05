@@ -715,14 +715,34 @@ func (m *Manager) wantedFiles(torrent *qbit.Torrent) fileops.WantedFiles {
 	if len(files) == 0 {
 		return nil
 	}
-	prefix := torrent.Name + "/"
+	// Multi-file torrents root every name at one folder, but that folder is
+	// the .torrent's internal name, which a magnet's display name - what the
+	// API reports as the torrent's name - need not match. Derive the root
+	// from the list itself; falling back to either name would drop subtrees.
+	root := ""
+	for _, f := range files {
+		first, _, found := strings.Cut(f.Name, "/")
+		if !found {
+			root = ""
+			break
+		}
+		if root == "" {
+			root = first + "/"
+		} else if first+"/" != root {
+			root = ""
+			break
+		}
+	}
 	wanted := fileops.WantedFiles{}
 	for _, f := range files {
 		if f.Priority <= 0 {
 			continue
 		}
-		rel := strings.TrimPrefix(f.Name, prefix)
-		if rel == f.Name {
+		rel := f.Name
+		if root != "" {
+			rel = strings.TrimPrefix(f.Name, root)
+		}
+		if rel == "" {
 			rel = filepath.Base(f.Name)
 		}
 		wanted[rel] = f.Size
