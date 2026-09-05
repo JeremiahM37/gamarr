@@ -1031,7 +1031,9 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	return fp, nil
 }
 
-var vimmFormRe = regexp.MustCompile(`(?is)(<form\b[^>]*\bid=["'](?:dl_form|download_form)["'][^>]*>)(.*?)</form\s*>`)
+// The live vault page names the form dl-form (hyphen); dl_form is what older
+// captures and the JS submit handler use. Accept every spelling seen so far.
+var vimmFormRe = regexp.MustCompile(`(?is)(<form\b[^>]*\bid=["'](?:dl[-_]form|download_form)["'][^>]*>)(.*?)</form\s*>`)
 var vimmActionRe = regexp.MustCompile(`(?i)\baction\s*=\s*["']([^"']+)["']`)
 var vimmInputRe = regexp.MustCompile(`(?is)<input\b[^>]*>`)
 var vimmMediaNameRe = regexp.MustCompile(`(?i)\bname\s*=\s*["']mediaId["']`)

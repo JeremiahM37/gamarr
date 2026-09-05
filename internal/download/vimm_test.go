@@ -73,6 +73,19 @@ func TestParseVimmDownloadForm(t *testing.T) {
 		t.Errorf("const media action=%q media=%q", action, media)
 	}
 
+	// The form on the live vault page as FlareSolverr 3.5.0 rendered it on
+	// 2026-09-05: the id is dl-form, with a hyphen, and the hidden field sits
+	// inside it. Reading that field is what makes a multi-release page
+	// unambiguous, so the hyphen must not push parsing onto the script fallback.
+	live = `<form method="GET" action="/vault/"><input name="q"></form>
+		<form action="//dl3.vimm.net/" method="POST" id="dl-form" onsubmit="return submitDL(this, 'dialog3')">
+		<input type="hidden" name="mediaId" value="3811"><button type="submit">Download</button></form>
+		<script>allMedia=[{"ID":3811},{"ID":3812}];</script>`
+	action, media = parseVimmDownloadForm(live)
+	if media != "3811" || action != "//dl3.vimm.net/" {
+		t.Errorf("live dl-form action=%q media=%q", action, media)
+	}
+
 	// A similarly named input outside the download form is not authoritative.
 	js = `<form id="tracking"><input name="mediaId" value="9999"></form>
 		<form action="//dl3.vimm.net/" id="dl_form"><input value="3811" name="mediaId"></form>`
