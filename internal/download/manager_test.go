@@ -1470,6 +1470,62 @@ func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 	assertImportedCleanly(t, m, jobID)
 }
 
+// A failure while the content tree is still in place is a real defect, not the
+// publish race: it has to terminate on the first attempt with the real cause
+// in the row, never burn the retry loop or end in the give-up detail.
+func TestImportWithTheContentStillPresentStaysTerminal(t *testing.T) {
+	setImportRetries(t, 400, 5*time.Millisecond)
+	qm := newQbitMock(t)
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	// The archive walk refuses a non-regular entry loudly; a symlink pointing
+	// nowhere is one such refusal, and it reads the same on every attempt.
+	cfg.VaultArchiveEnabled = true
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	content := filepath.Join(cfg.QBSavePath, "Broken Game [FitGirl Repack]")
+	if err := os.MkdirAll(content, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", content, err)
+	}
+	if err := os.WriteFile(filepath.Join(content, "setup.exe"), []byte("installer"), 0644); err != nil {
+		t.Fatalf("write setup.exe: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(content, "missing"), filepath.Join(content, "fg-01.bin")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Broken Game [FitGirl Repack]", Hash: "broken-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: content,
+	}})
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{
+		"status": "downloading", "title": "Broken Game [FitGirl Repack]", "info_hash": "broken-hash",
+	})
+
+	m.importFinishedTorrent("job watch", jobID, qbit.Torrent{
+		Name: "Broken Game [FitGirl Repack]", Hash: "broken-hash", Progress: 1.0,
+		SavePath: cfg.QBSavePath, ContentPath: content,
+	}, "PC", "", true)
+
+	job, ok := m.Jobs().Get(jobID)
+	if !ok {
+		t.Fatalf("job %s not found", jobID)
+	}
+	status, _ := job["status"].(string)
+	detail, _ := job["detail"].(string)
+	errMsg, _ := job["error"].(string)
+	if status != "error" {
+		t.Errorf("status = %q, want a terminal error", status)
+	}
+	if !strings.Contains(errMsg, "not a regular file") {
+		t.Errorf("error = %q, want the real cause named", errMsg)
+	}
+	if strings.Contains(detail, "Gave up") {
+		t.Errorf("detail = %q, want no give-up: the tree was in place, so the first attempt is terminal", detail)
+	}
+}
+
 // assertImportedCleanly checks the whole job row rather than the status alone.
 // A status assertion on its own passes while the row is wrong: the error field
 // the UI renders regardless of status is exactly what a retried import was
