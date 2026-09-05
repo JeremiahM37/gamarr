@@ -549,7 +549,9 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			row := map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			}
-			if !transient {
+			// A refusal is not the publish race: retrying an occupied
+			// destination lands on the same refusal, so the hint would lie.
+			if !transient && !errors.Is(err, fileops.ErrDestinationOccupied) {
 				row["detail"] = retryHint
 			}
 			m.jobs.UpdateMulti(jobID, row)
@@ -595,7 +597,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			row := map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			}
-			if !transient {
+			if !transient && !errors.Is(err, fileops.ErrDestinationOccupied) {
 				row["detail"] = retryHint
 			}
 			m.jobs.UpdateMulti(jobID, row)

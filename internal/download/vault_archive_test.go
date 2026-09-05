@@ -771,7 +771,7 @@ func TestOrganizeGameAcceptsAnOccupiedSubsetTar(t *testing.T) {
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
 	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "occ1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	job := waitJobStatus(t, jobs, jobID, "completed", minPollTimeout)
 	if detail, _ := job["detail"].(string); detail != "Copied to GameVault" {
@@ -798,7 +798,7 @@ func TestFolderImportSidecarRecordsNoWantedSet(t *testing.T) {
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
 	torrent := &qbit.Torrent{Name: "Plain Game", Hash: "plain1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	waitJobStatus(t, jobs, jobID, "completed", minPollTimeout)
 	sidecar, err := os.ReadFile(filepath.Join(cfg.GamesVaultPath, "Plain Game", ".gamarr.json"))
@@ -827,7 +827,7 @@ func TestWantedFilesWithNoCommonRootKeepsFullNames(t *testing.T) {
 	got := m.wantedFiles(&qbit.Torrent{
 		Name: "Some Long Display Name That Matches Nothing",
 		Hash: "mixed-root", ContentPath: filepath.Join(cfg.QBSavePath, "whatever"),
-	}, cfg.QBSavePath)
+	})
 
 	if got == nil {
 		t.Fatal("wanted set = nil, want the priority-1 names")
@@ -840,5 +840,41 @@ func TestWantedFilesWithNoCommonRootKeepsFullNames(t *testing.T) {
 	}
 	if _, ok := got["fg-02.bin.!qB"]; ok {
 		t.Error("the deselected file is in the wanted set")
+	}
+}
+
+// An occupancy refusal is not the publish race: retrying an occupied
+// destination lands on the same refusal, so the row must not carry the Retry
+// hint that a race refusal would.
+func TestOccupiedVaultRefusalCarriesNoRetryHint(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Filtered Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+
+	// A short occupant: too small to stand in for the source, so the import
+	// refuses rather than accepting it as done.
+	published := filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar")
+	writeFileT(t, published, []byte("tiny"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Filtered Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "occ2", ContentPath: content}
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
+
+	job := waitJobStatus(t, jobs, jobID, "error", minPollTimeout)
+	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "already exists") {
+		t.Errorf("error = %q, want the occupancy refusal", errMsg)
+	}
+	if detail, _ := job["detail"].(string); strings.Contains(detail, "use Retry") {
+		t.Errorf("detail = %q, want no Retry hint on an occupancy refusal", detail)
 	}
 }
