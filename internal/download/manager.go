@@ -537,12 +537,20 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, sanitizeFilename(filepath.Base(contentPath)))
+		destExisted := pathExists(dest)
 		mode, err := m.importContent(contentPath, dest)
 		importMode = mode
 		if err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			})
+			if !destExisted && importMoved(contentPath) {
+				// A retried import against this attempt's partial output dies
+				// on an existing link or reads it as occupied, so the tree the
+				// client moved away from takes its debris with it. A dest that
+				// predated the import is never touched.
+				os.RemoveAll(dest)
+			}
 			return importMoved(contentPath)
 		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -602,6 +610,12 @@ func (m *Manager) importToVault(src string, wanted fileops.WantedFiles) (dest st
 		return dest, m.archivedImportMode(dest, src, wanted), true, nil
 	}
 	mode, err = m.importContent(src, base)
+	if err != nil && importMoved(src) {
+		// Occupancy was checked above, so base is this attempt's own output,
+		// and a retried import against the debris dies on an existing link or
+		// reads it as occupied. The archive path above cleans its own partial.
+		os.RemoveAll(base)
+	}
 	return base, mode, false, err
 }
 
