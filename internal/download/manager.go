@@ -496,8 +496,8 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	// form that can reach both arms.
 	var importMode fileops.Mode
 	if isPC {
-		wanted := m.wantedFiles(torrent, contentPath)
-		dest, mode, err := m.importToVault(contentPath, wanted)
+		wanted := m.wantedFiles(torrent)
+		dest, mode, archived, err := m.importToVault(contentPath, wanted)
 		importMode = mode
 		if err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -511,9 +511,9 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, "GameVault"),
 		})
-		if wanted != nil {
-			// The set is the archive's authority: a later verify or occupancy
-			// check reads it from here rather than re-deriving it by name.
+		// The set describes the archive only: a plain folder import writes no
+		// tar, so recording wanted paths beside one would be fiction.
+		if archived && wanted != nil {
 			writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent", map[string]interface{}{
 				"wanted_files": wanted,
 				"wanted_bytes": wanted.WantedBytes(),
@@ -568,21 +568,21 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 // source-preserving mode reports one and the torrent is left seedable; under
 // move the download is dropped, but only once the published archive is
 // confirmed to stand in for it.
-func (m *Manager) importToVault(src string, wanted fileops.WantedFiles) (string, fileops.Mode, error) {
+func (m *Manager) importToVault(src string, wanted fileops.WantedFiles) (dest string, mode fileops.Mode, archived bool, err error) {
 	base := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(src)))
 
 	// Occupancy is decided before either branch, and both take the same answer.
 	// Deciding it per branch is how the archive path came to refuse a duplicate
 	// while the plain path stored the same game a second time beside it.
-	if occ, done, occupied := acceptOccupiedVault(base, src); occupied {
+	if occ, done, occupied := acceptOccupiedVault(base, src, wanted); occupied {
 		if done {
 			// Copy however the import is configured. The occupant is only known
 			// to be big enough to be an archive of src, which cannot tell this
 			// build from another of the same game, so honouring move here would
 			// drop a newer download and keep the older build in the library.
-			return occ, fileops.ModeCopy, nil
+			return occ, fileops.ModeCopy, false, nil
 		}
-		return occ, fileops.ModeCopy, fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, occ)
+		return occ, fileops.ModeCopy, false, fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, occ)
 	}
 
 	if m.vaultArchiveEnabled() && fileops.Archivable(src) {
@@ -590,12 +590,12 @@ func (m *Manager) importToVault(src string, wanted fileops.WantedFiles) (string,
 		if err := archive(src, dest, wanted); err != nil {
 			slog.Error("vault archive failed, download left in place",
 				"src", sanitizeLog(src), "dest", sanitizeLog(dest), "error", err)
-			return dest, fileops.ModeCopy, err
+			return dest, fileops.ModeCopy, false, err
 		}
-		return dest, m.archivedImportMode(dest, src, wanted), nil
+		return dest, m.archivedImportMode(dest, src, wanted), true, nil
 	}
-	mode, err := m.importContent(src, base)
-	return base, mode, err
+	mode, err = m.importContent(src, base)
+	return base, mode, false, err
 }
 
 // verifyArchive indirects fileops.VerifyArchive so a test can fail the check
@@ -635,7 +635,7 @@ func (m *Manager) archivedImportMode(dest, src string, wanted fileops.WantedFile
 // component, which is what src's basename is. A nil result means no selection
 // information - no torrent behind this download, or a client read that came
 // back empty - and the archive then includes everything.
-func (m *Manager) wantedFiles(torrent *qbit.Torrent, src string) fileops.WantedFiles {
+func (m *Manager) wantedFiles(torrent *qbit.Torrent) fileops.WantedFiles {
 	if torrent.Hash == "" {
 		return nil
 	}
@@ -673,12 +673,12 @@ func (m *Manager) wantedFiles(torrent *qbit.Torrent, src string) fileops.WantedF
 // "Something is at this name" also covers a stale archive of another build, a
 // truncated leftover and a hand-placed file, and accepting those reports content
 // as stored that was never stored.
-func acceptOccupiedVault(base, src string) (dest string, done, occupied bool) {
+func acceptOccupiedVault(base, src string, wanted fileops.WantedFiles) (dest string, done, occupied bool) {
 	occ, exists := fileops.VaultOccupied(base)
 	if !exists {
 		return "", false, false
 	}
-	if fileops.ArchiveHolds(occ, src) {
+	if fileops.ArchiveHolds(occ, src, wanted) {
 		// Either a crash lost the job update after publishing, or a collision was
 		// swallowed. This is the only trace of either.
 		slog.Warn("vault already holds this game, treating the import as done",

@@ -281,7 +281,7 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 	if isPC {
 		// Same decision, same helper as the torrent path: these two drifted once
 		// already, with one refusing a duplicate while the other stored it twice.
-		if occ, done, occupied := acceptOccupiedVault(dest, storagePath); occupied {
+		if occ, done, occupied := acceptOccupiedVault(dest, storagePath, nil); occupied {
 			if done {
 				m.completeNZBOrganize(jobID, occ, title, platf, platSlug, isPC, sourceClient, fileops.ModeCopy)
 				return

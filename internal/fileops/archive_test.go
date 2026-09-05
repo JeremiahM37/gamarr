@@ -170,9 +170,9 @@ func TestArchiveIncludesOnlyWantedFiles(t *testing.T) {
 	writeFile(t, filepath.Join(src, "fg-03.bin"), "PART THREE")
 
 	wanted := WantedFiles{
-		"setup.exe":  int64(len("SETUP")),
-		"fg-01.bin":  int64(len("PART ONE")),
-		"fg-03.bin":  int64(len("PART THREE")),
+		"setup.exe":     int64(len("SETUP")),
+		"fg-01.bin":     int64(len("PART ONE")),
+		"fg-03.bin":     int64(len("PART THREE")),
 		"fg-02.bin.!qB": int64(len("FRAGMENT")),
 	}
 	// The deselected fragment is not in the set, whatever its name.
@@ -211,6 +211,80 @@ func TestArchiveWithNoWantedSetIncludesEverything(t *testing.T) {
 	got := readTar(t, dest)
 	if got["setup.exe"] != "SETUP" || got["fg-01.bin.!qB"] != "PART ONE" {
 		t.Errorf("tar = %v, want every file included", got)
+	}
+}
+
+// A wanted file missing from disk must fail the archive loudly. With the set
+// filtering both census and walk, a depleting publish would otherwise publish
+// a silent partial that move mode makes the only copy.
+func TestArchiveRefusesWhenAWantedFileIsMissing(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+	wanted := WantedFiles{
+		"setup.exe": int64(len("SETUP")),
+		"fg-01.bin": int64(len("PART ONE")),
+	}
+
+	vault := filepath.Join(root, "vault")
+	if err := os.MkdirAll(vault, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dest := ArchiveDest(filepath.Join(vault, "Days Gone"))
+	err := Archive(src, dest, wanted)
+	if err == nil {
+		t.Fatal("Archive published a partial subset without the wanted file")
+	}
+	if !strings.Contains(err.Error(), "the wanted set declares") {
+		t.Errorf("error = %v, want the set mismatch named", err)
+	}
+	if names := vaultEntries(t, vault); len(names) != 0 {
+		t.Errorf("vault holds %v, want nothing published", names)
+	}
+}
+
+// A priority>0 file that only wears the placeholder suffix is a real renamed
+// file, and the set archives it by inclusion rather than dropping it by name.
+func TestArchiveIncludesAWantedFileWearingThePlaceholderSuffix(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+	writeFile(t, filepath.Join(src, "fg-02.bin.!qB"), "REAL PAYLOAD")
+
+	wanted := WantedFiles{
+		"setup.exe":     int64(len("SETUP")),
+		"fg-02.bin.!qB": int64(len("REAL PAYLOAD")),
+	}
+	dest := ArchiveDest(filepath.Join(root, "vault", "Days Gone"))
+	if err := Archive(src, dest, wanted); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := readTar(t, dest)
+	if got["fg-02.bin.!qB"] != "REAL PAYLOAD" {
+		t.Error("tar lost a wanted file that wears the placeholder suffix")
+	}
+}
+
+// The sidecar's recorded byte total answers ArchiveHolds when the source is
+// already gone - a restart between publishing and re-organizing.
+func TestArchiveHoldsReadsTheSidecarWhenTheSourceIsGone(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "vault")
+	if err := os.MkdirAll(vault, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	tarPath := filepath.Join(vault, "Game.tar")
+	writeFile(t, tarPath, strings.Repeat("PAYLOAD.", 256))
+	writeFile(t, tarPath+".gamarr.json", `{"wanted_bytes":2048}`)
+
+	if !ArchiveHolds(tarPath, filepath.Join(root, "no-source"), nil) {
+		t.Error("ArchiveHolds rejected an occupant matching the sidecar's recorded bytes")
+	}
+
+	writeFile(t, tarPath+".gamarr.json", `{"wanted_bytes":999999}`)
+	if ArchiveHolds(tarPath, filepath.Join(root, "no-source"), nil) {
+		t.Error("ArchiveHolds accepted an occupant shorter than the sidecar's recorded bytes")
 	}
 }
 

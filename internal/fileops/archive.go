@@ -2,6 +2,7 @@ package fileops
 
 import (
 	"archive/tar"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -71,13 +72,38 @@ func VaultOccupied(base string) (string, bool) {
 // layer that acts on it. An uncompressed tar cannot be smaller than the files it
 // holds, so a short occupant, a directory, or a hand-placed file is definitely
 // not ours.
-func ArchiveHolds(path, src string) bool {
+// ArchiveHolds reports whether path could be an archive of src's wanted
+// subset: a regular file at least as large as the wanted set declares. The
+// source may already be gone - a restart after publishing - in which case the
+// sidecar's recorded byte total answers for it.
+func ArchiveHolds(path, src string, wanted WantedFiles) bool {
 	fi, err := os.Lstat(path)
 	if err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
-	_, wantBytes, err := censusOf(src, nil)
-	return err == nil && fi.Size() >= wantBytes
+	if _, wantBytes, err := censusOf(src, wanted); err == nil {
+		return fi.Size() >= wantBytes
+	}
+	if wb := sidecarWantedBytes(path); wb > 0 {
+		return fi.Size() >= wb
+	}
+	return false
+}
+
+// sidecarWantedBytes reads the byte total a completed archive import recorded
+// beside itself. Zero means the sidecar is absent or says nothing.
+func sidecarWantedBytes(path string) int64 {
+	data, err := os.ReadFile(path + ".gamarr.json")
+	if err != nil {
+		return 0
+	}
+	var meta struct {
+		WantedBytes int64 `json:"wanted_bytes"`
+	}
+	if json.Unmarshal(data, &meta) != nil {
+		return 0
+	}
+	return meta.WantedBytes
 }
 
 // VerifyArchive reports whether the archive at dest can stand in for src: every
@@ -186,6 +212,14 @@ func Archive(src, dest string, wanted WantedFiles) error {
 	wantFiles, wantBytes, err := censusOf(src, wanted)
 	if err != nil {
 		return err
+	}
+	// With a wanted set in hand the disk must hold exactly that set. A file
+	// the client moved away during a depleting publish is missing from both
+	// the census and the walk, so without this check a silent partial archive
+	// would publish and, under move, become the only copy.
+	if wanted != nil && (wantFiles != int64(len(wanted)) || wantBytes != wanted.WantedBytes()) {
+		return fmt.Errorf("source %s holds %d files and %d bytes, the wanted set declares %d and %d",
+			src, wantFiles, wantBytes, len(wanted), wanted.WantedBytes())
 	}
 	if wantFiles == 0 {
 		return fmt.Errorf("refusing to archive %s: it holds no regular files", src)
