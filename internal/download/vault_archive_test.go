@@ -920,3 +920,41 @@ func TestArchiveImportKeepsTheDownloadWhenTheFileListWillNotRead(t *testing.T) {
 		t.Errorf("source should be left in place: %v", err)
 	}
 }
+
+// An occupancy refusal has no Retry hint to write, but omitting the detail key
+// leaves whatever the in-progress row last said. An error row that reads
+// "Scans passed. Moving to library..." describes the opposite of what happened.
+func TestOccupiedVaultRefusalReplacesTheInProgressDetail(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Stale Detail Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(cfg.GamesVaultPath, "Stale Detail Game.tar"), []byte("tiny"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Stale Detail Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	// The row organizeWithScan leaves behind just before the import runs.
+	jobs.Set(jobID, map[string]interface{}{
+		"status": "organizing", "detail": "Scans passed. Moving to library...", "error": nil,
+	})
+
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Stale Detail Game", Hash: "sd1", ContentPath: content}, "PC", "", true, 1)
+
+	job := waitJobStatus(t, jobs, jobID, "error", minPollTimeout)
+	detail, _ := job["detail"].(string)
+	if strings.Contains(detail, "Moving to library") {
+		t.Errorf("detail = %q, want the refusal to replace the in-progress text", detail)
+	}
+	if strings.Contains(detail, "use Retry") {
+		t.Errorf("detail = %q, want no Retry hint on an occupancy refusal", detail)
+	}
+	if detail == "" {
+		t.Error("detail is empty, want the refusal explained")
+	}
+}

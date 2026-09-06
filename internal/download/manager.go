@@ -493,6 +493,28 @@ func destPresent(p string) bool {
 	return err == nil
 }
 
+// destLocks serialises imports that resolve to the same destination path.
+var destLocks sync.Map
+
+// lockDest holds a destination for the whole check-import-clean window, which
+// is what makes the absence check a claim rather than a guess. m.importing is
+// keyed by torrent hash, so two different torrents whose content folders share
+// a basename are not otherwise kept apart: they resolve to one path, and
+// without this the second job's finished import can land between the first
+// job's absence check and its cleanup, and be deleted as the first job's own
+// debris. fileops keeps a separate lock for archive destinations, so a vault
+// import holding this one cannot deadlock against it.
+func lockDest(path string) func() {
+	v, _ := destLocks.LoadOrStore(path, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// occupiedDetail replaces the in-progress detail an error row would otherwise
+// keep. Omitting the key leaves "Moving to library..." under a failure.
+const occupiedDetail = "Something is already stored at this destination, so the import was refused."
+
 func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platSlug string, isPC bool, attempt int) (retryable bool) {
 	contentPath := torrent.ContentPath
 	torrentName := torrent.Name
@@ -542,7 +564,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	var importMode fileops.Mode
 	if isPC {
 		wanted, selectionKnown := m.wantedFiles(torrent)
-		dest, mode, archived, err := m.importToVault(contentPath, wanted, selectionKnown, attempt)
+		dest, mode, archived, err := m.importToVault(contentPath, wanted, selectionKnown)
 		importMode = mode
 		if err != nil {
 			transient := importTransient(contentPath, err, attempt)
@@ -551,7 +573,9 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			}
 			// A refusal is not the publish race: retrying an occupied
 			// destination lands on the same refusal, so the hint would lie.
-			if !transient && !errors.Is(err, fileops.ErrDestinationOccupied) {
+			if errors.Is(err, fileops.ErrDestinationOccupied) {
+				row["detail"] = occupiedDetail
+			} else if !transient {
 				row["detail"] = retryHint
 			}
 			m.jobs.UpdateMulti(jobID, row)
@@ -579,6 +603,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, sanitizeFilename(filepath.Base(contentPath)))
+		defer lockDest(dest)()
 		destExisted := destPresent(dest)
 		mode, err := m.importContent(contentPath, dest)
 		importMode = mode
@@ -587,17 +612,21 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 			// stats, and a cleanup skipped that way would leave the job's own
 			// debris reading as pre-existing on every later attempt.
 			transient := importTransient(contentPath, err, attempt)
-			if transient && !destExisted {
-				// A retried import against this attempt's partial output dies
-				// on an existing link or reads it as occupied. destExisted is
-				// a check, not a lock: it only ever saw this dest absent
-				// before the import started.
+			if !destExisted {
+				// Ownership is what licenses the delete, not transience: this
+				// attempt found the path empty and holds it, so whatever is
+				// there now is its own partial output. A terminal failure is
+				// exactly where clearing it matters - the row tells the
+				// operator to retry, and a retry against the debris dies on an
+				// existing link or reads it as occupied instead.
 				removePartialDest(dest)
 			}
 			row := map[string]interface{}{
 				"status": "error", "error": fmt.Sprintf("Organize failed: %v", err),
 			}
-			if !transient && !errors.Is(err, fileops.ErrDestinationOccupied) {
+			if errors.Is(err, fileops.ErrDestinationOccupied) {
+				row["detail"] = occupiedDetail
+			} else if !transient {
 				row["detail"] = retryHint
 			}
 			m.jobs.UpdateMulti(jobID, row)
@@ -633,8 +662,9 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 // source-preserving mode reports one and the torrent is left seedable; under
 // move the download is dropped, but only once the published archive is
 // confirmed to stand in for it.
-func (m *Manager) importToVault(src string, wanted fileops.WantedFiles, selectionKnown bool, attempt int) (dest string, mode fileops.Mode, archived bool, err error) {
+func (m *Manager) importToVault(src string, wanted fileops.WantedFiles, selectionKnown bool) (dest string, mode fileops.Mode, archived bool, err error) {
 	base := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(src)))
+	defer lockDest(base)()
 
 	// Occupancy is decided before either branch, and both take the same answer.
 	// Deciding it per branch is how the archive path came to refuse a duplicate
@@ -660,10 +690,12 @@ func (m *Manager) importToVault(src string, wanted fileops.WantedFiles, selectio
 		return dest, m.archivedImportMode(dest, src, wanted, selectionKnown), true, nil
 	}
 	mode, err = m.importContent(src, base)
-	if err != nil && importTransient(src, err, attempt) {
-		// Occupancy was checked above, so base is this attempt's own output,
-		// and a retried import against the debris dies on an existing link or
-		// reads it as occupied. The archive path above cleans its own partial.
+	if err != nil {
+		// Occupancy was checked above under the same claim, so base is this
+		// attempt's own output, and a retried import against the debris dies
+		// on an existing link or reads it as occupied. The archive path above
+		// cleans its own partial. Terminal failures need this most: that is
+		// the row that tells the operator to retry.
 		removePartialDest(base)
 	}
 	return base, mode, false, err

@@ -3,6 +3,7 @@ package download
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1839,5 +1842,125 @@ func assertImportedCleanly(t *testing.T, m *Manager, jobID string) {
 	if status != "completed" || detail != "Moved to GameVault" || errMsg != "" {
 		t.Errorf("job = {status:%q detail:%q error:%q}, want completed, moved to the vault, and nothing left over from a failed attempt",
 			status, detail, errMsg)
+	}
+}
+
+// A terminal failure is where clearing this attempt's debris matters most: the
+// row tells the operator to press Retry, and a retry against a half-written
+// destination dies on an existing link instead of on the real cause. Gating
+// the cleanup on transience left exactly that trap.
+func TestTerminalRomFailureClearsItsOwnDebrisSoRetryWorks(t *testing.T) {
+	cfg := newTestConfig(t)
+	qm := newQbitMock(t)
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	content := filepath.Join(cfg.QBSavePath, "Broken ROM")
+	if err := os.MkdirAll(content, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(content, "a.sfc"), []byte("rom"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(cfg.GamesRomsPath, "snes", "Broken ROM")
+
+	// A terminal failure - the content tree stays put, so this is not the
+	// publish race - that has already written part of its destination.
+	realImport := fileImport
+	attempts := 0
+	fileImport = func(src, destPath string, opt fileops.Options) error {
+		attempts++
+		if attempts == 1 {
+			if err := os.MkdirAll(destPath, 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(destPath, "a.sfc"), []byte("half"), 0644); err != nil {
+				return err
+			}
+			return errors.New("locked: permission denied")
+		}
+		return realImport(src, destPath, opt)
+	}
+	t.Cleanup(func() { fileImport = realImport })
+
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing"})
+	torrent := &qbit.Torrent{Name: "Broken ROM", Hash: "brk1", ContentPath: content}
+	m.organizeGame(jobID, torrent, "SNES", "snes", false, 1)
+
+	if pathExists(dest) {
+		t.Fatalf("debris left at %s after a terminal failure", dest)
+	}
+
+	// The Retry the row advised must now reach the real import, not "file exists".
+	jobID2 := newJobID()
+	m.Jobs().Set(jobID2, map[string]interface{}{"status": "organizing"})
+	m.organizeGame(jobID2, torrent, "SNES", "snes", false, 1)
+
+	job, _ := m.Jobs().Get(jobID2)
+	if status, _ := job["status"].(string); status != "completed" {
+		t.Fatalf("retry job = %+v, want completed", job)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "a.sfc")); err != nil || string(got) != "rom" {
+		t.Errorf("destination = %q (err %v), want the real content", got, err)
+	}
+}
+
+// Two torrents whose content folders share a basename resolve to one
+// destination, and m.importing is keyed by torrent hash, so nothing else keeps
+// them apart. Without a claim on the path, one job's absence check, import and
+// cleanup interleave with the other's, and the loser's cleanup deletes the
+// winner's finished import. Assert the imports never overlap.
+func TestConcurrentImportsToOneDestinationAreSerialised(t *testing.T) {
+	cfg := newTestConfig(t)
+	qm := newQbitMock(t)
+	m := New(cfg, newTestJobs(t), qm.client())
+
+	mk := func(root string) string {
+		p := filepath.Join(cfg.QBSavePath, root, "Same Name")
+		if err := os.MkdirAll(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "game.sfc"), []byte(root), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	sources := []string{mk("relA"), mk("relB")}
+
+	var inFlight, peak atomic.Int32
+	realImport := fileImport
+	fileImport = func(src, destPath string, opt fileops.Options) error {
+		n := inFlight.Add(1)
+		for {
+			old := peak.Load()
+			if n <= old || peak.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		// Widen the window so an unserialised pair actually overlaps.
+		time.Sleep(20 * time.Millisecond)
+		defer inFlight.Add(-1)
+		return realImport(src, destPath, opt)
+	}
+	t.Cleanup(func() { fileImport = realImport })
+
+	var wg sync.WaitGroup
+	for i, src := range sources {
+		wg.Add(1)
+		go func(src, hash string) {
+			defer wg.Done()
+			jobID := newJobID()
+			m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing"})
+			m.organizeGame(jobID, &qbit.Torrent{Name: "Same Name", Hash: hash, ContentPath: src}, "SNES", "snes", false, 1)
+		}(src, fmt.Sprintf("conc%d", i))
+	}
+	wg.Wait()
+
+	if got := peak.Load(); got != 1 {
+		t.Fatalf("peak concurrent imports to one destination = %d, want 1", got)
+	}
+	// And the destination holds one import's content, not a mixture.
+	if _, err := os.Stat(filepath.Join(cfg.GamesRomsPath, "snes", "Same Name", "game.sfc")); err != nil {
+		t.Errorf("destination content missing after two colliding imports: %v", err)
 	}
 }
