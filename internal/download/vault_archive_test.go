@@ -72,7 +72,7 @@ func TestOrganizeGameArchivesVaultFolder(t *testing.T) {
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
 	torrent := &qbit.Torrent{Name: "007 First Light (2025)", Hash: "h1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	dest := filepath.Join(cfg.GamesVaultPath, "007 First Light (2025).tar")
 	got := tarEntries(t, dest)
@@ -173,7 +173,7 @@ func TestOrganizeGameCompletesWhenTheArchiveIsAlreadyThere(t *testing.T) {
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Recovered Game", Hash: "h9", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Recovered Game", Hash: "h9", ContentPath: content}, "PC", "", true, 1)
 
 	job, _ := jobs.Get(jobID)
 	if status, _ := job["status"].(string); status != "completed" {
@@ -219,7 +219,7 @@ func TestArchiveImportHonoursMoveMode(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Moved Game", Hash: "mv1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Moved Game", Hash: "mv1", ContentPath: content}, "PC", "", true, 1)
 
 	if got := tarEntries(t, filepath.Join(cfg.GamesVaultPath, "Moved Game.tar")); got["setup.exe"] != "installer" {
 		t.Fatalf("archive contents = %v, want the source files", got)
@@ -249,7 +249,7 @@ func TestArchiveImportReportsACopyUnderPreservingModes(t *testing.T) {
 			jobID := newJobID()
 			m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-			m.organizeGame(jobID, &qbit.Torrent{Name: "Verb Game", Hash: "vb1", ContentPath: content}, "PC", "", true)
+			m.organizeGame(jobID, &qbit.Torrent{Name: "Verb Game", Hash: "vb1", ContentPath: content}, "PC", "", true, 1)
 
 			job, _ := m.Jobs().Get(jobID)
 			if detail, _ := job["detail"].(string); detail != "Copied to GameVault" {
@@ -278,7 +278,7 @@ func TestArchiveImportKeepsTheDownloadWhenVerifyFails(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Unverified Game", Hash: "uv1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Unverified Game", Hash: "uv1", ContentPath: content}, "PC", "", true, 1)
 
 	for _, call := range qm.deleteCalls() {
 		if call.deleteFiles {
@@ -319,7 +319,7 @@ func TestArchiveAlreadyInVaultKeepsTheDownload(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Stored Game", Hash: "st1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Stored Game", Hash: "st1", ContentPath: content}, "PC", "", true, 1)
 
 	for _, call := range qm.deleteCalls() {
 		if call.deleteFiles {
@@ -375,7 +375,7 @@ func TestVaultArchiveSettingDrivesTheImport(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Setting Game", Hash: "vs1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Setting Game", Hash: "vs1", ContentPath: content}, "PC", "", true, 1)
 
 	if pathExists(filepath.Join(cfg.GamesVaultPath, "Setting Game.tar")) {
 		t.Error("archived despite the stored setting being off")
@@ -431,7 +431,7 @@ func TestOrganizeGameReportsTheOccupantNotTheArchiveName(t *testing.T) {
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h7", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h7", ContentPath: content}, "PC", "", true, 1)
 
 	job, _ := jobs.Get(jobID)
 	if status, _ := job["status"].(string); status != "completed" {
@@ -480,7 +480,7 @@ func TestOrganizeGameRefusesAnOccupantThatIsNotTheArchive(t *testing.T) {
 			jobID := newJobID()
 			jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-			m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "hx", ContentPath: content}, "PC", "", true)
+			m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "hx", ContentPath: content}, "PC", "", true, 1)
 
 			job, _ := jobs.Get(jobID)
 			if status, _ := job["status"].(string); status != "error" {
@@ -510,7 +510,7 @@ func TestOrganizeGameDoesNotStoreTwiceWithArchiveOff(t *testing.T) {
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h8", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Game", Hash: "h8", ContentPath: content}, "PC", "", true, 1)
 
 	if pathExists(filepath.Join(cfg.GamesVaultPath, "Game")) {
 		t.Error("stored the game a second time as a folder beside the archive")
@@ -673,6 +673,10 @@ func TestOrganizeNZBCompletesFromExistingArchive(t *testing.T) {
 // The wanted set comes from the client's priorities at organize time, so a
 // deselected pack is excluded whatever its name - including one that carries
 // the client's partial suffix after a late deselection left real bytes in it.
+// The torrent's display name is deliberately divergent from the on-disk root:
+// a magnet's dn and the .torrent's internal folder name differ in the wild
+// (measured live, where the divergence collapsed an MD5 subtree out of the
+// set), so the root is derived from the file list, not from either name.
 func TestOrganizeGameArchivesOnlyPriorityWantedFiles(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.VaultArchiveEnabled = true
@@ -681,24 +685,33 @@ func TestOrganizeGameArchivesOnlyPriorityWantedFiles(t *testing.T) {
 	content := filepath.Join(t.TempDir(), "Filtered Game")
 	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
 	writeFileT(t, filepath.Join(content, "fg-01.bin"), []byte("payload"))
+	writeFileT(t, filepath.Join(content, "MD5", "fitgirl-bins.md5"), []byte("hashes"))
 	writeFileT(t, filepath.Join(content, "fg-02.bin.!qB"), []byte("leftover fragment"))
 
 	qm := newQbitMock(t)
 	qm.setFiles([]qbit.TorrentFile{
 		{Name: "Filtered Game/setup.exe", Size: int64(len("installer")), Priority: 1},
 		{Name: "Filtered Game/fg-01.bin", Size: int64(len("payload")), Priority: 1},
+		{Name: "Filtered Game/MD5/fitgirl-bins.md5", Size: int64(len("hashes")), Priority: 1},
 		{Name: "Filtered Game/fg-02.bin.!qB", Size: int64(len("leftover fragment")), Priority: 0},
 	})
 	m := New(cfg, jobs, qm.client())
 	jobID := newJobID()
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "pf1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	// Diverges from the file list's root folder on purpose.
+	torrent := &qbit.Torrent{
+		Name: "Filtered Game: Deluxe Edition (v1.0, MULTi10) [FitGirl Repack, Selective Download]",
+		Hash: "pf1", ContentPath: content,
+	}
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	got := tarEntries(t, filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar"))
 	if got["setup.exe"] != "installer" || got["fg-01.bin"] != "payload" {
 		t.Errorf("archive contents = %v, want the wanted files", got)
+	}
+	if got["MD5/fitgirl-bins.md5"] != "hashes" {
+		t.Error("the MD5 subtree was dropped from the wanted set")
 	}
 	if _, ok := got["fg-02.bin.!qB"]; ok {
 		t.Error("the deselected fragment was archived despite priority 0")
@@ -765,7 +778,7 @@ func TestOrganizeGameAcceptsAnOccupiedSubsetTar(t *testing.T) {
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
 	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "occ1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	job := waitJobStatus(t, jobs, jobID, "completed", minPollTimeout)
 	if detail, _ := job["detail"].(string); detail != "Copied to GameVault" {
@@ -792,7 +805,7 @@ func TestFolderImportSidecarRecordsNoWantedSet(t *testing.T) {
 	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
 	torrent := &qbit.Torrent{Name: "Plain Game", Hash: "plain1", ContentPath: content}
-	m.organizeGame(jobID, torrent, "PC", "", true)
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
 
 	waitJobStatus(t, jobs, jobID, "completed", minPollTimeout)
 	sidecar, err := os.ReadFile(filepath.Join(cfg.GamesVaultPath, "Plain Game", ".gamarr.json"))
@@ -801,6 +814,78 @@ func TestFolderImportSidecarRecordsNoWantedSet(t *testing.T) {
 	}
 	if strings.Contains(string(sidecar), "wanted_files") {
 		t.Error("a folder import's sidecar recorded an archive's wanted set")
+	}
+}
+
+// A file list with no common wrapper - flat bins beside an MD5/ folder - has
+// an empty root, and whole names are then what the walk's relative paths are.
+func TestWantedFilesWithNoCommonRootKeepsFullNames(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "fg-01.bin", Priority: 1},
+		{Name: "MD5/fitgirl-bins.md5", Priority: 1},
+		{Name: "fg-02.bin.!qB", Priority: 0},
+	})
+	m := New(cfg, jobs, qm.client())
+
+	got, known := m.wantedFiles(&qbit.Torrent{
+		Name: "Some Long Display Name That Matches Nothing",
+		Hash: "mixed-root", ContentPath: filepath.Join(cfg.QBSavePath, "whatever"),
+	})
+
+	if !known {
+		t.Fatal("selection reported unknown, want it read from the file list")
+	}
+	if got == nil {
+		t.Fatal("wanted set = nil, want the priority-1 names")
+	}
+	if _, ok := got["fg-01.bin"]; !ok {
+		t.Error("the flat file is missing from the wanted set")
+	}
+	if _, ok := got["MD5/fitgirl-bins.md5"]; !ok {
+		t.Error("the MD5 file lost its folder prefix in the wanted set")
+	}
+	if _, ok := got["fg-02.bin.!qB"]; ok {
+		t.Error("the deselected file is in the wanted set")
+	}
+}
+
+// An occupancy refusal is not the publish race: retrying an occupied
+// destination lands on the same refusal, so the row must not carry the Retry
+// hint that a race refusal would.
+func TestOccupiedVaultRefusalCarriesNoRetryHint(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Filtered Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+
+	// A short occupant: too small to stand in for the source, so the import
+	// refuses rather than accepting it as done.
+	published := filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar")
+	writeFileT(t, published, []byte("tiny"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Filtered Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "occ2", ContentPath: content}
+	m.organizeGame(jobID, torrent, "PC", "", true, 1)
+
+	job := waitJobStatus(t, jobs, jobID, "error", minPollTimeout)
+	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "already exists") {
+		t.Errorf("error = %q, want the occupancy refusal", errMsg)
+	}
+	if detail, _ := job["detail"].(string); strings.Contains(detail, "use Retry") {
+		t.Errorf("detail = %q, want no Retry hint on an occupancy refusal", detail)
 	}
 }
 
@@ -826,12 +911,50 @@ func TestArchiveImportKeepsTheDownloadWhenTheFileListWillNotRead(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
 
-	m.organizeGame(jobID, &qbit.Torrent{Name: "Unread Game", Hash: "ur1", ContentPath: content}, "PC", "", true)
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Unread Game", Hash: "ur1", ContentPath: content}, "PC", "", true, 1)
 
 	if calls := qm.deleteCalls(); len(calls) != 0 {
 		t.Fatalf("delete calls = %+v, want none: the archive was never confirmed", calls)
 	}
 	if _, err := os.Stat(filepath.Join(content, "setup.exe")); err != nil {
 		t.Errorf("source should be left in place: %v", err)
+	}
+}
+
+// An occupancy refusal has no Retry hint to write, but omitting the detail key
+// leaves whatever the in-progress row last said. An error row that reads
+// "Scans passed. Moving to library..." describes the opposite of what happened.
+func TestOccupiedVaultRefusalReplacesTheInProgressDetail(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Stale Detail Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(cfg.GamesVaultPath, "Stale Detail Game.tar"), []byte("tiny"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Stale Detail Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	// The row organizeWithScan leaves behind just before the import runs.
+	jobs.Set(jobID, map[string]interface{}{
+		"status": "organizing", "detail": "Scans passed. Moving to library...", "error": nil,
+	})
+
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Stale Detail Game", Hash: "sd1", ContentPath: content}, "PC", "", true, 1)
+
+	job := waitJobStatus(t, jobs, jobID, "error", minPollTimeout)
+	detail, _ := job["detail"].(string)
+	if strings.Contains(detail, "Moving to library") {
+		t.Errorf("detail = %q, want the refusal to replace the in-progress text", detail)
+	}
+	if strings.Contains(detail, "use Retry") {
+		t.Errorf("detail = %q, want no Retry hint on an occupancy refusal", detail)
+	}
+	if detail == "" {
+		t.Error("detail is empty, want the refusal explained")
 	}
 }

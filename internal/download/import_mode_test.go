@@ -52,7 +52,7 @@ func TestOrganizeGameHardlinkKeepsTorrentSeeding(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "title": torrent.Name})
 
-	m.organizeGame(jobID, &torrent, "PC", "pc", true)
+	m.organizeGame(jobID, &torrent, "PC", "pc", true, 1)
 
 	src := filepath.Join(torrent.ContentPath, "setup.exe")
 	dest := filepath.Join(m.cfg.GamesVaultPath, "Seeded Game", "setup.exe")
@@ -89,7 +89,7 @@ func TestOrganizeGameMoveDeletesTorrentWithFiles(t *testing.T) {
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "title": torrent.Name})
 
-	m.organizeGame(jobID, &torrent, "PC", "pc", true)
+	m.organizeGame(jobID, &torrent, "PC", "pc", true, 1)
 
 	if _, err := os.Stat(torrent.ContentPath); err == nil {
 		t.Error("move import left the source behind")
@@ -116,7 +116,7 @@ func TestOrganizeGamePreservingModeRemoveAfterImportKeepsFiles(t *testing.T) {
 			jobID := newJobID()
 			m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "title": torrent.Name})
 
-			m.organizeGame(jobID, &torrent, "PC", "pc", true)
+			m.organizeGame(jobID, &torrent, "PC", "pc", true, 1)
 
 			calls := qm.deleteCalls()
 			if len(calls) != 1 {
@@ -149,7 +149,7 @@ func TestOrganizeGameROMImportModes(t *testing.T) {
 			jobID := newJobID()
 			m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "title": torrent.Name})
 
-			m.organizeGame(jobID, &torrent, "SNES", "snes", false)
+			m.organizeGame(jobID, &torrent, "SNES", "snes", false, 1)
 
 			dest := filepath.Join(m.cfg.GamesRomsPath, "snes", "Seeded Game", "setup.exe")
 			if _, err := os.Stat(dest); err != nil {
@@ -184,7 +184,7 @@ func TestOrganizeGameHardlinkCrossDeviceFailsTheJob(t *testing.T) {
 
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "title": torrent.Name})
-	m.organizeGame(jobID, &torrent, "PC", "pc", true)
+	m.organizeGame(jobID, &torrent, "PC", "pc", true, 1)
 
 	job, ok := jobFromDB(t, m.Jobs(), jobID)
 	if !ok {
