@@ -819,3 +819,77 @@ func TestSweepPartials(t *testing.T) {
 		t.Error("a real archive was swept")
 	}
 }
+
+// A wanted set whose keys do not line up with the walk censuses nothing, and a
+// zero byte total is the absence of an answer rather than one. Comparing an
+// occupant against it asks only whether the file is at least zero bytes long,
+// which every file is, so a truncated leftover would read as a finished import.
+func TestArchiveHoldsRejectsAnOccupantWhenTheCensusMatchesNothing(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), strings.Repeat("payload", 512))
+
+	stub := filepath.Join(root, "Days Gone.tar")
+	writeFile(t, stub, "x")
+
+	// Keyed the way a torrent with no common root reports its files: full
+	// names, which the walk's relative paths never match.
+	wanted := WantedFiles{"Days Gone/setup.exe": int64(len(strings.Repeat("payload", 512)))}
+	if _, bytes, err := census(src, wanted); err != nil || bytes != 0 {
+		t.Fatalf("census = %d bytes, err %v, want the degenerate 0 this pins", bytes, err)
+	}
+	if ArchiveHolds(stub, src, wanted) {
+		t.Error("a 1-byte stub was accepted as an archive of a 3584-byte source")
+	}
+}
+
+// A single-file source is walked as itself, so its own relative path is ".",
+// while the client keys it by name. Left unreconciled the census comes back
+// empty and every occupant satisfies the size check.
+func TestCensusOfASingleFileSourceKeysItByName(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Game.iso")
+	writeFile(t, src, "DISC IMAGE")
+
+	wanted := WantedFiles{"Game.iso": int64(len("DISC IMAGE"))}
+	files, bytes, err := census(src, wanted)
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if files != 1 || bytes != int64(len("DISC IMAGE")) {
+		t.Fatalf("census = %d files / %d bytes, want 1 / %d", files, bytes, len("DISC IMAGE"))
+	}
+
+	stub := filepath.Join(root, "Game.iso.occupant")
+	writeFile(t, stub, "x")
+	if ArchiveHolds(stub, src, wanted) {
+		t.Error("a 1-byte occupant was accepted as an archive of a single-file source")
+	}
+}
+
+// The set names files, never the directories holding them. Filtering a
+// directory on it drops every directory member, so the two archive paths would
+// write structurally different tars for the same tree.
+func TestArchiveKeepsDirectoryEntriesUnderAWantedSet(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "data", "fg-01.bin"), "PAYLOAD")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+
+	wanted := WantedFiles{
+		"setup.exe":      int64(len("SETUP")),
+		"data/fg-01.bin": int64(len("PAYLOAD")),
+	}
+	dest := ArchiveDest(filepath.Join(root, "vault", "Days Gone"))
+	if err := Archive(src, dest, wanted); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := readTar(t, dest)
+	if _, ok := got["data/"]; !ok {
+		t.Errorf("tar = %v, want the data/ directory entry present", got)
+	}
+	if got["data/fg-01.bin"] != "PAYLOAD" || got["setup.exe"] != "SETUP" {
+		t.Errorf("tar = %v, want both wanted files", got)
+	}
+}

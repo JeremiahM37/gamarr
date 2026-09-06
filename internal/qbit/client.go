@@ -177,7 +177,11 @@ func (c *Client) GetTorrents(category string) ([]Torrent, error) {
 	return c.doGetJSON(u)
 }
 
-// GetTorrentFiles returns the file list for a torrent.
+// GetTorrentFiles returns the file list for a torrent. A nil return means the
+// list could not be read, which callers cannot tell apart from a torrent that
+// reports no files - so every exit that loses the answer says so in the log.
+// Callers deciding what to keep on disk must treat nil as "unknown", not as
+// "nothing was selected".
 func (c *Client) GetTorrentFiles(hash string) []TorrentFile {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -186,6 +190,7 @@ func (c *Client) GetTorrentFiles(hash string) []TorrentFile {
 	u := fmt.Sprintf("%s/api/v2/torrents/files?hash=%s", c.baseURL, hash)
 	resp, err := c.doGet(u)
 	if err != nil {
+		slog.Error("qBittorrent file list unreadable", "hash", hash, "error", err)
 		return nil
 	}
 	defer resp.Body.Close()
@@ -194,21 +199,31 @@ func (c *Client) GetTorrentFiles(hash string) []TorrentFile {
 		c.login()
 		resp2, err := c.doGet(u)
 		if err != nil {
+			slog.Error("qBittorrent file list unreadable after reauth", "hash", hash, "error", err)
 			return nil
 		}
 		defer resp2.Body.Close()
 		if !is2xx(resp2.StatusCode) {
+			slog.Error("qBittorrent file list rejected after reauth", "hash", hash, "status", resp2.StatusCode)
 			return nil
 		}
-		var files []TorrentFile
-		json.NewDecoder(resp2.Body).Decode(&files)
-		return files
+		return decodeTorrentFiles(hash, resp2.Body)
 	}
 	if !is2xx(resp.StatusCode) {
+		slog.Error("qBittorrent file list rejected", "hash", hash, "status", resp.StatusCode)
 		return nil
 	}
+	return decodeTorrentFiles(hash, resp.Body)
+}
+
+// decodeTorrentFiles keeps a malformed body from reaching a caller as an empty
+// selection, which would read as "the user wanted none of this".
+func decodeTorrentFiles(hash string, body io.Reader) []TorrentFile {
 	var files []TorrentFile
-	json.NewDecoder(resp.Body).Decode(&files)
+	if err := json.NewDecoder(body).Decode(&files); err != nil {
+		slog.Error("qBittorrent file list undecodable", "hash", hash, "error", err)
+		return nil
+	}
 	return files
 }
 

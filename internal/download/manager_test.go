@@ -1438,6 +1438,9 @@ func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 		Name: "The Witcher 3 [FitGirl Repack]", Hash: "w3-hash", Progress: 1.0,
 		SavePath: cfg.QBSavePath, ContentPath: published,
 	}})
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "The Witcher 3 [FitGirl Repack]/setup.exe", Size: int64(len("installer")), Priority: 1},
+	})
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{
 		"status": "downloading", "title": "The Witcher 3 [FitGirl Repack]", "info_hash": "w3-hash",
