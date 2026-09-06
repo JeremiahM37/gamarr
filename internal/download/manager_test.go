@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"gamarr/internal/fileops"
 	"gamarr/internal/platform"
 	"gamarr/internal/qbit"
 )
@@ -1437,6 +1438,9 @@ func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 		Name: "The Witcher 3 [FitGirl Repack]", Hash: "w3-hash", Progress: 1.0,
 		SavePath: cfg.QBSavePath, ContentPath: published,
 	}})
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "The Witcher 3 [FitGirl Repack]/setup.exe", Size: int64(len("installer")), Priority: 1},
+	})
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{
 		"status": "downloading", "title": "The Witcher 3 [FitGirl Repack]", "info_hash": "w3-hash",
@@ -1444,12 +1448,12 @@ func TestImportRetriesWhenTheClientMovesThePayloadMidWalk(t *testing.T) {
 
 	realArchive := archive
 	attempts := 0
-	archive = func(src, dest string) error {
+	archive = func(src, dest string, wanted fileops.WantedFiles) error {
 		attempts++
 		if attempts == 1 {
 			return &fs.PathError{Op: "lstat", Path: filepath.Join(src, "fg-02.bin"), Err: os.ErrNotExist}
 		}
-		return realArchive(src, dest)
+		return realArchive(src, dest, wanted)
 	}
 	t.Cleanup(func() { archive = realArchive })
 

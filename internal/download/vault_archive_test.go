@@ -2,6 +2,7 @@ package download
 
 import (
 	"archive/tar"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -159,7 +160,7 @@ func TestOrganizeGameCompletesWhenTheArchiveIsAlreadyThere(t *testing.T) {
 	// A real archive of this content, not a stand-in: the accept has to be
 	// distinguishable from any file happening to sit at that name.
 	staged := filepath.Join(t.TempDir(), "staged.tar")
-	if err := fileops.Archive(content, staged); err != nil {
+	if err := fileops.Archive(content, staged, nil); err != nil {
 		t.Fatalf("build fixture archive: %v", err)
 	}
 	published := filepath.Join(cfg.GamesVaultPath, "Recovered Game.tar")
@@ -207,6 +208,13 @@ func TestArchiveImportHonoursMoveMode(t *testing.T) {
 	writeFileT(t, filepath.Join(content, "fg-01.bin"), []byte(strings.Repeat("payload", 512)))
 
 	qm := newQbitMock(t)
+	// A torrent the client can be asked about: dropping the download rests on
+	// checking the archive against the selection, so a hash whose file list
+	// does not read is deliberately not enough to move.
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Moved Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+		{Name: "Moved Game/fg-01.bin", Size: int64(len(strings.Repeat("payload", 512))), Priority: 1},
+	})
 	m := New(cfg, newTestJobs(t), qm.client())
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
@@ -254,7 +262,9 @@ func TestArchiveImportReportsACopyUnderPreservingModes(t *testing.T) {
 // The archive is the only thing that authorises dropping the download, so a
 // verify that fails has to keep it even under move.
 func TestArchiveImportKeepsTheDownloadWhenVerifyFails(t *testing.T) {
-	verifyArchive = func(string, string) error { return errors.New("cannot read the published archive") }
+	verifyArchive = func(string, string, fileops.WantedFiles) error {
+		return errors.New("cannot read the published archive")
+	}
 	t.Cleanup(func() { verifyArchive = fileops.VerifyArchive })
 
 	cfg := newTestConfig(t)
@@ -297,7 +307,7 @@ func TestArchiveAlreadyInVaultKeepsTheDownload(t *testing.T) {
 	// A real archive of this content, so the accept rests on the census rather
 	// than on something merely sitting at the name.
 	staged := filepath.Join(t.TempDir(), "staged.tar")
-	if err := fileops.Archive(content, staged); err != nil {
+	if err := fileops.Archive(content, staged, nil); err != nil {
 		t.Fatalf("build fixture archive: %v", err)
 	}
 	if err := os.Rename(staged, filepath.Join(cfg.GamesVaultPath, "Stored Game.tar")); err != nil {
@@ -561,7 +571,7 @@ func TestOrganizeNZBCompletesWhenTheArchiveIsAlreadyThere(t *testing.T) {
 	writeFileT(t, filepath.Join(storage, "fg-01.bin"), []byte(strings.Repeat("payload", 512)))
 
 	staged := filepath.Join(t.TempDir(), "staged.tar")
-	if err := fileops.Archive(storage, staged); err != nil {
+	if err := fileops.Archive(storage, staged, nil); err != nil {
 		t.Fatalf("build fixture archive: %v", err)
 	}
 	published := filepath.Join(cfg.GamesVaultPath, "PC Game.tar")
@@ -657,5 +667,171 @@ func TestOrganizeNZBCompletesFromExistingArchive(t *testing.T) {
 	}
 	if !m.Jobs().LibraryHasSourceID("nzb:" + dest) {
 		t.Error("existing archive was not tracked in the library")
+	}
+}
+
+// The wanted set comes from the client's priorities at organize time, so a
+// deselected pack is excluded whatever its name - including one that carries
+// the client's partial suffix after a late deselection left real bytes in it.
+func TestOrganizeGameArchivesOnlyPriorityWantedFiles(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Filtered Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(content, "fg-01.bin"), []byte("payload"))
+	writeFileT(t, filepath.Join(content, "fg-02.bin.!qB"), []byte("leftover fragment"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Filtered Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+		{Name: "Filtered Game/fg-01.bin", Size: int64(len("payload")), Priority: 1},
+		{Name: "Filtered Game/fg-02.bin.!qB", Size: int64(len("leftover fragment")), Priority: 0},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "pf1", ContentPath: content}
+	m.organizeGame(jobID, torrent, "PC", "", true)
+
+	got := tarEntries(t, filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar"))
+	if got["setup.exe"] != "installer" || got["fg-01.bin"] != "payload" {
+		t.Errorf("archive contents = %v, want the wanted files", got)
+	}
+	if _, ok := got["fg-02.bin.!qB"]; ok {
+		t.Error("the deselected fragment was archived despite priority 0")
+	}
+
+	// Under move the delete only fires after verify passed against the wanted
+	// set - if the verify counted excluded files it would fail and degrade to
+	// a keeping copy, so the delete call is the pin on that wiring.
+	calls := qm.deleteCalls()
+	if len(calls) != 1 || calls[0].hash != "pf1" || !calls[0].deleteFiles {
+		t.Errorf("delete calls = %+v, want the torrent deleted with its files after a verified move", calls)
+	}
+
+	// The set is recorded in the sidecar for later occupancy and verify checks.
+	sidecar, err := os.ReadFile(filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar.gamarr.json"))
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(sidecar, &meta); err != nil {
+		t.Fatalf("parse sidecar: %v", err)
+	}
+	if _, ok := meta["wanted_files"]; !ok {
+		t.Error("sidecar does not record the wanted set")
+	}
+	if _, ok := meta["wanted_bytes"]; !ok {
+		t.Error("sidecar does not record the wanted byte total")
+	}
+}
+
+// Crash-recovery face: a restart after publishing must complete the import,
+// and the accept has to measure the wanted subset, not the whole tree - the
+// deselected fragment on disk is not part of what the tar stands in for.
+func TestOrganizeGameAcceptsAnOccupiedSubsetTar(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Filtered Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(content, "fg-01.bin"), []byte("payload"))
+	// A multi-megabyte deselected fragment: big enough that an occupancy check
+	// against the WHOLE tree would refuse the published subset tar.
+	fragment := make([]byte, 5*1024*1024)
+	writeFileT(t, filepath.Join(content, "fg-02.bin.!qB"), fragment)
+
+	// The tar of the wanted subset, already published by a crashed attempt.
+	staged := filepath.Join(t.TempDir(), "staged")
+	writeFileT(t, filepath.Join(staged, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(staged, "fg-01.bin"), []byte("payload"))
+	published := filepath.Join(cfg.GamesVaultPath, "Filtered Game.tar")
+	if err := fileops.Archive(staged, published, nil); err != nil {
+		t.Fatalf("build the crashed attempt's tar: %v", err)
+	}
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Filtered Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+		{Name: "Filtered Game/fg-01.bin", Size: int64(len("payload")), Priority: 1},
+		{Name: "Filtered Game/fg-02.bin.!qB", Size: int64(len(fragment)), Priority: 0},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	torrent := &qbit.Torrent{Name: "Filtered Game", Hash: "occ1", ContentPath: content}
+	m.organizeGame(jobID, torrent, "PC", "", true)
+
+	job := waitJobStatus(t, jobs, jobID, "completed", minPollTimeout)
+	if detail, _ := job["detail"].(string); detail != "Copied to GameVault" {
+		t.Errorf("detail = %q, want the occupancy accept's copy", detail)
+	}
+}
+
+// The recorded set describes the archive only: a plain folder import writes no
+// tar, so its sidecar must not carry wanted paths that point at nothing.
+func TestFolderImportSidecarRecordsNoWantedSet(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = false
+	jobs := newTestJobs(t)
+
+	content := filepath.Join(t.TempDir(), "Plain Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+
+	qm := newQbitMock(t)
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Plain Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+	})
+	m := New(cfg, jobs, qm.client())
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	torrent := &qbit.Torrent{Name: "Plain Game", Hash: "plain1", ContentPath: content}
+	m.organizeGame(jobID, torrent, "PC", "", true)
+
+	waitJobStatus(t, jobs, jobID, "completed", minPollTimeout)
+	sidecar, err := os.ReadFile(filepath.Join(cfg.GamesVaultPath, "Plain Game", ".gamarr.json"))
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if strings.Contains(string(sidecar), "wanted_files") {
+		t.Error("a folder import's sidecar recorded an archive's wanted set")
+	}
+}
+
+// A torrent whose file list will not read leaves the archive a guess: the
+// placeholders qBittorrent leaves for deselected files are indistinguishable
+// from real content without the priorities. VerifyArchive counts the same files
+// the archive was written from, so it confirms that guess against itself and
+// passes. Move must not rest on it - the download stays, which costs disk
+// rather than content.
+func TestArchiveImportKeepsTheDownloadWhenTheFileListWillNotRead(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	cfg.ImportMode = fileops.ModeMove
+
+	content := filepath.Join(t.TempDir(), "Unread Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(content, "fg-02.bin.!qB"), []byte("deselected fragment"))
+
+	qm := newQbitMock(t)
+	// The torrent exists, but /torrents/files answers with nothing.
+	qm.setFiles(nil)
+	m := New(cfg, newTestJobs(t), qm.client())
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Unread Game", Hash: "ur1", ContentPath: content}, "PC", "", true)
+
+	if calls := qm.deleteCalls(); len(calls) != 0 {
+		t.Fatalf("delete calls = %+v, want none: the archive was never confirmed", calls)
+	}
+	if _, err := os.Stat(filepath.Join(content, "setup.exe")); err != nil {
+		t.Errorf("source should be left in place: %v", err)
 	}
 }

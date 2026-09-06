@@ -496,7 +496,8 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	// form that can reach both arms.
 	var importMode fileops.Mode
 	if isPC {
-		dest, mode, err := m.importToVault(contentPath)
+		wanted, selectionKnown := m.wantedFiles(torrent)
+		dest, mode, archived, err := m.importToVault(contentPath, wanted, selectionKnown)
 		importMode = mode
 		if err != nil {
 			m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -510,7 +511,16 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "completed", "detail": importDetail(mode, "GameVault"),
 		})
-		writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
+		// The set describes the archive only: a plain folder import writes no
+		// tar, so recording wanted paths beside one would be fiction.
+		if archived && wanted != nil {
+			writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent", map[string]interface{}{
+				"wanted_files": wanted,
+				"wanted_bytes": wanted.WantedBytes(),
+			})
+		} else {
+			writeMetadataSidecar(dest, torrentName, platf, platSlug, isPC, "torrent")
+		}
 		m.TrackInLibrary(torrentName, platf, platSlug, isPC, dest, 0, "torrent", "prowlarr", "torrent:"+torrentHash)
 		m.jobs.LogActivity("download_completed", torrentName, "Organized to GameVault", jobID, nil)
 		slog.Info("PC game organized", "name", sanitizeLog(torrentName), "dest", sanitizeLog(dest))
@@ -558,34 +568,34 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 // source-preserving mode reports one and the torrent is left seedable; under
 // move the download is dropped, but only once the published archive is
 // confirmed to stand in for it.
-func (m *Manager) importToVault(src string) (string, fileops.Mode, error) {
+func (m *Manager) importToVault(src string, wanted fileops.WantedFiles, selectionKnown bool) (dest string, mode fileops.Mode, archived bool, err error) {
 	base := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(src)))
 
 	// Occupancy is decided before either branch, and both take the same answer.
 	// Deciding it per branch is how the archive path came to refuse a duplicate
 	// while the plain path stored the same game a second time beside it.
-	if occ, done, occupied := acceptOccupiedVault(base, src); occupied {
+	if occ, done, occupied := acceptOccupiedVault(base, src, wanted); occupied {
 		if done {
 			// Copy however the import is configured. The occupant is only known
 			// to be big enough to be an archive of src, which cannot tell this
 			// build from another of the same game, so honouring move here would
 			// drop a newer download and keep the older build in the library.
-			return occ, fileops.ModeCopy, nil
+			return occ, fileops.ModeCopy, false, nil
 		}
-		return occ, fileops.ModeCopy, fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, occ)
+		return occ, fileops.ModeCopy, false, fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, occ)
 	}
 
 	if m.vaultArchiveEnabled() && fileops.Archivable(src) {
 		dest := fileops.ArchiveDest(base)
-		if err := archive(src, dest); err != nil {
+		if err := archive(src, dest, wanted); err != nil {
 			slog.Error("vault archive failed, download left in place",
 				"src", sanitizeLog(src), "dest", sanitizeLog(dest), "error", err)
-			return dest, fileops.ModeCopy, err
+			return dest, fileops.ModeCopy, false, err
 		}
-		return dest, m.archivedImportMode(dest, src), nil
+		return dest, m.archivedImportMode(dest, src, wanted, selectionKnown), true, nil
 	}
-	mode, err := m.importContent(src, base)
-	return base, mode, err
+	mode, err = m.importContent(src, base)
+	return base, mode, false, err
 }
 
 // verifyArchive indirects fileops.VerifyArchive so a test can fail the check
@@ -603,20 +613,70 @@ var archive = fileops.Archive
 // A mode that drops the source needs the published archive confirmed to stand
 // in for it first. Failing that the import counts as a copy and the download
 // stays, which costs disk rather than content.
-func (m *Manager) archivedImportMode(dest, src string) fileops.Mode {
+func (m *Manager) archivedImportMode(dest, src string, wanted fileops.WantedFiles, selectionKnown bool) fileops.Mode {
 	mode := m.importOptions().Mode
+	if !selectionKnown {
+		// VerifyArchive counts the same files the archive was written from, so
+		// with no selection to check them against it confirms a guess against
+		// itself and passes whatever was written. That is not the confirmation
+		// dropping the download is supposed to rest on.
+		slog.Error("keeping the download: its file selection could not be read, so the archive cannot be confirmed",
+			"dest", sanitizeLog(dest), "src", sanitizeLog(src))
+		return fileops.ModeCopy
+	}
 	if mode.PreservesSource() {
 		// The archive was written, not linked, so a copy is what happened. Every
 		// preserving mode takes the same finishTorrent branch, so this changes
 		// only the verb the UI reports, and it makes it true.
 		return fileops.ModeCopy
 	}
-	if err := verifyArchive(dest, src); err != nil {
+	if err := verifyArchive(dest, src, wanted); err != nil {
 		slog.Error("keeping the download: the vault archive cannot be confirmed to stand in for it",
 			"dest", sanitizeLog(dest), "error", err)
 		return fileops.ModeCopy
 	}
 	return mode
+}
+
+// wantedFiles reads the client's per-file priorities at organize time and
+// returns what the archive should hold, keyed by path relative to src, with
+// sizes. Torrent file names carry the torrent's own folder as their first
+// component, which is what src's basename is. A nil result means no selection
+// information and the archive then includes everything.
+//
+// The second return separates the two ways that happens. There is no torrent
+// behind a usenet or DDL download, so including everything is the whole of the
+// intent and the answer is known. A torrent whose file list would not read is
+// a different matter: the placeholders qBittorrent leaves for deselected files
+// are indistinguishable from real content without the priorities, so what
+// lands in the archive is a guess, and nothing may drop the source on it.
+func (m *Manager) wantedFiles(torrent *qbit.Torrent) (fileops.WantedFiles, bool) {
+	if torrent.Hash == "" {
+		return nil, true
+	}
+	files := m.qb.GetTorrentFiles(torrent.Hash)
+	if len(files) == 0 {
+		slog.Error("torrent file list unavailable, importing without a selection",
+			"hash", torrent.Hash, "name", sanitizeLog(torrent.Name))
+		return nil, false
+	}
+	prefix := torrent.Name + "/"
+	wanted := fileops.WantedFiles{}
+	for _, f := range files {
+		if f.Priority <= 0 {
+			continue
+		}
+		rel := strings.TrimPrefix(f.Name, prefix)
+		if rel == f.Name {
+			rel = filepath.Base(f.Name)
+		}
+		wanted[rel] = f.Size
+	}
+	if len(wanted) == 0 {
+		// Every file deselected. Nothing was asked for, so nothing is missing.
+		return nil, true
+	}
+	return wanted, true
 }
 
 // acceptOccupiedVault decides what an already-occupied vault destination means
@@ -631,12 +691,12 @@ func (m *Manager) archivedImportMode(dest, src string) fileops.Mode {
 // "Something is at this name" also covers a stale archive of another build, a
 // truncated leftover and a hand-placed file, and accepting those reports content
 // as stored that was never stored.
-func acceptOccupiedVault(base, src string) (dest string, done, occupied bool) {
+func acceptOccupiedVault(base, src string, wanted fileops.WantedFiles) (dest string, done, occupied bool) {
 	occ, exists := fileops.VaultOccupied(base)
 	if !exists {
 		return "", false, false
 	}
-	if fileops.ArchiveHolds(occ, src) {
+	if fileops.ArchiveHolds(occ, src, wanted) {
 		// Either a crash lost the job update after publishing, or a collision was
 		// swallowed. This is the only trace of either.
 		slog.Warn("vault already holds this game, treating the import as done",
@@ -1735,7 +1795,7 @@ func extractArchives(directory string) []string {
 	return extracted
 }
 
-func writeMetadataSidecar(destPath, title, platf, platSlug string, isPC bool, sourceType string) {
+func writeMetadataSidecar(destPath, title, platf, platSlug string, isPC bool, sourceType string, extras ...map[string]interface{}) {
 	meta := map[string]interface{}{
 		"title":         title,
 		"platform":      platf,
@@ -1743,6 +1803,11 @@ func writeMetadataSidecar(destPath, title, platf, platSlug string, isPC bool, so
 		"is_pc":         isPC,
 		"source":        sourceType,
 		"organized_at":  time.Now().UTC().Format(time.RFC3339),
+	}
+	for _, extra := range extras {
+		for k, v := range extra {
+			meta[k] = v
+		}
 	}
 	data, _ := json.MarshalIndent(meta, "", "  ")
 	var sidecar string

@@ -130,7 +130,7 @@ func TestArchiveHoldsEveryInputFile(t *testing.T) {
 
 	vault := filepath.Join(root, "vault")
 	dest := ArchiveDest(filepath.Join(vault, "007 First Light"))
-	if err := Archive(src, dest); err != nil {
+	if err := Archive(src, dest, nil); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -157,31 +157,134 @@ func TestArchiveHoldsEveryInputFile(t *testing.T) {
 	}
 }
 
-// A deselected pack is a zero-filled placeholder at its full preallocated
-// extent carrying the client's partial suffix. It never belongs in the vault
-// archive, and the census that authorises dropping the download has to count
-// the tar the same way the walk wrote it.
-func TestArchiveSkipsQbPlaceholders(t *testing.T) {
+// The wanted set is the archive's whole selection: only the paths it holds are
+// archived, whatever a file's name says - a deselected fragment and a real
+// file that merely wears the client's partial suffix differ by priority, not
+// by name.
+func TestArchiveIncludesOnlyWantedFiles(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "Days Gone")
 	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
 	writeFile(t, filepath.Join(src, "fg-01.bin"), "PART ONE")
-	writeFile(t, filepath.Join(src, "fg-02.bin"+qBPartSuffix), "PLACEHOLDER")
+	writeFile(t, filepath.Join(src, "fg-02.bin"+".!qB"), "FRAGMENT")
+	writeFile(t, filepath.Join(src, "fg-03.bin"), "PART THREE")
+
+	wanted := WantedFiles{
+		"setup.exe":     int64(len("SETUP")),
+		"fg-01.bin":     int64(len("PART ONE")),
+		"fg-03.bin":     int64(len("PART THREE")),
+		"fg-02.bin.!qB": int64(len("FRAGMENT")),
+	}
+	// The deselected fragment is not in the set, whatever its name.
+	delete(wanted, "fg-02.bin.!qB")
 
 	dest := ArchiveDest(filepath.Join(root, "vault", "Days Gone"))
-	if err := Archive(src, dest); err != nil {
+	if err := Archive(src, dest, wanted); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
 	got := readTar(t, dest)
-	if _, ok := got["fg-02.bin"+qBPartSuffix]; ok {
-		t.Error("tar carries the deselected pack placeholder")
+	if _, ok := got["fg-02.bin.!qB"]; ok {
+		t.Error("tar carries a file the wanted set excludes")
 	}
-	if got["setup.exe"] != "SETUP" || got["fg-01.bin"] != "PART ONE" {
+	if got["setup.exe"] != "SETUP" || got["fg-01.bin"] != "PART ONE" || got["fg-03.bin"] != "PART THREE" {
 		t.Errorf("tar lost a wanted file: %v", got)
 	}
-	if err := VerifyArchive(dest, src); err != nil {
+	if err := VerifyArchive(dest, src, wanted); err != nil {
 		t.Errorf("VerifyArchive: %v", err)
+	}
+}
+
+// No set means no selection information: every regular file is archived, which
+// is the usenet and DDL paths' contract.
+func TestArchiveWithNoWantedSetIncludesEverything(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+	writeFile(t, filepath.Join(src, "fg-01.bin.!qB"), "PART ONE")
+
+	dest := ArchiveDest(filepath.Join(root, "vault", "Days Gone"))
+	if err := Archive(src, dest, nil); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := readTar(t, dest)
+	if got["setup.exe"] != "SETUP" || got["fg-01.bin.!qB"] != "PART ONE" {
+		t.Errorf("tar = %v, want every file included", got)
+	}
+}
+
+// A wanted file missing from disk must fail the archive loudly. With the set
+// filtering both census and walk, a depleting publish would otherwise publish
+// a silent partial that move mode makes the only copy.
+func TestArchiveRefusesWhenAWantedFileIsMissing(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+	wanted := WantedFiles{
+		"setup.exe": int64(len("SETUP")),
+		"fg-01.bin": int64(len("PART ONE")),
+	}
+
+	vault := filepath.Join(root, "vault")
+	if err := os.MkdirAll(vault, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dest := ArchiveDest(filepath.Join(vault, "Days Gone"))
+	err := Archive(src, dest, wanted)
+	if err == nil {
+		t.Fatal("Archive published a partial subset without the wanted file")
+	}
+	if !strings.Contains(err.Error(), "the wanted set declares") {
+		t.Errorf("error = %v, want the set mismatch named", err)
+	}
+	if names := vaultEntries(t, vault); len(names) != 0 {
+		t.Errorf("vault holds %v, want nothing published", names)
+	}
+}
+
+// A priority>0 file that only wears the placeholder suffix is a real renamed
+// file, and the set archives it by inclusion rather than dropping it by name.
+func TestArchiveIncludesAWantedFileWearingThePlaceholderSuffix(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+	writeFile(t, filepath.Join(src, "fg-02.bin.!qB"), "REAL PAYLOAD")
+
+	wanted := WantedFiles{
+		"setup.exe":     int64(len("SETUP")),
+		"fg-02.bin.!qB": int64(len("REAL PAYLOAD")),
+	}
+	dest := ArchiveDest(filepath.Join(root, "vault", "Days Gone"))
+	if err := Archive(src, dest, wanted); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := readTar(t, dest)
+	if got["fg-02.bin.!qB"] != "REAL PAYLOAD" {
+		t.Error("tar lost a wanted file that wears the placeholder suffix")
+	}
+}
+
+// The sidecar's recorded byte total answers ArchiveHolds when the source is
+// already gone - a restart between publishing and re-organizing.
+func TestArchiveHoldsReadsTheSidecarWhenTheSourceIsGone(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "vault")
+	if err := os.MkdirAll(vault, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	tarPath := filepath.Join(vault, "Game.tar")
+	writeFile(t, tarPath, strings.Repeat("PAYLOAD.", 256))
+	writeFile(t, tarPath+".gamarr.json", `{"wanted_bytes":2048}`)
+
+	if !ArchiveHolds(tarPath, filepath.Join(root, "no-source"), nil) {
+		t.Error("ArchiveHolds rejected an occupant matching the sidecar's recorded bytes")
+	}
+
+	writeFile(t, tarPath+".gamarr.json", `{"wanted_bytes":999999}`)
+	if ArchiveHolds(tarPath, filepath.Join(root, "no-source"), nil) {
+		t.Error("ArchiveHolds accepted an occupant shorter than the sidecar's recorded bytes")
 	}
 }
 
@@ -194,10 +297,10 @@ func twoFileArchive(t *testing.T) (string, string, int64) {
 	writeFile(t, filepath.Join(src, "fg-01.bin"), strings.Repeat("PAYLOAD.", 256))
 
 	dest := ArchiveDest(filepath.Join(root, "vault", "Game"))
-	if err := Archive(src, dest); err != nil {
+	if err := Archive(src, dest, nil); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	_, wantBytes, err := censusOf(src)
+	_, wantBytes, err := censusOf(src, nil)
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
@@ -218,7 +321,7 @@ func TestVerifyArchiveRejectsATruncatedArchive(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if err := VerifyArchive(dest, src); err == nil {
+	if err := VerifyArchive(dest, src, nil); err == nil {
 		t.Error("accepted a truncated archive, which would authorise deleting the only other copy")
 	}
 }
@@ -230,7 +333,7 @@ func TestVerifyArchiveRejectsAHeaderOnlyEntry(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "Game")
 	writeFile(t, filepath.Join(src, "fg-01.bin"), strings.Repeat("PAYLOAD.", 4096))
-	_, wantBytes, err := censusOf(src)
+	_, wantBytes, err := censusOf(src, nil)
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
@@ -255,7 +358,7 @@ func TestVerifyArchiveRejectsAHeaderOnlyEntry(t *testing.T) {
 		t.Fatalf("write archive: %v", err)
 	}
 
-	if err := VerifyArchive(dest, src); err == nil {
+	if err := VerifyArchive(dest, src, nil); err == nil {
 		t.Errorf("accepted a %d-byte archive holding no content as a stand-in for %d bytes",
 			buf.Len(), wantBytes)
 	}
@@ -283,7 +386,7 @@ func TestVerifyArchiveRejectsCorruptionPastTheFirstEntry(t *testing.T) {
 		t.Fatalf("write archive: %v", err)
 	}
 
-	if err := VerifyArchive(dest, src); err == nil {
+	if err := VerifyArchive(dest, src, nil); err == nil {
 		t.Error("accepted an archive destroyed past its first entry")
 	}
 }
@@ -297,7 +400,7 @@ func TestArchiveWritesGNUHeaders(t *testing.T) {
 	writeFile(t, filepath.Join(src, "data", "fg-01.bin"), "PAYLOAD")
 
 	dest := ArchiveDest(filepath.Join(root, "vault", "Game"))
-	if err := Archive(src, dest); err != nil {
+	if err := Archive(src, dest, nil); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -417,10 +520,10 @@ func TestVerifyArchive(t *testing.T) {
 	}
 
 	good := ArchiveDest(filepath.Join(root, "vault", "Game"))
-	if err := Archive(src, good); err != nil {
+	if err := Archive(src, good, nil); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	if err := VerifyArchive(good, src); err != nil {
+	if err := VerifyArchive(good, src, nil); err != nil {
 		t.Errorf("VerifyArchive on a real archive of the source: %v", err)
 	}
 
@@ -429,7 +532,7 @@ func TestVerifyArchive(t *testing.T) {
 	smallSrc := filepath.Join(root, "Small")
 	writeFile(t, filepath.Join(smallSrc, "setup.exe"), "SETUP")
 	short := ArchiveDest(filepath.Join(root, "other-vault", "Small"))
-	if err := Archive(smallSrc, short); err != nil {
+	if err := Archive(smallSrc, short, nil); err != nil {
 		t.Fatalf("Archive the smaller source: %v", err)
 	}
 
@@ -446,7 +549,7 @@ func TestVerifyArchive(t *testing.T) {
 		"a directory":                         adir,
 		"nothing at that name":                filepath.Join(root, "absent.tar"),
 	} {
-		if err := VerifyArchive(path, src); err == nil {
+		if err := VerifyArchive(path, src, nil); err == nil {
 			t.Errorf("VerifyArchive accepted %s, which would authorise dropping the source", name)
 		}
 	}
@@ -461,7 +564,7 @@ func TestArchiveLeavesSourceInPlace(t *testing.T) {
 	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
 
 	dest := ArchiveDest(filepath.Join(root, "vault", "Game"))
-	if err := Archive(src, dest); err != nil {
+	if err := Archive(src, dest, nil); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -483,7 +586,7 @@ func TestArchiveFailingMidWriteLeavesNothingBehind(t *testing.T) {
 
 	vault := filepath.Join(root, "vault")
 	dest := ArchiveDest(filepath.Join(vault, "Game"))
-	err := Archive(src, dest)
+	err := Archive(src, dest, nil)
 	if err == nil {
 		t.Fatal("want an error when the tree holds an irregular file")
 	}
@@ -520,7 +623,7 @@ func TestArchiveRefusesAnEmptyResult(t *testing.T) {
 
 	for _, src := range []string{empty, linked} {
 		dest := ArchiveDest(filepath.Join(root, "vault", filepath.Base(src)))
-		if err := Archive(src, dest); err == nil {
+		if err := Archive(src, dest, nil); err == nil {
 			t.Errorf("Archive(%s) = nil, want an error rather than an empty tar", src)
 		}
 		if _, err := os.Lstat(dest); err == nil {
@@ -540,12 +643,12 @@ func TestArchiveRefusesAnOccupiedVault(t *testing.T) {
 		writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
 
 		dest := ArchiveDest(filepath.Join(root, "vault", "Game"))
-		if err := Archive(src, dest); err != nil {
+		if err := Archive(src, dest, nil); err != nil {
 			t.Fatalf("first Archive: %v", err)
 		}
 		before := read(t, dest)
 
-		if err := Archive(src, dest); err == nil {
+		if err := Archive(src, dest, nil); err == nil {
 			t.Error("second Archive = nil, want a refusal")
 		}
 		if read(t, dest) != before {
@@ -560,7 +663,7 @@ func TestArchiveRefusesAnOccupiedVault(t *testing.T) {
 		writeFile(t, filepath.Join(root, "vault", "Game", "setup.exe"), "OLD")
 
 		dest := ArchiveDest(filepath.Join(root, "vault", "Game"))
-		if err := Archive(src, dest); err == nil {
+		if err := Archive(src, dest, nil); err == nil {
 			t.Error("Archive = nil, want a refusal: the vault already holds the folder")
 		}
 		if _, err := os.Lstat(dest); err == nil {
@@ -586,7 +689,7 @@ func TestArchiveConcurrentSameDestination(t *testing.T) {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			errs[i] = Archive(filepath.Join(root, "src"+name), dest)
+			errs[i] = Archive(filepath.Join(root, "src"+name), dest, nil)
 		}(i, name)
 	}
 	wg.Wait()
@@ -624,7 +727,7 @@ func TestArchiveIsReadableByOtherUsers(t *testing.T) {
 	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
 
 	dest := ArchiveDest(filepath.Join(root, "vault", "Game"))
-	if err := Archive(src, dest); err != nil {
+	if err := Archive(src, dest, nil); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -646,11 +749,11 @@ func TestArchiveRefusesWhenTheCountsDisagree(t *testing.T) {
 	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
 
 	real := censusOf
-	censusOf = func(string) (int64, int64, error) { return 7, 99999, nil }
+	censusOf = func(string, WantedFiles) (int64, int64, error) { return 7, 99999, nil }
 	t.Cleanup(func() { censusOf = real })
 
 	dest := ArchiveDest(filepath.Join(root, "vault", "Game"))
-	if err := Archive(src, dest); err == nil {
+	if err := Archive(src, dest, nil); err == nil {
 		t.Fatal("Archive = nil, want an error when the archive does not match the source")
 	}
 	if _, err := os.Lstat(dest); err == nil {
@@ -663,7 +766,7 @@ func TestArchiveRefusesWhenTheCountsDisagree(t *testing.T) {
 
 func TestArchiveMissingSource(t *testing.T) {
 	root := t.TempDir()
-	err := Archive(filepath.Join(root, "nope"), ArchiveDest(filepath.Join(root, "vault", "nope")))
+	err := Archive(filepath.Join(root, "nope"), ArchiveDest(filepath.Join(root, "vault", "nope")), nil)
 	if err == nil {
 		t.Fatal("want an error archiving a source that does not exist")
 	}
@@ -714,5 +817,79 @@ func TestSweepPartials(t *testing.T) {
 	}
 	if _, err := os.Lstat(keep); err != nil {
 		t.Error("a real archive was swept")
+	}
+}
+
+// A wanted set whose keys do not line up with the walk censuses nothing, and a
+// zero byte total is the absence of an answer rather than one. Comparing an
+// occupant against it asks only whether the file is at least zero bytes long,
+// which every file is, so a truncated leftover would read as a finished import.
+func TestArchiveHoldsRejectsAnOccupantWhenTheCensusMatchesNothing(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "setup.exe"), strings.Repeat("payload", 512))
+
+	stub := filepath.Join(root, "Days Gone.tar")
+	writeFile(t, stub, "x")
+
+	// Keyed the way a torrent with no common root reports its files: full
+	// names, which the walk's relative paths never match.
+	wanted := WantedFiles{"Days Gone/setup.exe": int64(len(strings.Repeat("payload", 512)))}
+	if _, bytes, err := census(src, wanted); err != nil || bytes != 0 {
+		t.Fatalf("census = %d bytes, err %v, want the degenerate 0 this pins", bytes, err)
+	}
+	if ArchiveHolds(stub, src, wanted) {
+		t.Error("a 1-byte stub was accepted as an archive of a 3584-byte source")
+	}
+}
+
+// A single-file source is walked as itself, so its own relative path is ".",
+// while the client keys it by name. Left unreconciled the census comes back
+// empty and every occupant satisfies the size check.
+func TestCensusOfASingleFileSourceKeysItByName(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Game.iso")
+	writeFile(t, src, "DISC IMAGE")
+
+	wanted := WantedFiles{"Game.iso": int64(len("DISC IMAGE"))}
+	files, bytes, err := census(src, wanted)
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if files != 1 || bytes != int64(len("DISC IMAGE")) {
+		t.Fatalf("census = %d files / %d bytes, want 1 / %d", files, bytes, len("DISC IMAGE"))
+	}
+
+	stub := filepath.Join(root, "Game.iso.occupant")
+	writeFile(t, stub, "x")
+	if ArchiveHolds(stub, src, wanted) {
+		t.Error("a 1-byte occupant was accepted as an archive of a single-file source")
+	}
+}
+
+// The set names files, never the directories holding them. Filtering a
+// directory on it drops every directory member, so the two archive paths would
+// write structurally different tars for the same tree.
+func TestArchiveKeepsDirectoryEntriesUnderAWantedSet(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Days Gone")
+	writeFile(t, filepath.Join(src, "data", "fg-01.bin"), "PAYLOAD")
+	writeFile(t, filepath.Join(src, "setup.exe"), "SETUP")
+
+	wanted := WantedFiles{
+		"setup.exe":      int64(len("SETUP")),
+		"data/fg-01.bin": int64(len("PAYLOAD")),
+	}
+	dest := ArchiveDest(filepath.Join(root, "vault", "Days Gone"))
+	if err := Archive(src, dest, wanted); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := readTar(t, dest)
+	if _, ok := got["data/"]; !ok {
+		t.Errorf("tar = %v, want the data/ directory entry present", got)
+	}
+	if got["data/fg-01.bin"] != "PAYLOAD" || got["setup.exe"] != "SETUP" {
+		t.Errorf("tar = %v, want both wanted files", got)
 	}
 }
