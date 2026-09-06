@@ -27,6 +27,7 @@ type Config struct {
 	QBURL           string
 	QBUser          string
 	QBPass          string
+	QBAPIKey        string // Bearer key (qBittorrent ≥ 5.2); preferred over user/pass when set
 	QBSavePath      string
 	QBCategory      string
 	QBContainerName string
@@ -177,6 +178,7 @@ func Load() *Config {
 		QBURL:           envStrAllowEmpty("QB_URL", "http://qbittorrent:8080"),
 		QBUser:          envStr("QB_USER", "admin"),
 		QBPass:          envStr("QB_PASS", ""),
+		QBAPIKey:        envStr("QB_API_KEY", ""),
 		QBSavePath:      envStr("QB_SAVE_PATH", "/data/incoming/"),
 		QBCategory:      envStr("QB_CATEGORY", "games"),
 		QBContainerName: envStr("QB_CONTAINER_NAME", "qbittorrent"),

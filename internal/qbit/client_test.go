@@ -440,3 +440,67 @@ func TestStopTorrent_ReauthOn403(t *testing.T) {
 		t.Error("expected StopTorrent to succeed after reauth")
 	}
 }
+
+func TestLogin_APIKey(t *testing.T) {
+	var sawAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			t.Error("API key auth must not call /auth/login")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == "/api/v2/app/version" {
+			sawAuth = r.Header.Get("Authorization")
+			w.Write([]byte("v5.2.0"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_testkey0123456789abcdefghij")
+	if !c.Login() {
+		t.Fatal("expected API key login to succeed")
+	}
+	if sawAuth != "Bearer qbt_testkey0123456789abcdefghij" {
+		t.Errorf("Authorization=%q", sawAuth)
+	}
+}
+
+func TestLogin_APIKey_Rejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_bad")
+	if c.Login() {
+		t.Error("expected API key login to fail")
+	}
+}
+
+func TestAddTorrent_APIKey(t *testing.T) {
+	var sawAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/app/version" {
+			w.Write([]byte("v5.2.0"))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/add" {
+			sawAuth = r.Header.Get("Authorization")
+			w.Write([]byte("Ok."))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_testkey0123456789abcdefghij")
+	if !c.AddTorrent("magnet:?xt=urn:btih:abc", "t", "/data", "console") {
+		t.Fatal("expected AddTorrent to succeed")
+	}
+	if sawAuth != "Bearer qbt_testkey0123456789abcdefghij" {
+		t.Errorf("Authorization=%q", sawAuth)
+	}
+}
+

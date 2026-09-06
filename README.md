@@ -303,8 +303,9 @@ shows whether the right trackers were consulted.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QB_URL` | `http://qbittorrent:8080` | qBittorrent Web UI URL |
-| `QB_USER` | `admin` | qBittorrent username |
-| `QB_PASS` | | qBittorrent password |
+| `QB_USER` | `admin` | qBittorrent username (cookie auth) |
+| `QB_PASS` | | qBittorrent password (cookie auth) |
+| `QB_API_KEY` | | qBittorrent ≥ 5.2 Bearer API key; when set, used instead of user/pass |
 | `QB_SAVE_PATH` | `/data/incoming/` | Download save path |
 | `QB_CATEGORY` | `games` | Torrent category. Gamarr only ever enumerates torrents in this category, so a dedicated one keeps it clear of everything else in the client |
 | `TRANSMISSION_URL` | | Transmission RPC URL |
