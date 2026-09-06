@@ -541,8 +541,8 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 	// form that can reach both arms.
 	var importMode fileops.Mode
 	if isPC {
-		wanted := m.wantedFiles(torrent)
-		dest, mode, archived, err := m.importToVault(contentPath, wanted, attempt)
+		wanted, selectionKnown := m.wantedFiles(torrent)
+		dest, mode, archived, err := m.importToVault(contentPath, wanted, selectionKnown, attempt)
 		importMode = mode
 		if err != nil {
 			transient := importTransient(contentPath, err, attempt)
@@ -633,7 +633,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 // source-preserving mode reports one and the torrent is left seedable; under
 // move the download is dropped, but only once the published archive is
 // confirmed to stand in for it.
-func (m *Manager) importToVault(src string, wanted fileops.WantedFiles, attempt int) (dest string, mode fileops.Mode, archived bool, err error) {
+func (m *Manager) importToVault(src string, wanted fileops.WantedFiles, selectionKnown bool, attempt int) (dest string, mode fileops.Mode, archived bool, err error) {
 	base := filepath.Join(m.cfg.GamesVaultPath, sanitizeFilename(filepath.Base(src)))
 
 	// Occupancy is decided before either branch, and both take the same answer.
@@ -657,7 +657,7 @@ func (m *Manager) importToVault(src string, wanted fileops.WantedFiles, attempt 
 				"src", sanitizeLog(src), "dest", sanitizeLog(dest), "error", err)
 			return dest, fileops.ModeCopy, false, err
 		}
-		return dest, m.archivedImportMode(dest, src, wanted), true, nil
+		return dest, m.archivedImportMode(dest, src, wanted, selectionKnown), true, nil
 	}
 	mode, err = m.importContent(src, base)
 	if err != nil && importTransient(src, err, attempt) {
@@ -687,8 +687,17 @@ var fileImport = fileops.Import
 // A mode that drops the source needs the published archive confirmed to stand
 // in for it first. Failing that the import counts as a copy and the download
 // stays, which costs disk rather than content.
-func (m *Manager) archivedImportMode(dest, src string, wanted fileops.WantedFiles) fileops.Mode {
+func (m *Manager) archivedImportMode(dest, src string, wanted fileops.WantedFiles, selectionKnown bool) fileops.Mode {
 	mode := m.importOptions().Mode
+	if !selectionKnown {
+		// VerifyArchive counts the same files the archive was written from, so
+		// with no selection to check them against it confirms a guess against
+		// itself and passes whatever was written. That is not the confirmation
+		// dropping the download is supposed to rest on.
+		slog.Error("keeping the download: its file selection could not be read, so the archive cannot be confirmed",
+			"dest", sanitizeLog(dest), "src", sanitizeLog(src))
+		return fileops.ModeCopy
+	}
 	if mode.PreservesSource() {
 		// The archive was written, not linked, so a copy is what happened. Every
 		// preserving mode takes the same finishTorrent branch, so this changes
@@ -707,15 +716,23 @@ func (m *Manager) archivedImportMode(dest, src string, wanted fileops.WantedFile
 // returns what the archive should hold, keyed by path relative to src, with
 // sizes. Torrent file names carry the torrent's own folder as their first
 // component, which is what src's basename is. A nil result means no selection
-// information - no torrent behind this download, or a client read that came
-// back empty - and the archive then includes everything.
-func (m *Manager) wantedFiles(torrent *qbit.Torrent) fileops.WantedFiles {
+// information and the archive then includes everything.
+//
+// The second return separates the two ways that happens. There is no torrent
+// behind a usenet or DDL download, so including everything is the whole of the
+// intent and the answer is known. A torrent whose file list would not read is
+// a different matter: the placeholders qBittorrent leaves for deselected files
+// are indistinguishable from real content without the priorities, so what
+// lands in the archive is a guess, and nothing may drop the source on it.
+func (m *Manager) wantedFiles(torrent *qbit.Torrent) (fileops.WantedFiles, bool) {
 	if torrent.Hash == "" {
-		return nil
+		return nil, true
 	}
 	files := m.qb.GetTorrentFiles(torrent.Hash)
 	if len(files) == 0 {
-		return nil
+		slog.Error("torrent file list unavailable, importing without a selection",
+			"hash", torrent.Hash, "name", sanitizeLog(torrent.Name))
+		return nil, false
 	}
 	// Multi-file torrents root every name at one folder, but that folder is
 	// the .torrent's internal name, which a magnet's display name - what the
@@ -750,9 +767,10 @@ func (m *Manager) wantedFiles(torrent *qbit.Torrent) fileops.WantedFiles {
 		wanted[rel] = f.Size
 	}
 	if len(wanted) == 0 {
-		return nil
+		// Every file deselected. Nothing was asked for, so nothing is missing.
+		return nil, true
 	}
-	return wanted
+	return wanted, true
 }
 
 // acceptOccupiedVault decides what an already-occupied vault destination means

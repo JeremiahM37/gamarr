@@ -208,6 +208,13 @@ func TestArchiveImportHonoursMoveMode(t *testing.T) {
 	writeFileT(t, filepath.Join(content, "fg-01.bin"), []byte(strings.Repeat("payload", 512)))
 
 	qm := newQbitMock(t)
+	// A torrent the client can be asked about: dropping the download rests on
+	// checking the archive against the selection, so a hash whose file list
+	// does not read is deliberately not enough to move.
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Moved Game/setup.exe", Size: int64(len("installer")), Priority: 1},
+		{Name: "Moved Game/fg-01.bin", Size: int64(len(strings.Repeat("payload", 512))), Priority: 1},
+	})
 	m := New(cfg, newTestJobs(t), qm.client())
 	jobID := newJobID()
 	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
@@ -824,11 +831,14 @@ func TestWantedFilesWithNoCommonRootKeepsFullNames(t *testing.T) {
 	})
 	m := New(cfg, jobs, qm.client())
 
-	got := m.wantedFiles(&qbit.Torrent{
+	got, known := m.wantedFiles(&qbit.Torrent{
 		Name: "Some Long Display Name That Matches Nothing",
 		Hash: "mixed-root", ContentPath: filepath.Join(cfg.QBSavePath, "whatever"),
 	})
 
+	if !known {
+		t.Fatal("selection reported unknown, want it read from the file list")
+	}
 	if got == nil {
 		t.Fatal("wanted set = nil, want the priority-1 names")
 	}
@@ -876,5 +886,37 @@ func TestOccupiedVaultRefusalCarriesNoRetryHint(t *testing.T) {
 	}
 	if detail, _ := job["detail"].(string); strings.Contains(detail, "use Retry") {
 		t.Errorf("detail = %q, want no Retry hint on an occupancy refusal", detail)
+	}
+}
+
+// A torrent whose file list will not read leaves the archive a guess: the
+// placeholders qBittorrent leaves for deselected files are indistinguishable
+// from real content without the priorities. VerifyArchive counts the same files
+// the archive was written from, so it confirms that guess against itself and
+// passes. Move must not rest on it - the download stays, which costs disk
+// rather than content.
+func TestArchiveImportKeepsTheDownloadWhenTheFileListWillNotRead(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.VaultArchiveEnabled = true
+	cfg.ImportMode = fileops.ModeMove
+
+	content := filepath.Join(t.TempDir(), "Unread Game")
+	writeFileT(t, filepath.Join(content, "setup.exe"), []byte("installer"))
+	writeFileT(t, filepath.Join(content, "fg-02.bin.!qB"), []byte("deselected fragment"))
+
+	qm := newQbitMock(t)
+	// The torrent exists, but /torrents/files answers with nothing.
+	qm.setFiles(nil)
+	m := New(cfg, newTestJobs(t), qm.client())
+	jobID := newJobID()
+	m.Jobs().Set(jobID, map[string]interface{}{"status": "organizing", "error": nil})
+
+	m.organizeGame(jobID, &qbit.Torrent{Name: "Unread Game", Hash: "ur1", ContentPath: content}, "PC", "", true, 1)
+
+	if calls := qm.deleteCalls(); len(calls) != 0 {
+		t.Fatalf("delete calls = %+v, want none: the archive was never confirmed", calls)
+	}
+	if _, err := os.Stat(filepath.Join(content, "setup.exe")); err != nil {
+		t.Errorf("source should be left in place: %v", err)
 	}
 }

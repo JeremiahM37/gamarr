@@ -63,8 +63,10 @@ func VaultOccupied(base string) (string, bool) {
 	return "", false
 }
 
-// ArchiveHolds reports whether path could be an archive of src: a regular file
-// at least as large as src's payload.
+// ArchiveHolds reports whether path could be an archive of src's wanted
+// subset: a regular file at least as large as the wanted set declares. The
+// source may already be gone - a restart after publishing - in which case the
+// sidecar's recorded byte total answers for it.
 //
 // A necessary condition, not proof, and that is the point. "Something is at this
 // name" is not evidence that this content was ever published there, and a caller
@@ -72,16 +74,19 @@ func VaultOccupied(base string) (string, bool) {
 // layer that acts on it. An uncompressed tar cannot be smaller than the files it
 // holds, so a short occupant, a directory, or a hand-placed file is definitely
 // not ours.
-// ArchiveHolds reports whether path could be an archive of src's wanted
-// subset: a regular file at least as large as the wanted set declares. The
-// source may already be gone - a restart after publishing - in which case the
-// sidecar's recorded byte total answers for it.
+//
+// A census of zero bytes is not an answer, it is the absence of one, and it
+// arrives whenever the walk and the wanted set disagree about how paths are
+// keyed. Comparing against it asks whether the occupant is at least zero bytes
+// long, which every file is, so the predicate would accept a truncated stub as
+// proof of a finished import. Treat it like a census error and let the sidecar
+// answer instead.
 func ArchiveHolds(path, src string, wanted WantedFiles) bool {
 	fi, err := os.Lstat(path)
 	if err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
-	if _, wantBytes, err := censusOf(src, wanted); err == nil {
+	if _, wantBytes, err := censusOf(src, wanted); err == nil && wantBytes > 0 {
 		return fi.Size() >= wantBytes
 	}
 	if wb := sidecarWantedBytes(path); wb > 0 {
@@ -337,6 +342,12 @@ func census(src string, wanted WantedFiles) (files, bytes int64, err error) {
 		if relErr != nil {
 			return relErr
 		}
+		// Walking a lone regular file yields "." as its own relative path,
+		// while a wanted set keys that file by name. Left as "." it matches
+		// nothing, and the census of a single-file torrent comes back empty.
+		if rel == "." {
+			rel = filepath.Base(src)
+		}
 		if wanted != nil {
 			if _, keep := wanted[rel]; !keep {
 				return nil
@@ -395,7 +406,10 @@ func writeTree(tw *tar.Writer, src string, wanted WantedFiles) (files, bytes int
 		if !filepath.IsLocal(rel) {
 			return fmt.Errorf("unsafe path %q escapes %q", rel, src)
 		}
-		if wanted != nil {
+		// The set names files, never the directories holding them, so filtering
+		// a directory on it drops every directory member from the tar and makes
+		// the two paths write structurally different archives.
+		if wanted != nil && !info.IsDir() {
 			if _, keep := wanted[rel]; !keep {
 				return nil
 			}
