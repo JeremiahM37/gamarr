@@ -101,8 +101,14 @@ func main() {
 	}
 	defer database.Close()
 
-	// Initialize qBittorrent client
-	qb := qbit.New(cfg.QBURL, cfg.QBUser, cfg.QBPass)
+	// Initialize qBittorrent client (API key preferred when set — qB ≥ 5.2).
+	var qb *qbit.Client
+	if cfg.QBAPIKey != "" {
+		qb = qbit.NewWithAPIKey(cfg.QBURL, cfg.QBAPIKey)
+		slog.Info("qBittorrent configured with API key")
+	} else {
+		qb = qbit.New(cfg.QBURL, cfg.QBUser, cfg.QBPass)
+	}
 
 	// Initialize SABnzbd client (optional)
 	var sab *sabnzbd.Client

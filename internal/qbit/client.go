@@ -36,18 +36,30 @@ type TorrentFile struct {
 	Index    int    `json:"index"`
 }
 
-// Client is a qBittorrent API client with session-based cookie auth.
+// Client is a qBittorrent API client. Auth is either a session cookie
+// (username/password) or a Bearer API key (qBittorrent ≥ 5.2).
 type Client struct {
 	mu            sync.Mutex
 	client        *http.Client
 	baseURL       string
 	user          string
 	pass          string
+	apiKey        string
 	authenticated bool
 }
 
-// New creates a new qBittorrent client.
+// New creates a cookie-auth qBittorrent client.
 func New(baseURL, user, pass string) *Client {
+	return newClient(baseURL, user, pass, "")
+}
+
+// NewWithAPIKey creates a Bearer-auth client (qBittorrent ≥ 5.2 WebAPI).
+// See https://github.com/qbittorrent/qBittorrent/wiki/API-Key-Authentication-(≥v5.2.0)
+func NewWithAPIKey(baseURL, apiKey string) *Client {
+	return newClient(baseURL, "", "", apiKey)
+}
+
+func newClient(baseURL, user, pass, apiKey string) *Client {
 	jar, _ := cookiejar.New(nil)
 	return &Client{
 		client: &http.Client{
@@ -57,6 +69,7 @@ func New(baseURL, user, pass string) *Client {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		user:    user,
 		pass:    pass,
+		apiKey:  apiKey,
 	}
 }
 
@@ -68,6 +81,9 @@ func (c *Client) Login() bool {
 }
 
 func (c *Client) login() bool {
+	if c.apiKey != "" {
+		return c.probeAPIKey()
+	}
 	data := url.Values{
 		"username": {c.user},
 		"password": {c.pass},
@@ -87,6 +103,56 @@ func (c *Client) login() bool {
 	c.authenticated = string(body) == "Ok." ||
 		(resp.StatusCode == http.StatusNoContent && len(body) == 0)
 	return c.authenticated
+}
+
+// probeAPIKey checks Bearer auth against a non-auth endpoint. API keys must
+// not call /auth/login (rejected by qBittorrent).
+func (c *Client) probeAPIKey() bool {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v2/app/version", nil)
+	if err != nil {
+		slog.Error("qBittorrent API key probe failed", "error", err)
+		c.authenticated = false
+		return false
+	}
+	c.setAuth(req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		slog.Error("qBittorrent API key probe failed", "error", err)
+		c.authenticated = false
+		return false
+	}
+	defer resp.Body.Close()
+	c.authenticated = is2xx(resp.StatusCode)
+	if !c.authenticated {
+		slog.Error("qBittorrent API key rejected", "status", resp.StatusCode)
+	}
+	return c.authenticated
+}
+
+func (c *Client) setAuth(req *http.Request) {
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+}
+
+// canReauth reports whether a 403 is worth a second attempt. A session cookie
+// expires, so logging in again and retrying can succeed. A Bearer key does
+// not: it is fixed for the life of the process, so the retry re-sends the same
+// rejected key and the only thing it produces is a second error line. The
+// watcher polls every 30s, which turns one mistyped key into thousands of
+// ERROR lines a day and buries the failures that matter.
+func (c *Client) canReauth() bool {
+	return c.apiKey == ""
+}
+
+func (c *Client) postForm(path string, data url.Values) (*http.Response, error) {
+	req, err := http.NewRequest("POST", c.baseURL+path, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	c.setAuth(req)
+	return c.client.Do(req)
 }
 
 // is2xx reports whether an HTTP status code indicates success. qBittorrent
@@ -142,15 +208,15 @@ func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
 		"savepath": {savePath},
 		"category": {category},
 	}
-	resp, err := c.client.PostForm(c.baseURL+"/api/v2/torrents/add", data)
+	resp, err := c.postForm("/api/v2/torrents/add", data)
 	if err != nil {
 		slog.Error("qBittorrent add torrent failed", "error", err)
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 403 {
+	if resp.StatusCode == 403 && c.canReauth() {
 		c.login()
-		resp2, err := c.client.PostForm(c.baseURL+"/api/v2/torrents/add", data)
+		resp2, err := c.postForm("/api/v2/torrents/add", data)
 		if err != nil {
 			return false
 		}
@@ -241,14 +307,14 @@ func (c *Client) DeleteTorrent(hash string, deleteFiles bool) bool {
 		"hashes":      {hash},
 		"deleteFiles": {delStr},
 	}
-	resp, err := c.client.PostForm(c.baseURL+"/api/v2/torrents/delete", data)
+	resp, err := c.postForm("/api/v2/torrents/delete", data)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 403 {
+	if resp.StatusCode == 403 && c.canReauth() {
 		c.login()
-		resp2, err := c.client.PostForm(c.baseURL+"/api/v2/torrents/delete", data)
+		resp2, err := c.postForm("/api/v2/torrents/delete", data)
 		if err != nil {
 			return false
 		}
@@ -278,16 +344,16 @@ func (c *Client) StopTorrent(hash string) bool {
 // cookie has expired, and returns 0 if the request could not be made.
 // Callers hold c.mu.
 func (c *Client) postWithReauth(path string, data url.Values) int {
-	resp, err := c.client.PostForm(c.baseURL+path, data)
+	resp, err := c.postForm(path, data)
 	if err != nil {
 		return 0
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
+	if resp.StatusCode != http.StatusForbidden || !c.canReauth() {
 		return resp.StatusCode
 	}
 	c.login()
-	resp2, err := c.client.PostForm(c.baseURL+path, data)
+	resp2, err := c.postForm(path, data)
 	if err != nil {
 		return 0
 	}
@@ -300,6 +366,7 @@ func (c *Client) doGet(u string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.setAuth(req)
 	return c.client.Do(req)
 }
 

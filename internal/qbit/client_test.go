@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -438,5 +439,206 @@ func TestStopTorrent_ReauthOn403(t *testing.T) {
 	c.authenticated = true
 	if !c.StopTorrent("abc123") {
 		t.Error("expected StopTorrent to succeed after reauth")
+	}
+}
+
+func TestLogin_APIKey(t *testing.T) {
+	var sawAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			t.Error("API key auth must not call /auth/login")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == "/api/v2/app/version" {
+			sawAuth = r.Header.Get("Authorization")
+			w.Write([]byte("v5.2.0"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_testkey0123456789abcdefghij")
+	if !c.Login() {
+		t.Fatal("expected API key login to succeed")
+	}
+	if sawAuth != "Bearer qbt_testkey0123456789abcdefghij" {
+		t.Errorf("Authorization=%q", sawAuth)
+	}
+}
+
+func TestLogin_APIKey_Rejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_bad")
+	if c.Login() {
+		t.Error("expected API key login to fail")
+	}
+}
+
+func TestAddTorrent_APIKey(t *testing.T) {
+	var sawAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/app/version" {
+			w.Write([]byte("v5.2.0"))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/add" {
+			sawAuth = r.Header.Get("Authorization")
+			w.Write([]byte("Ok."))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_testkey0123456789abcdefghij")
+	if !c.AddTorrent("magnet:?xt=urn:btih:abc", "t", "/data", "console") {
+		t.Fatal("expected AddTorrent to succeed")
+	}
+	if sawAuth != "Bearer qbt_testkey0123456789abcdefghij" {
+		t.Errorf("Authorization=%q", sawAuth)
+	}
+}
+
+// Every exported call must carry the key, not just the ones the feature was
+// written against. A method that builds its own request instead of going
+// through the auth helpers still compiles, still passes its own test against a
+// permissive mock, and only fails against a real qBittorrent - as a 403 that
+// reads like a bad key rather than a missing header.
+func TestAPIKeyOnEveryExportedCall(t *testing.T) {
+	const key = "bearer-key-under-test"
+
+	var mu sync.Mutex
+	seen := map[string]string{} // request path -> Authorization header
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Get("Authorization")
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v2/torrents/info":
+			w.Write([]byte("[]"))
+		case "/api/v2/torrents/files":
+			w.Write([]byte("[]"))
+		case "/api/v2/app/version":
+			w.Write([]byte("v5.2.0"))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, key)
+	c.Login()
+	c.AddTorrent("magnet:?xt=urn:btih:abc", "Title", "/downloads", "games")
+	if _, err := c.GetTorrents("games"); err != nil {
+		t.Fatalf("GetTorrents: %v", err)
+	}
+	c.GetTorrentFiles("abc")
+	c.DeleteTorrent("abc", true)
+	c.StopTorrent("abc")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("no requests reached the server")
+	}
+	for path, auth := range seen {
+		if auth != "Bearer "+key {
+			t.Errorf("%s sent Authorization=%q, want the Bearer key", path, auth)
+		}
+	}
+	// The calls above must actually have exercised distinct endpoints, or this
+	// test would pass while covering almost nothing.
+	for _, want := range []string{
+		"/api/v2/app/version",
+		"/api/v2/torrents/add",
+		"/api/v2/torrents/info",
+		"/api/v2/torrents/files",
+		"/api/v2/torrents/delete",
+	} {
+		if _, ok := seen[want]; !ok {
+			t.Errorf("%s was never requested; the test is not covering it", want)
+		}
+	}
+}
+
+// A Bearer key is fixed for the life of the process, so a 403 cannot be cured
+// by authenticating again. Retrying re-sends the same rejected key: it cannot
+// succeed, and at the watcher's 30s poll it turns one mistyped key into
+// thousands of ERROR lines a day.
+func TestRejectedAPIKeyIsNotRetried(t *testing.T) {
+	var mu sync.Mutex
+	var adds, probes int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		switch r.URL.Path {
+		case "/api/v2/torrents/add":
+			adds++
+		case "/api/v2/app/version":
+			probes++
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_rejected")
+	if c.AddTorrent("magnet:?xt=urn:btih:abc", "T", "/downloads", "games") {
+		t.Fatal("AddTorrent reported success against a rejecting server")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if adds != 1 {
+		t.Errorf("add attempts = %d, want 1: a rejected key cannot be re-authenticated", adds)
+	}
+	// One probe from the initial ensureAuth; none from a pointless re-login.
+	if probes > 1 {
+		t.Errorf("version probes = %d, want at most 1", probes)
+	}
+}
+
+// The cookie path must keep its retry: a session really can expire, and
+// logging in again really can fix it.
+func TestCookieAuthStillRetriesOnce(t *testing.T) {
+	var mu sync.Mutex
+	var adds, logins int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			logins++
+			w.Write([]byte("Ok."))
+		case "/api/v2/torrents/add":
+			adds++
+			if adds == 1 {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pw")
+	if !c.AddTorrent("magnet:?xt=urn:btih:abc", "T", "/downloads", "games") {
+		t.Fatal("expected the expired-session retry to succeed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if adds != 2 {
+		t.Errorf("add attempts = %d, want 2 (original plus the post-relogin retry)", adds)
+	}
+	if logins < 2 {
+		t.Errorf("logins = %d, want the 403 to trigger a re-login", logins)
 	}
 }
