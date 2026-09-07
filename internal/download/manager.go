@@ -1441,7 +1441,6 @@ func vimmDownloadURLs(actionURL, mediaID string) []string {
 	return []string{vimmGETURL(actionURL, mediaID)}
 }
 
-
 func vimmVaultURL(m *Manager, gameID string) string {
 	base := "https://vimm.net/vault/"
 	if m.cfg != nil && m.cfg.Sources != nil && m.cfg.Sources.Vimm.BaseURL != "" {

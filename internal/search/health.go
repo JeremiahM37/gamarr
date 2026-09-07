@@ -114,7 +114,6 @@ func RecordSearchFail(name string, errMsg string) {
 	}
 }
 
-
 // RecordRateLimited pauses a source until retryAfter elapses. One 429 is enough
 // to back off — it does not wait for the consecutive-failure threshold, and it
 // does not inflate the failure streak used by that threshold.

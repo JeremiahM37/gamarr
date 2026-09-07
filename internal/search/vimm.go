@@ -18,14 +18,13 @@ import (
 	"gamarr/internal/sources"
 )
 
-
 // Vimm rate limiting: the vault returns HTTP 429 when hit too hard. All Vimm
 // HTTP (search + download page fetches) share one gate so UI searches and the
 // wishlist scheduler cannot stampede it. On 429 we honor Retry-After.
 var (
-	vimmGateMu      sync.Mutex
-	vimmLastReq     time.Time
-	vimmMinInterval = 5 * time.Second
+	vimmGateMu         sync.Mutex
+	vimmLastReq        time.Time
+	vimmMinInterval    = 5 * time.Second
 	vimmDefaultBackoff = 60 * time.Second
 )
 
