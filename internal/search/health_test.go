@@ -343,3 +343,35 @@ func TestIsDownloadDegraded_UnknownSource(t *testing.T) {
 		t.Error("an unknown source is not degraded")
 	}
 }
+
+func TestRecordRateLimited_OpensImmediately(t *testing.T) {
+	resetHealthStore()
+	RecordRateLimited("rl-source", 2*time.Second, "HTTP 429")
+	if !IsCircuitOpen("rl-source") {
+		t.Fatal("expected circuit open after one rate-limit")
+	}
+	h := GetSourceHealth("rl-source")
+	if h.LastErrorKind != "rate_limit" {
+		t.Errorf("LastErrorKind=%q, want rate_limit", h.LastErrorKind)
+	}
+	if h.CircuitRetryInSec < 1 || h.CircuitRetryInSec > 2 {
+		t.Errorf("CircuitRetryInSec=%d, want 1-2", h.CircuitRetryInSec)
+	}
+	// Does not count toward consecutive-failure streak threshold alone after reset of streak...
+	// streak untouched: two more RecordSearchFail should still be needed from 0 streak.
+	// Actually we don't increment streak — verify 2 fails don't open beyond rate window after it expires.
+}
+
+func TestRecordRateLimited_DoesNotInflateFailStreak(t *testing.T) {
+	resetHealthStore()
+	RecordRateLimited("rl-streak", time.Millisecond, "HTTP 429")
+	// Force circuit closed by resetting until
+	healthMu.Lock()
+	healthStore["rl-streak"].circuitOpenUntil = 0
+	healthMu.Unlock()
+	RecordSearchFail("rl-streak", "err")
+	RecordSearchFail("rl-streak", "err")
+	if IsCircuitOpen("rl-streak") {
+		t.Fatal("rate-limit must not leave a fail streak that opens after only 2 later failures")
+	}
+}

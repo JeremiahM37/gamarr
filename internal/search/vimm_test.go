@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gamarr/internal/sources"
 )
@@ -232,5 +233,66 @@ func TestSearchVimm_HTTP404IsEmptyNotFailure(t *testing.T) {
 	}
 	if IsCircuitOpen("vimm") {
 		t.Fatal("HTTP 404 empty results must not open the vimm circuit")
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	if d := ParseRetryAfter("45", time.Minute); d != 45*time.Second {
+		t.Errorf("seconds: got %v", d)
+	}
+	if d := ParseRetryAfter("", 30*time.Second); d != 30*time.Second {
+		t.Errorf("empty: got %v", d)
+	}
+	if d := ParseRetryAfter("not-a-date", 12*time.Second); d != 12*time.Second {
+		t.Errorf("bad: got %v", d)
+	}
+}
+
+func TestSearchVimm_HTTP429RespectsRetryAfter(t *testing.T) {
+	t.Cleanup(func() { ResetCircuit("vimm") })
+	resetHealthStore()
+	// Avoid sleeping in the gate during this test.
+	old := vimmMinInterval
+	vimmMinInterval = 0
+	t.Cleanup(func() { vimmMinInterval = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+
+	if results := SearchVimm(reg, "mario", "nes"); len(results) != 0 {
+		t.Fatalf("429 should yield no results, got %d", len(results))
+	}
+	if !IsCircuitOpen("vimm") {
+		t.Fatal("429 should open the vimm circuit immediately")
+	}
+	h := GetSourceHealth("vimm")
+	if h.LastErrorKind != "rate_limit" {
+		t.Errorf("LastErrorKind=%q", h.LastErrorKind)
+	}
+	if h.CircuitRetryInSec < 2 || h.CircuitRetryInSec > 3 {
+		t.Errorf("CircuitRetryInSec=%d, want ~3", h.CircuitRetryInSec)
+	}
+}
+
+func TestWaitVimmRateLimit_SpacesRequests(t *testing.T) {
+	old := vimmMinInterval
+	vimmMinInterval = 40 * time.Millisecond
+	vimmLastReq = time.Time{}
+	t.Cleanup(func() {
+		vimmMinInterval = old
+		vimmLastReq = time.Time{}
+	})
+
+	start := time.Now()
+	WaitVimmRateLimit()
+	WaitVimmRateLimit()
+	elapsed := time.Since(start)
+	if elapsed < 40*time.Millisecond {
+		t.Fatalf("expected >=40ms between gated calls, got %v", elapsed)
 	}
 }

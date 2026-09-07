@@ -4,7 +4,9 @@ package scheduler
 
 import (
 	"log/slog"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,12 @@ type Scheduler struct {
 
 // New creates a new Scheduler.
 func New(cfg *config.Config, jobs *db.JobStore, searchFn SearchFunc, downloadFn DownloadFunc, webhookFn WebhookFunc) *Scheduler {
+	rateLimit := 5 * time.Second
+	if v := strings.TrimSpace(os.Getenv("SCHEDULER_ITEM_INTERVAL_SEC")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			rateLimit = time.Duration(n) * time.Second
+		}
+	}
 	return &Scheduler{
 		cfg:        cfg,
 		jobs:       jobs,
@@ -50,7 +58,7 @@ func New(cfg *config.Config, jobs *db.JobStore, searchFn SearchFunc, downloadFn 
 		downloadFn: downloadFn,
 		webhookFn:  webhookFn,
 		stopCh:     make(chan struct{}),
-		rateLimit:  2 * time.Second,
+		rateLimit:  rateLimit,
 	}
 }
 

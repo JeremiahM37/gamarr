@@ -1441,6 +1441,7 @@ func vimmDownloadURLs(actionURL, mediaID string) []string {
 	return []string{vimmGETURL(actionURL, mediaID)}
 }
 
+
 func vimmVaultURL(m *Manager, gameID string) string {
 	base := "https://vimm.net/vault/"
 	if m.cfg != nil && m.cfg.Sources != nil && m.cfg.Sources.Vimm.BaseURL != "" {
@@ -1507,6 +1508,10 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	origin := vimmOrigin(gameURL)
 	m.jobs.Update(jobID, "detail", "Fetching game page...")
 
+	// Share the search-side Vimm gate so downloads do not stampede the vault
+	// while the scheduler is walking the wishlist.
+	search.WaitVimmRateLimit()
+
 	req, _ := http.NewRequest("GET", gameURL, nil)
 	req.Header.Set("User-Agent", ua)
 	resp, err := client.Do(req)
@@ -1516,6 +1521,15 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		backoff := search.ParseRetryAfter(resp.Header.Get("Retry-After"), search.VimmDefaultBackoff())
+		search.RecordRateLimited("vimm", backoff, fmt.Sprintf("HTTP 429 (retry in %ds)", int(backoff.Seconds())))
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("Vimm rate-limited; backing off %ds", int(backoff.Seconds())),
+		})
+		return ""
+	}
 	pageText := string(body)
 
 	usedFlareSolverr := false
@@ -1523,6 +1537,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 		apiURL, maxTimeout, tabsTillVerify := m.flareSolverrOptions()
 		if apiURL != "" {
 			m.jobs.Update(jobID, "detail", "Fetching Vimm page through FlareSolverr...")
+			search.WaitVimmRateLimit()
 			solution, solveErr := m.fetchWithFlareSolverr(context.Background(), apiURL, gameURL, maxTimeout, tabsTillVerify)
 			if solveErr != nil {
 				slog.Warn("FlareSolverr could not fetch Vimm vault page", "game_id", gameID, "error", solveErr)

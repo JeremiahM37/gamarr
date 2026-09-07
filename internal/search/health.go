@@ -114,6 +114,38 @@ func RecordSearchFail(name string, errMsg string) {
 	}
 }
 
+
+// RecordRateLimited pauses a source until retryAfter elapses. One 429 is enough
+// to back off — it does not wait for the consecutive-failure threshold, and it
+// does not inflate the failure streak used by that threshold.
+func RecordRateLimited(name string, retryAfter time.Duration, errMsg string) {
+	if retryAfter < time.Second {
+		retryAfter = time.Second
+	}
+	// Cap so a pathological Retry-After cannot silence a source for hours.
+	const maxBackoff = 15 * time.Minute
+	if retryAfter > maxBackoff {
+		retryAfter = maxBackoff
+	}
+
+	healthMu.Lock()
+	defer healthMu.Unlock()
+	h := getOrCreateHealth(name)
+	now := time.Now()
+	until := float64(now.Add(retryAfter).Unix())
+	if until > h.circuitOpenUntil {
+		h.circuitOpenUntil = until
+	}
+	h.SearchFail++
+	h.LastError = errMsg
+	if len(h.LastError) > 400 {
+		h.LastError = h.LastError[:400]
+	}
+	h.LastErrorKind = "rate_limit"
+	h.LastErrorAt = float64(now.Unix())
+	slog.Warn("source rate-limited, backing off", "source", name, "retry_sec", int(retryAfter.Seconds()), "error", errMsg)
+}
+
 // RecordDownloadSuccess records a successful download for a source.
 func RecordDownloadSuccess(name string) {
 	healthMu.Lock()

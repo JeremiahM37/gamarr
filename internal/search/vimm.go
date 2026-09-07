@@ -7,13 +7,90 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gamarr/internal/models"
 	"gamarr/internal/sources"
 )
+
+
+// Vimm rate limiting: the vault returns HTTP 429 when hit too hard. All Vimm
+// HTTP (search + download page fetches) share one gate so UI searches and the
+// wishlist scheduler cannot stampede it. On 429 we honor Retry-After.
+var (
+	vimmGateMu      sync.Mutex
+	vimmLastReq     time.Time
+	vimmMinInterval = 5 * time.Second
+	vimmDefaultBackoff = 60 * time.Second
+)
+
+func init() {
+	if v := os.Getenv("VIMM_MIN_INTERVAL_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			vimmMinInterval = time.Duration(n) * time.Second
+		}
+	}
+	if v := os.Getenv("VIMM_RATE_LIMIT_DEFAULT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			vimmDefaultBackoff = time.Duration(n) * time.Second
+		}
+	}
+}
+
+// WaitVimmRateLimit spaces outbound Vimm requests. Callers release the gate
+// before the HTTP round-trip so a slow FlareSolverr solve does not block the
+// mutex for its full duration — only the start timestamps are serialized.
+func VimmDefaultBackoff() time.Duration { return vimmDefaultBackoff }
+
+// SetVimmMinIntervalForTest overrides the shared request gate. Tests pass 0 to
+// disable spacing so suites do not pay the production backoff.
+func SetVimmMinIntervalForTest(d time.Duration) {
+	vimmGateMu.Lock()
+	defer vimmGateMu.Unlock()
+	vimmMinInterval = d
+	vimmLastReq = time.Time{}
+}
+
+func WaitVimmRateLimit() {
+	vimmGateMu.Lock()
+	defer vimmGateMu.Unlock()
+	if vimmMinInterval <= 0 {
+		vimmLastReq = time.Now()
+		return
+	}
+	if wait := vimmMinInterval - time.Since(vimmLastReq); wait > 0 {
+		time.Sleep(wait)
+	}
+	vimmLastReq = time.Now()
+}
+
+// parseRetryAfter reads a Retry-After header (seconds or HTTP-date). Falls
+// back to defaultBackoff when missing or unparsable.
+func ParseRetryAfter(header string, defaultBackoff time.Duration) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return defaultBackoff
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs < 1 {
+			secs = 1
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if when, err := http.ParseTime(header); err == nil {
+		d := time.Until(when)
+		if d < time.Second {
+			return time.Second
+		}
+		return d
+	}
+	return defaultBackoff
+}
 
 // VimmPlatformSlugs returns all platform slugs Vimm supports per the runtime
 // sources registry.
@@ -125,6 +202,13 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 	}
 	systemFromFilter := reg.Vimm.PlatformSystems[platformSlug]
 
+	WaitVimmRateLimit()
+	if IsCircuitOpen("vimm") {
+		// A concurrent 429 may have opened the circuit while we waited.
+		slog.Warn("vimm circuit open, skipping search")
+		return nil
+	}
+
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
@@ -146,6 +230,11 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 	// failure opens the circuit and blocks every subsequent Vimm search.
 	if resp.StatusCode == http.StatusNotFound {
 		RecordSearchSuccess("vimm")
+		return nil
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		backoff := ParseRetryAfter(resp.Header.Get("Retry-After"), vimmDefaultBackoff)
+		RecordRateLimited("vimm", backoff, fmt.Sprintf("HTTP 429 (retry in %ds)", int(backoff.Seconds())))
 		return nil
 	}
 	if resp.StatusCode != 200 {
