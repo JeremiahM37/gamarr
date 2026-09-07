@@ -45,6 +45,10 @@
       "psp":     "PSP",
       "xbox":    "Xbox",
       "xbox360": "Xbox360"
+    },
+    "platform_aliases": {
+      "gamecube":  "ngc",
+      "dreamcast": "dc"
     }
   }
 }

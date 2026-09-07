@@ -12,5 +12,6 @@ import (
 // test failures.
 func TestMain(m *testing.M) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	SetVimmMinIntervalForTest(0)
 	os.Exit(m.Run())
 }

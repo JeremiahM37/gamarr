@@ -236,6 +236,9 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `GAMARR_SOURCES_PATH` | | Local path to a sources registry JSON file; takes precedence over URL |
 | `MYRIENT_URL` | | Override base URL of the DDL archive-listing source |
 | `VIMM_URL` | | Override base URL of the web-scrape source |
+| `VIMM_MIN_INTERVAL_SEC` | `5` | Minimum gap between outbound Vimm requests. Searches and download-page fetches share one gate, so a wishlist run cannot stampede the vault. `0` disables spacing |
+| `VIMM_RATE_LIMIT_DEFAULT_SEC` | `60` | Backoff applied when Vimm answers `429` without a usable `Retry-After` header. A `Retry-After` that is present is honoured instead, capped at 15 minutes |
+| `SCHEDULER_ITEM_INTERVAL_SEC` | `5` | Gap between wishlist items in a scheduled run |
 
 ### Search Sources
 

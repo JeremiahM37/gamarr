@@ -4,6 +4,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+
+	"gamarr/internal/search"
 	"testing"
 	"time"
 )
@@ -14,6 +16,7 @@ var prodImportAttempts, prodImportRetryDelay = importAttempts, importRetryDelay
 
 func TestMain(m *testing.M) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	search.SetVimmMinIntervalForTest(0)
 	// The import retry delay is a production value measured in seconds. No test
 	// should sit on it; one that exercises the retry path sets its own.
 	importRetryDelay = time.Millisecond

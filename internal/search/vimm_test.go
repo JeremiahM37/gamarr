@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gamarr/internal/sources"
 )
@@ -62,6 +63,17 @@ func TestVimmSystemMap(t *testing.T) {
 	}
 	if reg.Vimm.PlatformSystems["ngc"] != "GameCube" {
 		t.Error("ngc should map to GameCube")
+	}
+	// Aliases live in their own table; putting them in PlatformSystems would
+	// make the system->slug inversion ambiguous.
+	if reg.Vimm.PlatformAliases["gamecube"] != "ngc" {
+		t.Error("gamecube alias should resolve to ngc")
+	}
+	if reg.Vimm.PlatformAliases["dreamcast"] != "dc" {
+		t.Error("dreamcast alias should resolve to dc")
+	}
+	if _, dup := reg.Vimm.PlatformSystems["gamecube"]; dup {
+		t.Error("alias slug must not also be a PlatformSystems key")
 	}
 }
 
@@ -207,5 +219,131 @@ func TestSearchVimm_HTTPError(t *testing.T) {
 	reg.Vimm.BaseURL = srv.URL + "/"
 	if results := SearchVimm(reg, "mario", "snes"); len(results) != 0 {
 		t.Errorf("HTTP 500 should yield no results, got %d", len(results))
+	}
+}
+
+func TestSearchVimm_HTTP404IsEmptyNotFailure(t *testing.T) {
+	// Vimm uses 404 for "no matching titles". That must not open the circuit.
+	t.Cleanup(func() { RecordSearchSuccess("vimm") })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+	for i := 0; i < 5; i++ {
+		if results := SearchVimm(reg, "zzzz-no-such-title", "psp"); len(results) != 0 {
+			t.Fatalf("call %d: HTTP 404 should yield no results, got %d", i, len(results))
+		}
+	}
+	if IsCircuitOpen("vimm") {
+		t.Fatal("HTTP 404 empty results must not open the vimm circuit")
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	if d := ParseRetryAfter("45", time.Minute); d != 45*time.Second {
+		t.Errorf("seconds: got %v", d)
+	}
+	if d := ParseRetryAfter("", 30*time.Second); d != 30*time.Second {
+		t.Errorf("empty: got %v", d)
+	}
+	if d := ParseRetryAfter("not-a-date", 12*time.Second); d != 12*time.Second {
+		t.Errorf("bad: got %v", d)
+	}
+}
+
+func TestSearchVimm_HTTP429RespectsRetryAfter(t *testing.T) {
+	t.Cleanup(func() { ResetCircuit("vimm") })
+	resetHealthStore()
+	// Avoid sleeping in the gate during this test.
+	old := vimmMinInterval
+	vimmMinInterval = 0
+	t.Cleanup(func() { vimmMinInterval = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+
+	if results := SearchVimm(reg, "mario", "nes"); len(results) != 0 {
+		t.Fatalf("429 should yield no results, got %d", len(results))
+	}
+	if !IsCircuitOpen("vimm") {
+		t.Fatal("429 should open the vimm circuit immediately")
+	}
+	h := GetSourceHealth("vimm")
+	if h.LastErrorKind != "rate_limit" {
+		t.Errorf("LastErrorKind=%q", h.LastErrorKind)
+	}
+	if h.CircuitRetryInSec < 2 || h.CircuitRetryInSec > 3 {
+		t.Errorf("CircuitRetryInSec=%d, want ~3", h.CircuitRetryInSec)
+	}
+}
+
+func TestWaitVimmRateLimit_SpacesRequests(t *testing.T) {
+	old := vimmMinInterval
+	vimmMinInterval = 40 * time.Millisecond
+	vimmLastReq = time.Time{}
+	t.Cleanup(func() {
+		vimmMinInterval = old
+		vimmLastReq = time.Time{}
+	})
+
+	start := time.Now()
+	WaitVimmRateLimit()
+	WaitVimmRateLimit()
+	elapsed := time.Since(start)
+	if elapsed < 40*time.Millisecond {
+		t.Fatalf("expected >=40ms between gated calls, got %v", elapsed)
+	}
+}
+
+func TestVimmPlatformSystemsIsInjective(t *testing.T) {
+	// The search path inverts this map to label results. Two slugs sharing one
+	// system make that inversion depend on Go's randomised map iteration.
+	reg := testRegistry(t)
+	seen := map[string]string{}
+	for slug, sys := range reg.Vimm.PlatformSystems {
+		if prev, dup := seen[strings.ToLower(sys)]; dup {
+			t.Errorf("system %q is claimed by both %q and %q; an alias belongs in PlatformAliases", sys, prev, slug)
+		}
+		seen[strings.ToLower(sys)] = slug
+	}
+}
+
+func TestSearchVimm_AliasSlugIsCanonicalisedAndDeterministic(t *testing.T) {
+	// A GameCube hit must always come back as the canonical "ngc", whether the
+	// caller asked with "ngc", the "gamecube" alias, or no filter at all.
+	// Before aliases were split out this returned "ngc" or "gamecube" at random
+	// per call, which split the search-merge de-dup key and lost the ngc size
+	// band in scoring.
+	const html = `<table><tr><td>GameCube</td><td><a href="/vault/12345" >Super Mario Sunshine</a></td></tr></table>`
+	var gotSystem string
+	t.Cleanup(func() { RecordSearchSuccess("vimm") })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSystem = r.URL.Query().Get("system")
+		_, _ = w.Write([]byte(html))
+	}))
+	t.Cleanup(srv.Close)
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+
+	for _, filter := range []string{"ngc", "gamecube", ""} {
+		for i := 0; i < 50; i++ {
+			results := SearchVimm(reg, "mario", filter)
+			if len(results) != 1 {
+				t.Fatalf("filter %q call %d: got %d results, want 1", filter, i, len(results))
+			}
+			if results[0].PlatformSlug != "ngc" {
+				t.Fatalf("filter %q call %d: PlatformSlug=%q, want ngc", filter, i, results[0].PlatformSlug)
+			}
+		}
+		if filter != "" && gotSystem != "GameCube" {
+			t.Errorf("filter %q sent ?system=%q, want GameCube", filter, gotSystem)
+		}
 	}
 }
