@@ -135,6 +135,16 @@ func (c *Client) setAuth(req *http.Request) {
 	}
 }
 
+// canReauth reports whether a 403 is worth a second attempt. A session cookie
+// expires, so logging in again and retrying can succeed. A Bearer key does
+// not: it is fixed for the life of the process, so the retry re-sends the same
+// rejected key and the only thing it produces is a second error line. The
+// watcher polls every 30s, which turns one mistyped key into thousands of
+// ERROR lines a day and buries the failures that matter.
+func (c *Client) canReauth() bool {
+	return c.apiKey == ""
+}
+
 func (c *Client) postForm(path string, data url.Values) (*http.Response, error) {
 	req, err := http.NewRequest("POST", c.baseURL+path, strings.NewReader(data.Encode()))
 	if err != nil {
@@ -204,7 +214,7 @@ func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 403 {
+	if resp.StatusCode == 403 && c.canReauth() {
 		c.login()
 		resp2, err := c.postForm("/api/v2/torrents/add", data)
 		if err != nil {
@@ -302,7 +312,7 @@ func (c *Client) DeleteTorrent(hash string, deleteFiles bool) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 403 {
+	if resp.StatusCode == 403 && c.canReauth() {
 		c.login()
 		resp2, err := c.postForm("/api/v2/torrents/delete", data)
 		if err != nil {
@@ -339,7 +349,7 @@ func (c *Client) postWithReauth(path string, data url.Values) int {
 		return 0
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
+	if resp.StatusCode != http.StatusForbidden || !c.canReauth() {
 		return resp.StatusCode
 	}
 	c.login()

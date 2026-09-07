@@ -7,7 +7,7 @@ import (
 
 func TestLoad_Defaults(t *testing.T) {
 	// Clear relevant env vars
-	for _, k := range []string{"PROWLARR_URL", "PROWLARR_API_KEY", "QB_URL", "QB_USER", "QB_PASS",
+	for _, k := range []string{"PROWLARR_URL", "PROWLARR_API_KEY", "QB_URL", "QB_USER", "QB_PASS", "QB_API_KEY",
 		"QB_CONTAINER_NAME", "GAMARR_PORT", "MAX_RETRIES", "METRICS_ENABLED", "PROWLARR_GAME_INDEXERS",
 		"AI_MONITOR_ENABLED", "EXTRACT_ARCHIVES", "SABNZBD_URL", "SABNZBD_API_KEY",
 		"NZBGET_URL", "NZBGET_USER", "NZBGET_PASS", "NZBGET_CATEGORY", "FLARESOLVERR_URL",
@@ -321,5 +321,27 @@ func TestVaultArchiveEnabled(t *testing.T) {
 	defer os.Unsetenv("VAULT_ARCHIVE_ENABLED")
 	if !Load().VaultArchiveEnabled {
 		t.Error("VAULT_ARCHIVE_ENABLED=true should turn archiving on")
+	}
+}
+
+// A key read from a Docker secret file keeps its trailing newline, and a .env
+// line can carry a trailing space. Untrimmed, either is non-empty, which picks
+// the Bearer path and so discards working user/pass credentials -- and a
+// newline then fails inside net/http with an "invalid header field value" that
+// names nothing the operator can act on.
+func TestLoad_QBAPIKeyIsTrimmed(t *testing.T) {
+	for _, raw := range []string{"qbt_abc123\n", "  qbt_abc123  ", "qbt_abc123\r\n"} {
+		t.Setenv("QB_API_KEY", raw)
+		if got := Load().QBAPIKey; got != "qbt_abc123" {
+			t.Errorf("QB_API_KEY=%q loaded as %q, want %q", raw, got, "qbt_abc123")
+		}
+	}
+
+	// Whitespace alone is not a key, and must not take the Bearer path.
+	for _, blank := range []string{" ", "\n", "\t"} {
+		t.Setenv("QB_API_KEY", blank)
+		if got := Load().QBAPIKey; got != "" {
+			t.Errorf("whitespace-only QB_API_KEY=%q loaded as %q, want empty", blank, got)
+		}
 	}
 }

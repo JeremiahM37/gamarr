@@ -137,6 +137,9 @@ services:
       - QB_URL=http://qbittorrent:8080
       - QB_USER=admin
       - QB_PASS=changeme
+      # qBittorrent >= 5.2 can issue an API key instead. When set it replaces
+      # user/pass, so leave it out entirely rather than blank:
+      # - QB_API_KEY=qbt_your-api-key
       # Optional, for Vimm downloads behind Turnstile:
       # - FLARESOLVERR_URL=http://flaresolverr:8191
       # - FLARESOLVERR_MAX_TIMEOUT=55000

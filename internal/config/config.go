@@ -175,10 +175,15 @@ func Load() *Config {
 		ProwlarrURL:    envStr("PROWLARR_URL", "http://prowlarr:9696"),
 		ProwlarrAPIKey: envStr("PROWLARR_API_KEY", ""),
 
-		QBURL:           envStrAllowEmpty("QB_URL", "http://qbittorrent:8080"),
-		QBUser:          envStr("QB_USER", "admin"),
-		QBPass:          envStr("QB_PASS", ""),
-		QBAPIKey:        envStr("QB_API_KEY", ""),
+		QBURL:  envStrAllowEmpty("QB_URL", "http://qbittorrent:8080"),
+		QBUser: envStr("QB_USER", "admin"),
+		QBPass: envStr("QB_PASS", ""),
+		// Trimmed: a key read from a Docker/K8s secret file keeps its trailing
+		// newline, and a .env line can carry a trailing space. Either makes the
+		// value non-empty, which hands the client an unusable key AND abandons
+		// working user/pass auth -- a newline additionally fails inside net/http
+		// with an "invalid header field value" that names nothing to fix.
+		QBAPIKey:        strings.TrimSpace(envStr("QB_API_KEY", "")),
 		QBSavePath:      envStr("QB_SAVE_PATH", "/data/incoming/"),
 		QBCategory:      envStr("QB_CATEGORY", "games"),
 		QBContainerName: envStr("QB_CONTAINER_NAME", "qbittorrent"),
