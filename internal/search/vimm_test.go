@@ -63,6 +63,12 @@ func TestVimmSystemMap(t *testing.T) {
 	if reg.Vimm.PlatformSystems["ngc"] != "GameCube" {
 		t.Error("ngc should map to GameCube")
 	}
+	if reg.Vimm.PlatformSystems["gamecube"] != "GameCube" {
+		t.Error("gamecube alias should map to GameCube")
+	}
+	if reg.Vimm.PlatformSystems["dreamcast"] != "Dreamcast" {
+		t.Error("dreamcast alias should map to Dreamcast")
+	}
 }
 
 func TestSearchVimm_ParsesResults(t *testing.T) {
@@ -207,5 +213,24 @@ func TestSearchVimm_HTTPError(t *testing.T) {
 	reg.Vimm.BaseURL = srv.URL + "/"
 	if results := SearchVimm(reg, "mario", "snes"); len(results) != 0 {
 		t.Errorf("HTTP 500 should yield no results, got %d", len(results))
+	}
+}
+
+func TestSearchVimm_HTTP404IsEmptyNotFailure(t *testing.T) {
+	// Vimm uses 404 for "no matching titles". That must not open the circuit.
+	t.Cleanup(func() { RecordSearchSuccess("vimm") })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+	for i := 0; i < 5; i++ {
+		if results := SearchVimm(reg, "zzzz-no-such-title", "psp"); len(results) != 0 {
+			t.Fatalf("call %d: HTTP 404 should yield no results, got %d", i, len(results))
+		}
+	}
+	if IsCircuitOpen("vimm") {
+		t.Fatal("HTTP 404 empty results must not open the vimm circuit")
 	}
 }

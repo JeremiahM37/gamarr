@@ -141,6 +141,13 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 		return nil
 	}
 	defer resp.Body.Close()
+	// Vimm answers empty result sets (and queries shorter than 3 chars) with
+	// HTTP 404. That is "no hits", not a source outage — counting it as a
+	// failure opens the circuit and blocks every subsequent Vimm search.
+	if resp.StatusCode == http.StatusNotFound {
+		RecordSearchSuccess("vimm")
+		return nil
+	}
 	if resp.StatusCode != 200 {
 		RecordSearchFail("vimm", fmt.Sprintf("HTTP %d", resp.StatusCode))
 		return nil
