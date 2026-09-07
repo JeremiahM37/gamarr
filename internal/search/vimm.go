@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,9 +42,8 @@ func init() {
 	}
 }
 
-// WaitVimmRateLimit spaces outbound Vimm requests. Callers release the gate
-// before the HTTP round-trip so a slow FlareSolverr solve does not block the
-// mutex for its full duration — only the start timestamps are serialized.
+// VimmDefaultBackoff is the pause applied on a 429 that carries no usable
+// Retry-After header.
 func VimmDefaultBackoff() time.Duration { return vimmDefaultBackoff }
 
 // SetVimmMinIntervalForTest overrides the shared request gate. Tests pass 0 to
@@ -55,6 +55,9 @@ func SetVimmMinIntervalForTest(d time.Duration) {
 	vimmLastReq = time.Time{}
 }
 
+// WaitVimmRateLimit spaces outbound Vimm requests. The gate is held across the
+// sleep so concurrent callers queue rather than all waking at once; only the
+// request start is serialized, not the HTTP round-trip that follows.
 func WaitVimmRateLimit() {
 	vimmGateMu.Lock()
 	defer vimmGateMu.Unlock()
@@ -68,7 +71,7 @@ func WaitVimmRateLimit() {
 	vimmLastReq = time.Now()
 }
 
-// parseRetryAfter reads a Retry-After header (seconds or HTTP-date). Falls
+// ParseRetryAfter reads a Retry-After header (seconds or HTTP-date). Falls
 // back to defaultBackoff when missing or unparsable.
 func ParseRetryAfter(header string, defaultBackoff time.Duration) time.Duration {
 	header = strings.TrimSpace(header)
@@ -99,6 +102,48 @@ func VimmPlatformSlugs(reg *sources.Registry) []string {
 		slugs = append(slugs, s)
 	}
 	return slugs
+}
+
+// canonicalVimmSlug resolves an alias slug to the canonical one. Unknown slugs
+// pass through untouched so an unmapped platform still reaches an unfiltered
+// search rather than being silently dropped.
+func canonicalVimmSlug(reg *sources.Registry, slug string) string {
+	if slug == "" {
+		return ""
+	}
+	if canon, ok := reg.Vimm.PlatformAliases[slug]; ok {
+		if _, known := reg.Vimm.PlatformSystems[canon]; known {
+			return canon
+		}
+	}
+	return slug
+}
+
+// vimmSystemToSlug inverts PlatformSystems so a scraped system name ("GameCube")
+// can label a result with a platform slug.
+//
+// Go randomises map iteration, so if a caller-supplied registry maps two slugs
+// onto one system the naive inversion picks a different winner per call -- the
+// same hit would come back "ngc" on one search and "gamecube" on the next,
+// splitting the de-duplication key in the search merge and missing the
+// per-platform size bands in scoring. Ties are broken by sorted order so the
+// answer is at least stable; the shipped registry avoids ties entirely by
+// keeping aliases in PlatformAliases.
+func vimmSystemToSlug(reg *sources.Registry) map[string]string {
+	slugs := make([]string, 0, len(reg.Vimm.PlatformSystems))
+	for slug := range reg.Vimm.PlatformSystems {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+
+	out := make(map[string]string, len(slugs))
+	for _, slug := range slugs {
+		sys := strings.ToLower(reg.Vimm.PlatformSystems[slug])
+		if _, taken := out[sys]; !taken {
+			out[sys] = slug
+		}
+	}
+	return out
 }
 
 // vimmGameRe matches a vault game link. Group 1 is the numeric id, group 2 is
@@ -193,6 +238,11 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 		slog.Warn("vimm circuit open, skipping search")
 		return nil
 	}
+	// A wishlist item or API caller may carry a non-canonical slug ("gamecube"
+	// rather than "ngc"). Resolve it once, up front, so both the ?system=
+	// filter and every slug we stamp on a result are canonical.
+	platformSlug = canonicalVimmSlug(reg, platformSlug)
+
 	params := url.Values{"p": {"list"}, "q": {query}}
 	if platformSlug != "" {
 		if sys, ok := reg.Vimm.PlatformSystems[platformSlug]; ok {
@@ -246,10 +296,7 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 		return nil
 	}
 
-	reverseMap := make(map[string]string)
-	for slug, sys := range reg.Vimm.PlatformSystems {
-		reverseMap[strings.ToLower(sys)] = slug
-	}
+	reverseMap := vimmSystemToSlug(reg)
 
 	var results []*models.SearchResult
 	for _, hit := range parseVimmSearchHTML(string(body)) {

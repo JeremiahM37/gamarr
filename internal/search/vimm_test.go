@@ -64,11 +64,16 @@ func TestVimmSystemMap(t *testing.T) {
 	if reg.Vimm.PlatformSystems["ngc"] != "GameCube" {
 		t.Error("ngc should map to GameCube")
 	}
-	if reg.Vimm.PlatformSystems["gamecube"] != "GameCube" {
-		t.Error("gamecube alias should map to GameCube")
+	// Aliases live in their own table; putting them in PlatformSystems would
+	// make the system->slug inversion ambiguous.
+	if reg.Vimm.PlatformAliases["gamecube"] != "ngc" {
+		t.Error("gamecube alias should resolve to ngc")
 	}
-	if reg.Vimm.PlatformSystems["dreamcast"] != "Dreamcast" {
-		t.Error("dreamcast alias should map to Dreamcast")
+	if reg.Vimm.PlatformAliases["dreamcast"] != "dc" {
+		t.Error("dreamcast alias should resolve to dc")
+	}
+	if _, dup := reg.Vimm.PlatformSystems["gamecube"]; dup {
+		t.Error("alias slug must not also be a PlatformSystems key")
 	}
 }
 
@@ -294,5 +299,51 @@ func TestWaitVimmRateLimit_SpacesRequests(t *testing.T) {
 	elapsed := time.Since(start)
 	if elapsed < 40*time.Millisecond {
 		t.Fatalf("expected >=40ms between gated calls, got %v", elapsed)
+	}
+}
+
+func TestVimmPlatformSystemsIsInjective(t *testing.T) {
+	// The search path inverts this map to label results. Two slugs sharing one
+	// system make that inversion depend on Go's randomised map iteration.
+	reg := testRegistry(t)
+	seen := map[string]string{}
+	for slug, sys := range reg.Vimm.PlatformSystems {
+		if prev, dup := seen[strings.ToLower(sys)]; dup {
+			t.Errorf("system %q is claimed by both %q and %q; an alias belongs in PlatformAliases", sys, prev, slug)
+		}
+		seen[strings.ToLower(sys)] = slug
+	}
+}
+
+func TestSearchVimm_AliasSlugIsCanonicalisedAndDeterministic(t *testing.T) {
+	// A GameCube hit must always come back as the canonical "ngc", whether the
+	// caller asked with "ngc", the "gamecube" alias, or no filter at all.
+	// Before aliases were split out this returned "ngc" or "gamecube" at random
+	// per call, which split the search-merge de-dup key and lost the ngc size
+	// band in scoring.
+	const html = `<table><tr><td>GameCube</td><td><a href="/vault/12345" >Super Mario Sunshine</a></td></tr></table>`
+	var gotSystem string
+	t.Cleanup(func() { RecordSearchSuccess("vimm") })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSystem = r.URL.Query().Get("system")
+		_, _ = w.Write([]byte(html))
+	}))
+	t.Cleanup(srv.Close)
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+
+	for _, filter := range []string{"ngc", "gamecube", ""} {
+		for i := 0; i < 50; i++ {
+			results := SearchVimm(reg, "mario", filter)
+			if len(results) != 1 {
+				t.Fatalf("filter %q call %d: got %d results, want 1", filter, i, len(results))
+			}
+			if results[0].PlatformSlug != "ngc" {
+				t.Fatalf("filter %q call %d: PlatformSlug=%q, want ngc", filter, i, results[0].PlatformSlug)
+			}
+		}
+		if filter != "" && gotSystem != "GameCube" {
+			t.Errorf("filter %q sent ?system=%q, want GameCube", filter, gotSystem)
+		}
 	}
 }

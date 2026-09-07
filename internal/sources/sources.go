@@ -36,8 +36,15 @@ type MyrientSpec struct {
 
 // VimmSpec carries the configurable bits of the Vimm direct-download driver.
 type VimmSpec struct {
-	BaseURL         string            `json:"base_url"`
+	BaseURL string `json:"base_url"`
+	// PlatformSystems maps a canonical gamarr platform slug to the value Vimm
+	// expects in its ?system= filter. It must stay injective -- one slug per
+	// system -- because the search path inverts it to label results.
 	PlatformSystems map[string]string `json:"platform_systems"`
+	// PlatformAliases maps a non-canonical slug that may arrive on a wishlist
+	// item or an API request onto the canonical slug in PlatformSystems. Kept
+	// separate so aliases never enter the inverted map.
+	PlatformAliases map[string]string `json:"platform_aliases,omitempty"`
 }
 
 // Default returns the embedded fallback registry.
