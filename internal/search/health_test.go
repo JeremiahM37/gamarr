@@ -357,9 +357,7 @@ func TestRecordRateLimited_OpensImmediately(t *testing.T) {
 	if h.CircuitRetryInSec < 1 || h.CircuitRetryInSec > 2 {
 		t.Errorf("CircuitRetryInSec=%d, want 1-2", h.CircuitRetryInSec)
 	}
-	// Does not count toward consecutive-failure streak threshold alone after reset of streak...
-	// streak untouched: two more RecordSearchFail should still be needed from 0 streak.
-	// Actually we don't increment streak — verify 2 fails don't open beyond rate window after it expires.
+	// That the streak is left alone is asserted separately, below.
 }
 
 func TestRecordRateLimited_DoesNotInflateFailStreak(t *testing.T) {
