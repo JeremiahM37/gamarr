@@ -4,9 +4,9 @@
 
 **Goal:** Add an optional multi-platform Minerva Archive source to Gamarr with an incrementally maintained local SQLite index and qBittorrent selective-file downloads.
 
-**Architecture:** Gamarr will build its own searchable Minerva index from the real Minerva `.torrent` metadata, store that index under `DATA_DIR/minerva/index.db`, and query it locally during searches. Minerva results stay torrent results but carry a target file index/path; qBittorrent is used only for payload download, with Gamarr validating the real torrent file list before enabling the requested file. Sync is incremental: a lightweight assets-listing validator detects no-change runs, and only new/changed collection torrents are downloaded and parsed.
+**Architecture:** Gamarr builds its searchable Minerva index from the real Minerva `.torrent` metadata, stores it at `DATA_DIR/minerva/index.db`, and searches locally. A Minerva result is a torrent result plus an exact target file index/path/size; qBittorrent validates the live file list before Gamarr changes priorities or starts payload transfer. Scheduled sync first checks lightweight assets metadata and only downloads/parses collection torrents that are new or changed.
 
-**Tech Stack:** Go 1.24+, `modernc.org/sqlite` already present in Gamarr, `net/http`, `crypto/sha1` for BitTorrent v1 info hashes, existing qBittorrent Web API client, chi HTTP API, existing Gamarr search/download/health pipelines.
+**Tech Stack:** Go 1.24+, `modernc.org/sqlite` already present in Gamarr, `net/http`, `crypto/sha1`, existing qBittorrent Web API client, chi HTTP API, existing Gamarr search/download/health pipelines.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-minerva-source-design.md`
 
@@ -28,43 +28,41 @@
 
 ## File Structure
 
-New focused package:
-
 ```text
 internal/minerva/
-├── bencode.go       # minimal safe bencode decoder + raw info-dictionary boundaries
-├── torrent.go       # .torrent -> TorrentMeta/FileMeta + SHA-1 info hash
-├── index.go         # SQLite schema, upserts, status metadata, local search
-├── client.go        # Minerva assets listing/version and torrent HTTP retrieval
-├── sync.go          # incremental/full sync orchestration and concurrency guard
-└── *_test.go        # package-local unit/integration tests
+├── bencode.go       # bounded decoder + raw info-dictionary byte range
+├── torrent.go       # .torrent -> TorrentMeta/FileMeta + v1 info hash
+├── index.go         # SQLite schema, atomic collection replacement, local search
+├── client.go        # Minerva assets/version and conditional torrent HTTP requests
+├── sync.go          # incremental/full sync + concurrency state
+└── *_test.go
 ```
 
-Existing files changed by responsibility:
+Existing files changed:
 
 ```text
-internal/sources/sources.go         Minerva registry type
-internal/sources/defaults.json      disabled default + endpoints + platform collection paths
-internal/sources/load.go            Minerva env overrides
-internal/sources/sources_test.go    registry/default/override compatibility
-internal/config/config_test.go      disabled-by-default assertion
-internal/models/models.go           generic selective-torrent metadata on search/download models
-internal/qbit/client.go             paused add, file priorities, start/resume, file progress
-internal/qbit/client_test.go        qB API contract tests
-internal/download/manager.go        selective Minerva orchestration + target-only import
-internal/download/manager_test.go   mismatch, priority, completion/import tests
-internal/search/minerva.go          Minerva service -> SearchResult adapter + health
-internal/search/minerva_test.go     local search result mapping
-internal/api/api.go                 service dependency, /api/search, /api/download, routes
-internal/api/requests.go            request search/download routing
-internal/api/torznab_wire.go        Minerva in Torznab search fan-out
-internal/api/minerva.go             status/sync handlers
-internal/api/main_test.go           router test fixture accepts optional Minerva service
-internal/api/router_test.go         source/status route tests
-internal/api/openapi.json           selective fields + Minerva endpoints
-internal/api/admin.go               Minerva source status on admin dashboard
-cmd/gamarr/main.go                  service lifecycle, initial/periodic sync, scheduler fan-out
-README.md                           configuration and behavior
+internal/sources/sources.go
+internal/sources/defaults.json
+internal/sources/load.go
+internal/sources/sources_test.go
+internal/config/config_test.go
+internal/models/models.go
+internal/qbit/client.go
+internal/qbit/client_test.go
+internal/download/manager.go
+internal/download/manager_test.go
+internal/search/minerva.go
+internal/search/minerva_test.go
+internal/api/api.go
+internal/api/requests.go
+internal/api/torznab_wire.go
+internal/api/minerva.go
+internal/api/main_test.go
+internal/api/router_test.go
+internal/api/openapi.json
+internal/api/admin.go
+cmd/gamarr/main.go
+README.md
 ```
 
 ---
@@ -79,8 +77,6 @@ README.md                           configuration and behavior
 - Modify: `internal/config/config_test.go`
 
 **Interfaces:**
-- Produces: `sources.Registry.Minerva sources.MinervaSpec`
-- Produces:
 
 ```go
 type MinervaSpec struct {
@@ -92,51 +88,39 @@ type MinervaSpec struct {
 }
 ```
 
-- Environment overrides: `MINERVA_ENABLED`, `MINERVA_URL`, `MINERVA_ASSETS_URL`, `MINERVA_SYNC_INTERVAL_HOURS`.
+`Registry` gains `Minerva MinervaSpec`. Env overrides are `MINERVA_ENABLED`, `MINERVA_URL`, `MINERVA_ASSETS_URL`, and `MINERVA_SYNC_INTERVAL_HOURS`.
 
-- [ ] **Step 1: Write failing registry/default tests**
+- [ ] **Step 1: Write failing default/override tests**
 
-Add explicit assertions to `internal/sources/sources_test.go`:
+Add to `internal/sources/sources_test.go`:
 
 ```go
 func TestDefault_MinervaDisabledAndConfigured(t *testing.T) {
     r, err := Default()
-    if err != nil {
-        t.Fatal(err)
-    }
-    if r.Minerva.Enabled {
-        t.Fatal("Minerva must be disabled by default")
-    }
-    if r.Minerva.BaseURL != "https://minerva-archive.org/" {
-        t.Fatalf("BaseURL=%q", r.Minerva.BaseURL)
-    }
-    if r.Minerva.AssetsURL != "https://minerva-archive.org/assets/" {
-        t.Fatalf("AssetsURL=%q", r.Minerva.AssetsURL)
-    }
-    if r.Minerva.SyncIntervalHours != 24 {
-        t.Fatalf("SyncIntervalHours=%d", r.Minerva.SyncIntervalHours)
-    }
+    if err != nil { t.Fatal(err) }
+    if r.Minerva.Enabled { t.Fatal("Minerva must be disabled by default") }
+    if r.Minerva.BaseURL != "https://minerva-archive.org/" { t.Fatalf("BaseURL=%q", r.Minerva.BaseURL) }
+    if r.Minerva.AssetsURL != "https://minerva-archive.org/assets/" { t.Fatalf("AssetsURL=%q", r.Minerva.AssetsURL) }
+    if r.Minerva.SyncIntervalHours != 24 { t.Fatalf("SyncIntervalHours=%d", r.Minerva.SyncIntervalHours) }
     if r.Minerva.PlatformPaths["nds"] != "No-Intro/Nintendo - Nintendo DS (Decrypted)/" {
         t.Fatalf("nds path=%q", r.Minerva.PlatformPaths["nds"])
     }
 }
 ```
 
-Extend `TestApplyEnvOverrides` with one case that sets all four Minerva overrides and asserts the parsed values.
+Extend the existing env-override test to set all four Minerva variables and assert the resulting values.
 
-- [ ] **Step 2: Run the source tests and confirm failure**
-
-Run:
+- [ ] **Step 2: Verify the tests fail**
 
 ```bash
 go test ./internal/sources -run 'TestDefault_Minerva|TestApplyEnvOverrides' -v
 ```
 
-Expected: compile failure because `Registry.Minerva` and `MinervaSpec` do not exist.
+Expected: compile failure because Minerva config types do not exist.
 
-- [ ] **Step 3: Add the source type and disabled embedded defaults**
+- [ ] **Step 3: Add disabled embedded defaults**
 
-Add `Minerva MinervaSpec` to `Registry`, define `MinervaSpec`, and add this shape to `defaults.json`:
+Add to `defaults.json`:
 
 ```json
 "minerva": {
@@ -168,17 +152,15 @@ Add `Minerva MinervaSpec` to `Registry`, define `MinervaSpec`, and add this shap
 }
 ```
 
-Collections that return 404 during sync are treated as unavailable for that platform, not as a boot failure.
+A 404 for one configured Minerva collection later means “platform unavailable from Minerva”, not startup failure.
 
-- [ ] **Step 4: Implement env overrides without breaking external registry files**
+- [ ] **Step 4: Implement env overrides**
 
-In `ApplyEnvOverrides`, only override a Minerva value when the corresponding env variable is non-empty. Parse `MINERVA_ENABLED` with accepted values `true/false`, `1/0`, `yes/no`; ignore invalid values and retain the registry value. Parse `MINERVA_SYNC_INTERVAL_HOURS` as a positive integer, otherwise retain the registry value.
+`ApplyEnvOverrides` changes Minerva values only when the env variable is present/non-empty. Accept `true/false`, `1/0`, `yes/no` for `MINERVA_ENABLED`; invalid values leave the registry value unchanged. Accept only a positive integer for the sync interval. An external registry omitting `minerva` remains valid and disabled.
 
-External registry JSON that omits `minerva` must still load, yielding a zero-value disabled Minerva block.
+- [ ] **Step 5: Assert disabled-by-default through `config.Load`**
 
-- [ ] **Step 5: Add config-level disabled-by-default coverage**
-
-In `internal/config/config_test.go`, add `MINERVA_ENABLED`, `MINERVA_URL`, `MINERVA_ASSETS_URL`, and `MINERVA_SYNC_INTERVAL_HOURS` to the env cleanup list and assert:
+Add Minerva env names to the cleanup list in `internal/config/config_test.go`, then assert:
 
 ```go
 if cfg.Sources.Minerva.Enabled {
@@ -211,7 +193,6 @@ git commit -m "feat: add Minerva source configuration"
 - Create: `internal/minerva/torrent_test.go`
 
 **Interfaces:**
-- Produces:
 
 ```go
 type FileMeta struct {
@@ -230,38 +211,25 @@ type TorrentMeta struct {
 func ParseTorrent(data []byte) (TorrentMeta, error)
 ```
 
-- `InfoHash` is lowercase hexadecimal SHA-1 of the exact raw bencoded `info` dictionary bytes.
-- Paths returned by `ParseTorrent` are slash-separated relative paths; absolute paths, `..` components, NUL bytes, and empty filenames are rejected.
+- [ ] **Step 1: Write failing parser tests**
 
-- [ ] **Step 1: Write failing single-file and multi-file tests**
-
-Use literal bencoded fixtures in `torrent_test.go`, including:
+Cover one single-file torrent, one multi-file torrent, and rejected path/malformed cases. The multi-file assertion must verify file order and index `0..n-1`, because qBittorrent uses this order.
 
 ```go
 func TestParseTorrentMultiFile(t *testing.T) {
     data := []byte("d4:infod5:filesld6:lengthi3e4:pathl5:a.ndseed6:lengthi4e4:pathl3:dir5:b.ndseee4:name10:collectionee")
     got, err := ParseTorrent(data)
-    if err != nil {
-        t.Fatal(err)
-    }
-    if got.Name != "collection" || len(got.Files) != 2 {
-        t.Fatalf("got %+v", got)
-    }
-    if got.Files[0].Index != 0 || got.Files[0].Path != "a.nds" || got.Files[0].Size != 3 {
-        t.Fatalf("first=%+v", got.Files[0])
-    }
-    if got.Files[1].Index != 1 || got.Files[1].Path != "dir/b.nds" || got.Files[1].Size != 4 {
-        t.Fatalf("second=%+v", got.Files[1])
-    }
-    if len(got.InfoHash) != 40 {
-        t.Fatalf("info hash=%q", got.InfoHash)
-    }
+    if err != nil { t.Fatal(err) }
+    if got.Name != "collection" || len(got.Files) != 2 { t.Fatalf("got %+v", got) }
+    if got.Files[0].Index != 0 || got.Files[0].Path != "a.nds" || got.Files[0].Size != 3 { t.Fatalf("first=%+v", got.Files[0]) }
+    if got.Files[1].Index != 1 || got.Files[1].Path != "dir/b.nds" || got.Files[1].Size != 4 { t.Fatalf("second=%+v", got.Files[1]) }
+    if len(got.InfoHash) != 40 { t.Fatalf("info hash=%q", got.InfoHash) }
 }
 ```
 
-Also add a single-file torrent test and table tests rejecting `../escape.nds`, `/absolute.nds`, empty path components, malformed bencode, and duplicate/invalid `info` dictionaries.
+Reject `../escape.nds`, absolute paths, NUL bytes, empty filenames, malformed integers/lists/dictionaries, and missing/duplicate top-level `info` keys.
 
-- [ ] **Step 2: Run the parser tests and confirm failure**
+- [ ] **Step 2: Verify failure**
 
 ```bash
 go test ./internal/minerva -run TestParseTorrent -v
@@ -269,24 +237,22 @@ go test ./internal/minerva -run TestParseTorrent -v
 
 Expected: compile failure because `ParseTorrent` does not exist.
 
-- [ ] **Step 3: Implement a minimal bounded bencode decoder**
+- [ ] **Step 3: Implement the bounded bencode decoder**
 
-`bencode.go` must decode integers, byte strings, lists, and dictionaries with recursion-depth and input-bound checks. While decoding the top-level dictionary, record the byte offsets of the `info` value so `torrent.go` can hash the exact raw bytes instead of re-encoding a map.
-
-Use an internal representation only; do not export a generic bencode API.
+Decode integers, byte strings, lists, and dictionaries with a maximum nesting depth of 64 and no reads beyond the supplied byte slice. While parsing the top-level dictionary, record the exact start/end byte offsets of the `info` value. Keep decoder types unexported.
 
 - [ ] **Step 4: Implement `ParseTorrent`**
 
-Support BitTorrent v1 single-file (`length`) and multi-file (`files`) structures. Preserve the file order from the torrent because qBittorrent file indices are order-sensitive. Compute:
+Support BitTorrent v1 `length` and `files`. Compute the hash from the original raw info bytes:
 
 ```go
 sum := sha1.Sum(infoRaw)
 infoHash := hex.EncodeToString(sum[:])
 ```
 
-Normalize each path with `path.Clean`, reject paths whose clean value is `.` or begins with `../`, and reject any leading `/`.
+Normalize with `path.Clean`; reject `.`/empty, leading `/`, any cleaned path beginning `../`, and NUL bytes. Set `Name` to `path.Base(cleanPath)` and preserve the torrent file list order.
 
-- [ ] **Step 5: Run parser tests**
+- [ ] **Step 5: Run tests**
 
 ```bash
 go test ./internal/minerva -run TestParseTorrent -v
@@ -303,15 +269,13 @@ git commit -m "feat: parse Minerva torrent metadata"
 
 ---
 
-### Task 3: Add the Local SQLite Index and Local Search
+### Task 3: Add the Local SQLite Index and Search
 
 **Files:**
 - Create: `internal/minerva/index.go`
 - Create: `internal/minerva/index_test.go`
 
 **Interfaces:**
-- Consumes: `TorrentMeta`, `FileMeta` from Task 2.
-- Produces:
 
 ```go
 type IndexedFile struct {
@@ -325,68 +289,54 @@ type IndexedFile struct {
 }
 
 type CollectionRecord struct {
-    PlatformSlug string
-    BrowsePath   string
+    PlatformSlug  string
+    BrowsePath    string
     BundleVersion string
-    TorrentURL   string
-    InfoHash     string
-    ETag         string
-    LastModified string
+    TorrentURL    string
+    InfoHash      string
+    ETag          string
+    LastModified  string
     ContentSHA256 string
 }
 
-type Index struct { /* owns *sql.DB */ }
+type Index struct {
+    db *sql.DB
+}
 
-func OpenIndex(path string) (*Index, error)
+func OpenIndex(dbPath string) (*Index, error)
 func (i *Index) Close() error
 func (i *Index) ReplaceCollection(ctx context.Context, rec CollectionRecord, files []FileMeta) error
+func (i *Index) UpdateValidators(ctx context.Context, platformSlug, etag, lastModified string) error
 func (i *Index) Search(ctx context.Context, query, platformSlug string, limit int) ([]IndexedFile, error)
 func (i *Index) Collection(ctx context.Context, platformSlug string) (CollectionRecord, bool, error)
 func (i *Index) SetState(ctx context.Context, key, value string) error
 func (i *Index) State(ctx context.Context, key string) (string, bool, error)
 func (i *Index) Counts(ctx context.Context) (collections, files int, err error)
-func (i *Index) Reset(ctx context.Context) error
 ```
 
-- [ ] **Step 1: Write failing schema/upsert/search tests**
+- [ ] **Step 1: Write failing index tests**
 
-Create an index in `t.TempDir()` and assert a collection replacement is atomic and searchable:
+Create a temp DB, insert one NDS collection, search `pokemon heartgold`, and assert the result includes target file index, hash, URL and size. Add tests for platform isolation, result limit, and atomic replacement (old file rows remain if a replacement insertion fails).
 
 ```go
-func TestIndexReplaceAndSearch(t *testing.T) {
-    idx, err := OpenIndex(filepath.Join(t.TempDir(), "index.db"))
-    if err != nil { t.Fatal(err) }
-    defer idx.Close()
-
-    rec := CollectionRecord{
-        PlatformSlug: "nds", BrowsePath: "No-Intro/Nintendo - Nintendo DS (Decrypted)/",
-        BundleVersion: "v0.3", TorrentURL: "https://example.test/nds.torrent",
-        InfoHash: strings.Repeat("a", 40), ContentSHA256: "fixture",
-    }
-    files := []FileMeta{{Index: 7, Path: "Pokemon - HeartGold Version (Europe).nds", Name: "Pokemon - HeartGold Version (Europe).nds", Size: 134217728}}
-    if err := idx.ReplaceCollection(context.Background(), rec, files); err != nil { t.Fatal(err) }
-
-    hits, err := idx.Search(context.Background(), "pokemon heartgold", "nds", 20)
-    if err != nil { t.Fatal(err) }
-    if len(hits) != 1 || hits[0].FileIndex != 7 || hits[0].InfoHash != rec.InfoHash {
-        t.Fatalf("hits=%+v", hits)
-    }
+hits, err := idx.Search(context.Background(), "pokemon heartgold", "nds", 20)
+if err != nil { t.Fatal(err) }
+if len(hits) != 1 || hits[0].FileIndex != 7 || hits[0].InfoHash != strings.Repeat("a", 40) {
+    t.Fatalf("hits=%+v", hits)
 }
 ```
 
-Add a replacement test proving old files disappear only after the replacement transaction commits, plus platform-scoping and limit tests.
-
-- [ ] **Step 2: Run index tests and confirm failure**
+- [ ] **Step 2: Verify failure**
 
 ```bash
-go test ./internal/minerva -run TestIndex -v
+go test ./internal/minerva -run 'TestIndex|TestSearch' -v
 ```
 
-Expected: compile failure because `OpenIndex` and index types do not exist.
+Expected: compile failure because `OpenIndex` does not exist.
 
-- [ ] **Step 3: Implement the schema**
+- [ ] **Step 3: Implement schema creation**
 
-Use the already-present `modernc.org/sqlite` driver and create:
+Create these tables/indexes and enable foreign keys:
 
 ```sql
 CREATE TABLE IF NOT EXISTS minerva_collections (
@@ -408,23 +358,18 @@ CREATE TABLE IF NOT EXISTS minerva_files (
   size INTEGER NOT NULL,
   PRIMARY KEY(platform_slug, file_index)
 );
-CREATE INDEX IF NOT EXISTS idx_minerva_files_platform_name
-  ON minerva_files(platform_slug, name);
+CREATE INDEX IF NOT EXISTS idx_minerva_files_platform_name ON minerva_files(platform_slug, name);
 CREATE TABLE IF NOT EXISTS minerva_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 ```
 
-Enable foreign keys on the connection.
+- [ ] **Step 4: Implement atomic replacement and local search**
 
-- [ ] **Step 4: Implement transactional replacement and search**
+`ReplaceCollection` runs the collection upsert, old-file delete, and new-file inserts in one transaction. `Search` lowercases/tokenizes whitespace-delimited query words and builds parameterized `LOWER(name) LIKE ?` predicates joined by `AND`. Require a non-empty platform slug in v1 and cap limit to `1..100` with default 20.
 
-`ReplaceCollection` starts one SQL transaction, upserts the collection row, deletes old file rows for that platform, inserts the new rows, and commits only after every insert succeeds.
-
-`Search` tokenizes the query into lowercase whitespace-separated words and builds parameterized `LOWER(name) LIKE ?` predicates joined with `AND`. Require a non-empty platform slug for v1 to avoid expensive cross-platform scans; return an empty result if the platform has no indexed collection.
-
-- [ ] **Step 5: Run index tests**
+- [ ] **Step 5: Run tests**
 
 ```bash
 go test ./internal/minerva -run 'TestIndex|TestSearch' -v
@@ -441,7 +386,7 @@ git commit -m "feat: add local Minerva search index"
 
 ---
 
-### Task 4: Implement Incremental Minerva Sync
+### Task 4: Implement Incremental Sync and Atomic Async Start
 
 **Files:**
 - Create: `internal/minerva/client.go`
@@ -449,10 +394,10 @@ git commit -m "feat: add local Minerva search index"
 - Create: `internal/minerva/sync_test.go`
 
 **Interfaces:**
-- Consumes: `sources.MinervaSpec`, `Index`, `ParseTorrent`.
-- Produces:
 
 ```go
+var ErrSyncInProgress = errors.New("minerva sync already in progress")
+
 type SyncReport struct {
     Checked   int `json:"checked"`
     Updated   int `json:"updated"`
@@ -471,23 +416,40 @@ type Status struct {
     Files       int       `json:"files"`
 }
 
-type Service struct { /* spec, HTTP client, index, sync mutex/state */ }
+type Service struct {
+    spec      sources.MinervaSpec
+    client    *http.Client
+    index     *Index
+    mu        sync.Mutex
+    syncing   bool
+    lastError string
+}
 
 func Open(dataDir string, spec sources.MinervaSpec) (*Service, error)
 func (s *Service) Close() error
 func (s *Service) Sync(ctx context.Context, force bool) (SyncReport, error)
+func (s *Service) StartSync(ctx context.Context, force bool) error
 func (s *Service) Search(ctx context.Context, query, platformSlug string, limit int) ([]IndexedFile, error)
 func (s *Service) Status(ctx context.Context) Status
 func (s *Service) Ready(ctx context.Context) bool
 ```
 
-- [ ] **Step 1: Write failing no-change and changed-content sync tests**
+`Sync` is blocking. `StartSync` atomically claims the same `syncing` guard, then launches the actual sync in a goroutine and returns immediately. Both call one private `runSync` implementation; both clear the guard and set `lastError` exactly once when finished.
 
-Use one `httptest.Server` that serves an assets listing and two fake `.torrent` files. The first sync returns 200 responses and creates rows; the second assets request honors `If-None-Match` and returns 304. Assert the second report updates zero collections and the torrent endpoints receive no second request.
+- [ ] **Step 1: Write failing incremental/concurrency tests**
 
-Also test a changed assets validator where one torrent returns 304 and the other returns changed bytes; assert only the changed collection is reparsed/replaced.
+Use an `httptest.Server` that serves an assets listing and two fake torrents. Assert:
 
-- [ ] **Step 2: Run sync tests and confirm failure**
+```text
+first Sync: assets 200, torrent metadata fetched and indexed
+second Sync: assets request sends validators and receives 304, zero torrent requests
+changed assets response: unchanged collection 304, changed collection 200/replaced
+StartSync: first call nil, immediate second call ErrSyncInProgress
+```
+
+Also assert a 404 or malformed changed torrent never deletes the previously good rows.
+
+- [ ] **Step 2: Verify failure**
 
 ```bash
 go test ./internal/minerva -run TestSync -v
@@ -497,69 +459,62 @@ Expected: compile failure because `Service` does not exist.
 
 - [ ] **Step 3: Implement assets bundle discovery**
 
-`client.go` GETs `spec.AssetsURL` with `User-Agent: Gamarr/1.0`. Parse directory links matching:
-
-```text
-Minerva_Myrient_v<major>.<minor>
-```
-
-Choose the highest numeric semantic pair. Store the assets-listing `ETag`, `Last-Modified`, and SHA-256 body hash in `minerva_state` keys:
+GET `spec.AssetsURL` with `User-Agent: Gamarr/1.0`. Parse directory links named `Minerva_Myrient_v<major>.<minor>` and select the highest numeric pair. Persist these state keys:
 
 ```text
 assets_etag
 assets_last_modified
 assets_body_sha256
 bundle_version
+last_sync
 ```
 
-On normal sync send `If-None-Match` and `If-Modified-Since`. If the server answers 304, return immediately without requesting any `.torrent` files.
+On non-forced sync, send `If-None-Match` and `If-Modified-Since`. `304` returns immediately. A `200` whose SHA-256 and selected bundle version both equal stored values also returns immediately without requesting collection torrents.
 
-If the assets listing is 200 but its SHA-256 and selected bundle version match the stored values, also return immediately unless `force=true`.
+- [ ] **Step 4: Implement deterministic torrent URLs**
 
-- [ ] **Step 4: Implement deterministic torrent URL construction**
-
-For each configured `PlatformPaths[slug]`, remove the trailing slash, replace path separators `/` with ` - `, and construct the filename:
+For a platform browse path, trim its trailing slash, replace `/` with ` - `, create filename `Minerva_Myrient - <collection-name>.torrent`, URL-escape that filename, and join it under:
 
 ```text
-Minerva_Myrient - <collection-name>.torrent
+<AssetsURL>/Minerva_Myrient_<bundle-version>/
 ```
 
-Then URL-escape the filename and join it below:
+Keep both endpoint and collection paths overrideable via `MinervaSpec`.
+
+- [ ] **Step 5: Implement per-collection conditional sync**
+
+For existing rows send stored ETag/Last-Modified. Handle exactly:
 
 ```text
-<AssetsURL>/Minerva_Myrient_<bundle-version>/<escaped-filename>
+304 -> Unchanged++, no parse
+404 -> Missing++, preserve previous row/files
+200 -> read through io.LimitReader capped at 256 MiB + 1 byte; reject overflow
+200 same SHA-256 -> UpdateValidators, Unchanged++
+200 changed/new -> ParseTorrent + ReplaceCollection, Updated++, Files += parsed file count
+other status/network/parse error -> return error, leave old collection untouched
 ```
 
-This follows Minerva's current public asset naming used by existing Minerva tooling; keep `AssetsURL` and platform paths overrideable through the source registry.
+A forced sync bypasses validators/body-equality and reparses each reachable configured collection; it does not clear the DB first.
 
-- [ ] **Step 5: Implement per-collection incremental fetch**
+- [ ] **Step 6: Implement the shared concurrency guard**
 
-For a collection already in SQLite, send its stored `ETag` and `Last-Modified`. Outcomes:
+Create private methods:
 
-```text
-304 -> increment Unchanged; do not parse
-404 -> increment Missing; preserve the previous indexed collection if one exists
-200 -> read with a 256 MiB metadata body cap, SHA-256 the bytes, compare with stored content_sha256
-same SHA-256 -> update validators only, increment Unchanged
-different/new -> ParseTorrent, ReplaceCollection, increment Updated
-other HTTP/error -> return sync error while leaving the previous collection untouched
+```go
+func (s *Service) beginSync() error
+func (s *Service) finishSync(err error)
+func (s *Service) runSync(ctx context.Context, force bool) (SyncReport, error)
 ```
 
-Do not delete a previously good collection because a transient sync request fails.
+`Sync` calls `beginSync`, defers `finishSync`, then calls `runSync`. `StartSync` calls `beginSync`, starts one goroutine that calls `runSync` and `finishSync`, then returns. This makes the HTTP 202/409 decision race-free.
 
-- [ ] **Step 6: Add concurrency guard and full rebuild**
-
-Only one `Sync` may run at a time. A second call returns a typed `ErrSyncInProgress`. `force=true` bypasses validators/content equality and reparses every reachable configured collection after resolving the current bundle version. `Index.Reset` is not called before a full sync; replace collections one-by-one so failure does not erase the old index.
-
-After a successful sync, store `last_sync` as RFC3339 UTC. `Status.Ready` is true when the index contains at least one collection.
-
-- [ ] **Step 7: Run sync package tests**
+- [ ] **Step 7: Run all Minerva tests**
 
 ```bash
 go test ./internal/minerva -v
 ```
 
-Expected: PASS, including 304/no-change, changed-only, 404-preserves-old-index, malformed-torrent-preserves-old-index, and concurrent-sync tests.
+Expected: PASS.
 
 - [ ] **Step 8: Commit**
 
@@ -577,57 +532,56 @@ git commit -m "feat: sync Minerva index incrementally"
 - Modify: `internal/qbit/client_test.go`
 
 **Interfaces:**
-- Extends `TorrentFile`:
 
 ```go
-Progress float64 `json:"progress"`
-```
+type TorrentFile struct {
+    Name     string  `json:"name"`
+    Size     int64   `json:"size"`
+    Priority int     `json:"priority"`
+    Index    int     `json:"index"`
+    Progress float64 `json:"progress"`
+}
 
-- Produces:
-
-```go
 func (c *Client) AddTorrentPaused(torrentURL, title, savePath, category string) bool
 func (c *Client) SetFilePriority(hash string, ids []int, priority int) bool
 func (c *Client) StartTorrent(hash string) bool
 ```
 
-- [ ] **Step 1: Write failing qB API request-shape tests**
+- [ ] **Step 1: Write failing API-contract tests**
 
-Add tests using `httptest.Server` that assert:
+Assert the fake qB server receives:
 
 ```text
-POST /api/v2/torrents/add       contains urls, savepath, category and paused/stopped flag
-POST /api/v2/torrents/filePrio  contains hash, id="0|1|2", priority="0"
-POST /api/v2/torrents/start     contains hashes=<hash>
+POST /api/v2/torrents/add       urls/savepath/category plus non-starting add flags
+POST /api/v2/torrents/filePrio  hash, id="0|1|2", priority="0"
+POST /api/v2/torrents/start     hashes=<hash>
 ```
 
-Also assert `StartTorrent` falls back to `/api/v2/torrents/resume` when `/start` returns 404, matching the existing stop/pause compatibility style.
+Also test `/start` 404 fallback to `/resume`.
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [ ] **Step 2: Verify failure**
 
 ```bash
 go test ./internal/qbit -run 'TestAddTorrentPaused|TestSetFilePriority|TestStartTorrent' -v
 ```
 
-Expected: compile failure because the methods do not exist.
+Expected: compile failure because the new methods do not exist.
 
-- [ ] **Step 3: Implement paused add without changing `AddTorrent`**
+- [ ] **Step 3: Implement paused add without changing existing add semantics**
 
-Keep existing `AddTorrent` behavior untouched. Factor the common form submission internally if useful, but preserve every existing qB 5.2 response compatibility test. `AddTorrentPaused` must request a non-starting add; send the modern stopped flag and legacy paused flag in the form so supported qB versions keep payload transfer stopped until priorities are applied.
+Keep `AddTorrent` unchanged. `AddTorrentPaused` uses the same authentication/response handling but adds qB's non-starting add fields (`stopped=true` and legacy-compatible `paused=true`). Preserve existing qB 5.2 JSON/204 tests.
 
 - [ ] **Step 4: Implement file priority and start/resume**
 
-`SetFilePriority` rejects an empty id slice, joins integer ids with `|`, posts to `/api/v2/torrents/filePrio`, and uses the same 403 re-auth behavior as other mutating methods. Accept any 2xx response.
+`SetFilePriority` rejects an empty id slice, joins ids with `|`, posts `/api/v2/torrents/filePrio`, and reauthenticates on 403 like existing mutators. `StartTorrent` posts `/api/v2/torrents/start` and falls back to `/api/v2/torrents/resume` on 404. Accept any 2xx as success.
 
-`StartTorrent` posts to `/api/v2/torrents/start`; on 404 retry `/api/v2/torrents/resume`.
-
-- [ ] **Step 5: Run all qB tests**
+- [ ] **Step 5: Run qB tests**
 
 ```bash
 go test ./internal/qbit -v
 ```
 
-Expected: PASS, including all existing legacy and qBittorrent 5.2 tests.
+Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -638,15 +592,13 @@ git commit -m "feat: add qBittorrent selective file controls"
 
 ---
 
-### Task 6: Add Safe Selective Torrent Download and Target-Only Import
+### Task 6: Add Safe Selective Download and Target-Only Import
 
 **Files:**
 - Modify: `internal/download/manager.go`
 - Modify: `internal/download/manager_test.go`
 
 **Interfaces:**
-- Consumes qB methods from Task 5.
-- Produces:
 
 ```go
 func (m *Manager) DownloadSelectiveTorrent(
@@ -659,86 +611,56 @@ func (m *Manager) DownloadSelectiveTorrent(
 ) (string, error)
 ```
 
-- Minerva selective jobs persist private replay metadata on the job row: `source=minerva`, `torrent_file_index`, `torrent_file_path`, `torrent_file_size`, `download_url`.
+Selective jobs persist `source=minerva`, `download_url`, `info_hash`, `torrent_file_index`, `torrent_file_path`, `torrent_file_size`, title/platform fields for retry.
 
 - [ ] **Step 1: Write failing mismatch-safety test**
 
-Use a fake qB server where the indexed target says index 7/path `HeartGold.nds`, but qB returns index 7/path `Different.nds`. Assert:
-
-```text
-- job reaches error
-- filePrio is never called
-- start/resume is never called
-- no library file is created
-```
+Fake qB returns index 7 as `Different.nds` while the request expects `HeartGold.nds`. Assert job error, zero `filePrio` calls, zero start/resume calls, and no library import.
 
 - [ ] **Step 2: Write failing successful-selection test**
 
-Fake a new torrent with files 0, 1, 2. Assert the call order is:
+For a new 3-file torrent assert order:
 
 ```text
-add paused -> read file list -> priority 0 for all indices -> priority 7 for target -> start
+add paused -> GetTorrentFiles -> all indices priority 0 -> target priority 7 -> start
 ```
 
-When the target file later reports `progress: 1`, assert only that file is imported under `GAMES_ROMS_PATH/<platform_slug>/`.
+Then make only the target report `progress=1` and assert only that target is imported.
 
-- [ ] **Step 3: Run focused download tests and confirm failure**
+- [ ] **Step 3: Verify failure**
 
 ```bash
-go test ./internal/download -run 'TestDownloadSelectiveTorrent' -v
+go test ./internal/download -run TestDownloadSelectiveTorrent -v
 ```
 
-Expected: compile failure because `DownloadSelectiveTorrent` does not exist.
+Expected: compile failure because the method does not exist.
 
-- [ ] **Step 4: Implement pre-existing torrent safety**
+- [ ] **Step 4: Implement new-vs-existing torrent behavior**
 
-Before adding, query qBittorrent by configured category for `infoHash`.
-
-Behavior:
+Before add, query qB torrents and match the normalized lowercase hash.
 
 ```text
-new hash:
-  add paused
-  wait for metadata/file list
-  validate target
-  set all files priority 0
-  set target priority 7
-  start
-
-existing hash:
-  do not reset all priorities
-  validate target
-  set target priority 7 only
-  start if stopped
+new hash: add paused; after validation set all priorities 0, target 7, start
+existing hash: do not zero existing wanted files; after validation set target 7, start only if stopped
 ```
 
-This preserves another active Minerva target or a user's pre-existing torrent instead of zeroing its wanted files.
+This supports concurrent requests for two files in the same Minerva collection without cancelling the first target.
 
-- [ ] **Step 5: Implement strict target validation**
+- [ ] **Step 5: Validate the live target before priorities**
 
-Poll `GetTorrentFiles(infoHash)` for metadata for at most 30 seconds. Find the entry whose `Index == fileIndex`; normalize both indexed and qB paths to slash-separated relative clean paths. Require exact normalized path equality and, when `fileSize > 0`, exact size equality.
+Poll `GetTorrentFiles(infoHash)` for at most 30 seconds. Find exact `Index`, normalize both paths to slash-separated relative clean paths, require exact path equality, and require exact size when `fileSize > 0`. A mismatch fails before priority/start. Delete the torrent/data only if this invocation created it; never delete a pre-existing torrent. Record `search.RecordDownloadFail("minerva", reason)`.
 
-On mismatch, fail before changing file priorities or starting payload transfer. If this invocation added a new torrent, remove only that newly-added torrent/data; never delete a torrent that existed before the request. Record `search.RecordDownloadFail("minerva", reason)`.
+- [ ] **Step 6: Watch only the requested file**
 
-- [ ] **Step 6: Implement a target-file watcher**
+Poll every 5 seconds and finish when the selected `TorrentFile.Progress >= 1`. Resolve the source from `Torrent.SavePath` plus the qB-returned relative file path; reject any cleaned path that escapes `SavePath`.
 
-Poll the qB file list every 5 seconds and watch only `TorrentFile.Progress` for `fileIndex`. Do not use the collection torrent's aggregate `Progress` as completion criteria.
+- [ ] **Step 7: Scan and import one file through existing import modes**
 
-When complete, locate the physical source safely from qB's `Torrent.SavePath` plus the qB-returned relative file name. Verify the final cleaned path remains below `SavePath` before touching it.
+Run the same ClamAV single-path scan used by DDL. Import only the target into `GAMES_ROMS_PATH/<platform_slug>/` using the existing `importContent` method so move/hardlink/symlink/copy behavior stays consistent. Add library metadata with source `minerva`, write the existing sidecar format with source `minerva`, mark job complete, and call `RecordDownloadSuccess("minerva")`.
 
-- [ ] **Step 7: Reuse existing scan/import primitives for one file**
+- [ ] **Step 8: Add retry dispatch**
 
-Run the same ClamAV path used by DDL for the completed target file. Import only the target file to:
-
-```text
-<GAMES_ROMS_PATH>/<sanitized platform_slug>/<sanitized basename>
-```
-
-Use the existing `importContent` method instead of raw `os.Rename`, so move/hardlink/symlink/copy settings remain consistent with the rest of Gamarr. Track the library source as `minerva`, write the sidecar using source `minerva`, mark the job completed, and call `search.RecordDownloadSuccess("minerva")`.
-
-- [ ] **Step 8: Add retry support for Minerva jobs**
-
-Extend the existing retry dispatch in `manager.go` so a failed Minerva selective job can replay only when all private fields (`download_url`, `info_hash`, file index/path/size, platform fields) are present. Keep normal torrent and DDL retry behavior unchanged.
+A failed selective job retries only when URL, hash, file index/path/size and platform fields are present. Reinvoke `DownloadSelectiveTorrent`; do not reinterpret it as a generic torrent.
 
 - [ ] **Step 9: Run download tests**
 
@@ -746,7 +668,7 @@ Extend the existing retry dispatch in `manager.go` so a failed Minerva selective
 go test ./internal/download -v
 ```
 
-Expected: PASS, including mismatch-before-start, pre-existing-torrent priority preservation, target-only completion/import, and retry tests.
+Expected: PASS, including mismatch-before-start, pre-existing priority preservation, target-only import, and retry.
 
 - [ ] **Step 10: Commit**
 
@@ -757,7 +679,7 @@ git commit -m "feat: download selected Minerva torrent files"
 
 ---
 
-### Task 7: Expose Minerva Results Through Existing Search and Download Models
+### Task 7: Integrate Minerva Search Results and Selective Routing
 
 **Files:**
 - Modify: `internal/models/models.go`
@@ -769,7 +691,8 @@ git commit -m "feat: download selected Minerva torrent files"
 - Modify: `cmd/gamarr/main.go`
 
 **Interfaces:**
-- Adds to both `models.SearchResult` and `models.DownloadRequest`:
+
+Add to both `models.SearchResult` and `models.DownloadRequest`:
 
 ```go
 TorrentFileIndex *int   `json:"torrent_file_index,omitempty"`
@@ -777,85 +700,46 @@ TorrentFilePath  string `json:"torrent_file_path,omitempty"`
 TorrentFileSize  int64  `json:"torrent_file_size,omitempty"`
 ```
 
-- Produces:
+Produce:
 
 ```go
 func SearchMinerva(svc *minerva.Service, query, platformSlug string) []*models.SearchResult
 ```
 
-- [ ] **Step 1: Write failing SearchResult mapping test**
+- [ ] **Step 1: Write failing result-mapping test**
 
-Seed a temporary Minerva index with a HeartGold row, call `SearchMinerva`, and assert:
+Seed a temp Minerva index and assert a HeartGold hit maps to `Indexer="Minerva"`, `SourceType="torrent"`, `DownloadProtocol="torrent"`, selected ROM size, info hash/torrent URL, safety score 95, and non-nil file index 7.
 
-```go
-if got[0].Indexer != "Minerva" || got[0].SourceType != "torrent" || got[0].DownloadProtocol != "torrent" {
-    t.Fatalf("result=%+v", got[0])
-}
-if got[0].TorrentFileIndex == nil || *got[0].TorrentFileIndex != 7 {
-    t.Fatalf("file index=%v", got[0].TorrentFileIndex)
-}
-if got[0].Size != 134217728 || got[0].SafetyScore != 95 {
-    t.Fatalf("result=%+v", got[0])
-}
-```
-
-- [ ] **Step 2: Run the test and confirm failure**
+- [ ] **Step 2: Verify failure**
 
 ```bash
 go test ./internal/search -run TestSearchMinerva -v
 ```
 
-Expected: compile failure because selective fields and `SearchMinerva` do not exist.
+Expected: compile failure because fields/adapter do not exist.
 
-- [ ] **Step 3: Implement the generic selective metadata fields and adapter**
+- [ ] **Step 3: Implement the adapter**
 
-Use a pointer for `TorrentFileIndex` so file index 0 is distinguishable from “not a selective result.” `SearchMinerva` returns nil without network access when `svc == nil`, Minerva is not ready, the platform slug is empty/all, or the Minerva health circuit is open.
+`SearchMinerva` returns nil when service is nil/not ready, platform is empty/`all`, or Minerva circuit is open. A successful local DB query calls `RecordSearchSuccess("minerva")`; DB error calls `RecordSearchFail`. Map selected file size (not collection size) and leave seeders at zero in v1 to avoid adding a live network dependency to every search.
 
-Map each local hit to:
+- [ ] **Step 4: Route selective downloads before generic torrent routing**
 
-```text
-Indexer: Minerva
-SourceType: torrent
-DownloadProtocol: torrent
-DownloadURL: collection .torrent URL
-InfoHash: parsed info hash
-Size: selected file size
-SizeHuman: search.HumanSize(size)
-SafetyScore: 95
-PlatformSlug: indexed platform
-TorrentFileIndex/Path/Size: indexed target
-```
+In `/api/download` and `/api/requests/{id}/download`, `TorrentFileIndex != nil` requires URL, info hash and file path and calls `DownloadSelectiveTorrent`. It must never fall through to `DownloadTorrent`, because that path can use non-qB clients and whole-torrent organization.
 
-On a successful local query call `RecordSearchSuccess("minerva")`; on an SQLite error call `RecordSearchFail("minerva", err.Error())`.
+- [ ] **Step 5: Add Minerva to all four search fan-outs**
 
-- [ ] **Step 4: Route selective downloads before the generic torrent branch**
-
-In both `/api/download` and `/api/requests/{id}/download`, when `TorrentFileIndex != nil`, require `DownloadURL`, `InfoHash`, and `TorrentFilePath`, then call `DownloadSelectiveTorrent`. Do not route Minerva results through `DownloadTorrent`, because that path may fall back to Transmission/Deluge and organizes the whole torrent root.
-
-- [ ] **Step 5: Add Minerva to every search fan-out**
-
-Add one conditional Minerva goroutine to all four search paths:
+Add a conditional Minerva search call to:
 
 ```text
-/api/search                    internal/api/api.go
-request search                 internal/api/requests.go
-Torznab search                 internal/api/torznab_wire.go
-scheduler searchFn             cmd/gamarr/main.go
+/api/search                     internal/api/api.go
+request search                  internal/api/requests.go
+Torznab search                  internal/api/torznab_wire.go
+scheduler searchFn              cmd/gamarr/main.go
 ```
 
-Do not blindly change every `wg.Add(3)` to 4: calculate the base three existing goroutines, then add Minerva only when a non-nil enabled service is wired. This guarantees disabled Minerva performs zero external/index calls.
+Only add the extra goroutine/WaitGroup count when a non-nil enabled service is wired. Disabled Minerva must perform no Minerva DB/network work.
 
-- [ ] **Step 6: Preserve torrent filtering/scoring semantics**
-
-Keep Minerva `SourceType="torrent"` so it passes through existing `FilterGameResults` and `ScoreResults`. Its `Size` is the selected ROM size, not the collection size. Leave seeders at zero in v1 rather than adding a second live Minerva API dependency to every local search.
-
-- [ ] **Step 7: Run model/search/API compile tests**
-
-```bash
-go test ./internal/search ./internal/api ./cmd/gamarr -run 'TestSearchMinerva|TestSearch|TestNonExistent' -count=1
-```
-
-Then run:
+- [ ] **Step 6: Run search/API tests**
 
 ```bash
 go test ./internal/search ./internal/api ./cmd/gamarr -count=1
@@ -863,7 +747,7 @@ go test ./internal/search ./internal/api ./cmd/gamarr -count=1
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add internal/models/models.go internal/search/minerva.go internal/search/minerva_test.go internal/api/api.go internal/api/requests.go internal/api/torznab_wire.go cmd/gamarr/main.go
@@ -872,7 +756,7 @@ git commit -m "feat: integrate Minerva search results"
 
 ---
 
-### Task 8: Wire Service Lifecycle, Incremental Schedule, Status, and Manual Sync API
+### Task 8: Wire Lifecycle, Periodic Sync, Status, and Manual Sync API
 
 **Files:**
 - Modify: `cmd/gamarr/main.go`
@@ -883,8 +767,8 @@ git commit -m "feat: integrate Minerva search results"
 - Modify: `internal/api/admin.go`
 
 **Interfaces:**
-- `api.Server` gains `minerva *minerva.Service`.
-- `NewRouter` becomes:
+
+`api.Server` gains `minerva *minerva.Service` and router signature becomes:
 
 ```go
 func NewRouter(
@@ -897,70 +781,58 @@ func NewRouter(
 ) http.Handler
 ```
 
-- Routes:
+Routes:
 
 ```text
 GET  /api/minerva/status
-POST /api/minerva/sync      admin only; JSON {"full": false}
+POST /api/minerva/sync       admin only, optional JSON {"full":false}
 ```
 
-- [ ] **Step 1: Write failing router/status tests**
+- [ ] **Step 1: Write failing route tests**
 
-Add a disabled case asserting `/api/minerva/status` returns 200 with `enabled:false, ready:false`, and an enabled temp-service case returning counts.
+Disabled status returns exactly an enabled/ready/syncing false shape with zero counts. Enabled status returns actual counts. Manual sync test calls POST twice while the fake upstream blocks: first gets 202, second gets 409.
 
-Add a manual sync test whose fake service endpoint is slow enough to prove `POST /api/minerva/sync` returns 202 immediately, and a second simultaneous POST returns 409 while the first sync is running.
-
-- [ ] **Step 2: Run API tests and confirm failure**
+- [ ] **Step 2: Verify failure**
 
 ```bash
 go test ./internal/api -run 'TestMinerva|TestSourcesEndpoint|TestConfigEndpoint' -v
 ```
 
-Expected: compile failure/new routes missing.
+Expected: compile failure/routes absent.
 
-- [ ] **Step 3: Wire the service into router/test fixtures**
+- [ ] **Step 3: Update router/test construction**
 
-Update `newTestEnv` to pass `nil` by default to `NewRouter`; add a helper field on `testEnv` only when a test explicitly constructs a Minerva service. Update every compile-time `NewRouter` call in tests and main.
+`newTestEnv` passes nil by default as the sixth `NewRouter` dependency. Update every `NewRouter` call in tests/main to compile before adding behavior.
 
-- [ ] **Step 4: Implement status and asynchronous manual sync**
+- [ ] **Step 4: Implement status and race-free async manual sync**
 
-`GET /api/minerva/status` returns the service status; if service is nil return:
+Nil service status:
 
 ```json
 {"enabled":false,"ready":false,"syncing":false,"collections":0,"files":0}
 ```
 
-`POST /api/minerva/sync` is `requireAdmin`. Decode an optional body:
+For POST decode:
 
 ```go
 var req struct { Full bool `json:"full"` }
 ```
 
-Start `svc.Sync(context.Background(), req.Full)` in a goroutine and return HTTP 202. If `ErrSyncInProgress`, return HTTP 409. Sync completion/failure is visible through `/api/minerva/status` and logs.
+Call `svc.StartSync(context.Background(), req.Full)` synchronously. Return 202 on nil; return 409 on `errors.Is(err, minerva.ErrSyncInProgress)`; return 500 for other start errors. Because `StartSync` claims the guard before it returns, two simultaneous requests cannot both receive 202.
 
-- [ ] **Step 5: Initialize only when explicitly enabled**
+- [ ] **Step 5: Initialize only when enabled**
 
-In `cmd/gamarr/main.go`:
+In main, if `cfg.Sources.Minerva.Enabled` is false leave service nil and make no Minerva HTTP/SQLite calls. If true, `minerva.Open(cfg.DataDir, cfg.Sources.Minerva)`, defer close after HTTP shutdown, and when `Ready` is false call `StartSync(processContext, false)` without blocking server startup.
 
-```text
-if cfg.Sources.Minerva.Enabled:
-    Open(cfg.DataDir, cfg.Sources.Minerva)
-    defer Close()
-else:
-    keep svc nil and make no Minerva HTTP/SQLite calls
-```
+- [ ] **Step 6: Add periodic incremental sync**
 
-If enabled and `Ready` is false, start one initial sync after service construction. Do not block HTTP server startup waiting for the first index build.
+Start one ticker using `time.Duration(spec.SyncIntervalHours) * time.Hour`, falling back to 24h for non-positive values. Each tick calls `StartSync(processContext, false)`; ignore only `ErrSyncInProgress`, log any other error. Stop ticker on process context cancellation.
 
-- [ ] **Step 6: Add the 24-hour incremental loop**
+- [ ] **Step 7: Surface source state**
 
-When enabled, start one goroutine with a ticker using `time.Duration(spec.SyncIntervalHours) * time.Hour`, defaulting to 24 when the configured value is <=0. Each tick calls `Sync(ctx, false)`. Stop the ticker via the process shutdown context. A no-change scheduled run must end after the assets-listing 304/body-hash check from Task 4.
+Add Minerva to `/api/sources`, `/api/config`, and admin dashboard. Use `not_configured` when disabled, `syncing` when active, `degraded` when enabled with `LastError` or no usable index after a failed sync, and `ok` when ready with no current error. Existing source entries remain.
 
-- [ ] **Step 7: Surface Minerva in existing source/config/admin views**
-
-`/api/sources` must include `minerva` with `enabled` based on the config/service and health based on existing source health. `/api/config` adds a Minerva section with only non-secret operational fields. Admin dashboard adds Minerva with `not_configured`, `syncing`, `degraded`, or `ok` derived from service/status/health; leave the existing three source entries intact.
-
-- [ ] **Step 8: Run API and main tests**
+- [ ] **Step 8: Run API/main tests**
 
 ```bash
 go test ./internal/api ./cmd/gamarr -count=1
@@ -977,37 +849,28 @@ git commit -m "feat: manage Minerva index lifecycle"
 
 ---
 
-### Task 9: Document the API and Operator Configuration
+### Task 9: Document API and Operator Configuration
 
 **Files:**
 - Modify: `internal/api/openapi.json`
-- Modify: `README.md`
 - Modify: `internal/api/router_test.go`
+- Modify: `README.md`
 
-**Interfaces:**
-- Documents selective search fields and the two Minerva management endpoints.
+- [ ] **Step 1: Add failing OpenAPI assertions**
 
-- [ ] **Step 1: Add an OpenAPI regression test**
+Extend `TestOpenAPISpec` to assert the serialized spec contains `torrent_file_index`, `/api/minerva/status`, and `/api/minerva/sync`.
 
-Extend `TestOpenAPISpec` to marshal the decoded document back to bytes and assert it contains:
-
-```text
-torrent_file_index
-/api/minerva/status
-/api/minerva/sync
-```
-
-- [ ] **Step 2: Run the test and confirm failure**
+- [ ] **Step 2: Verify failure**
 
 ```bash
 go test ./internal/api -run TestOpenAPISpec -v
 ```
 
-Expected: FAIL because those schema/path strings are absent.
+Expected: FAIL because fields/routes are not yet documented.
 
-- [ ] **Step 3: Update OpenAPI SearchResult and download request documentation**
+- [ ] **Step 3: Add OpenAPI fields/routes**
 
-Add optional properties:
+Document optional fields:
 
 ```json
 "torrent_file_index": {"type":["integer","null"],"minimum":0},
@@ -1015,28 +878,28 @@ Add optional properties:
 "torrent_file_size":  {"type":"integer","format":"int64","minimum":0}
 ```
 
-Add `/api/minerva/status` GET and `/api/minerva/sync` POST with the 202/409 response semantics and `{ "full": boolean }` request body.
+Document `GET /api/minerva/status` and admin `POST /api/minerva/sync`, with request `{ "full": boolean }`, 202 accepted and 409 sync-in-progress responses.
 
-- [ ] **Step 4: Document configuration and data flow in README**
+- [ ] **Step 4: Add README configuration section**
 
-Add a concise Minerva section covering exactly:
+Document exactly:
 
 ```text
-MINERVA_ENABLED=false                         default
+MINERVA_ENABLED=false
 MINERVA_URL=https://minerva-archive.org/
 MINERVA_ASSETS_URL=https://minerva-archive.org/assets/
 MINERVA_SYNC_INTERVAL_HOURS=24
-index path: <DATA_DIR>/minerva/index.db
+index: <DATA_DIR>/minerva/index.db
 qBittorrent required for Minerva downloads
-initial sync: automatic only when enabled + no usable index
+initial sync: automatic only when enabled and index is not ready
 scheduled sync: incremental
 manual sync: POST /api/minerva/sync
 full rebuild: POST /api/minerva/sync with {"full":true}
 ```
 
-Explain that Gamarr indexes torrent metadata only; it does not download collection payloads during sync, and each requested ROM is validated/selected by file index/path in qBittorrent.
+State that sync downloads only torrent metadata, not ROM payloads; qBittorrent validates and downloads selected files.
 
-- [ ] **Step 5: Run docs/API test**
+- [ ] **Step 5: Run test**
 
 ```bash
 go test ./internal/api -run TestOpenAPISpec -v
@@ -1053,24 +916,21 @@ git commit -m "docs: document Minerva source support"
 
 ---
 
-### Task 10: Full Regression, Race-Sensitive Review, and Upstream PR Readiness
+### Task 10: Full Regression and Upstream PR Readiness
 
 **Files:**
 - Review all files changed on `feat/minerva-source`.
-- No unrelated refactors.
 
-**Interfaces:**
-- Produces a branch ready for an upstream PR from `tiagofcp:feat/minerva-source` to `JeremiahM37:main`.
-
-- [ ] **Step 1: Run formatting**
+- [ ] **Step 1: Format and check whitespace**
 
 ```bash
 gofmt -w internal/minerva/*.go internal/sources/*.go internal/qbit/*.go internal/download/*.go internal/search/*.go internal/api/*.go internal/models/*.go cmd/gamarr/*.go
+git diff --check
 ```
 
-Review `git diff --check`; expected: no whitespace errors.
+Expected: no whitespace errors.
 
-- [ ] **Step 2: Run the complete test suite**
+- [ ] **Step 2: Run full tests**
 
 ```bash
 go test ./... -count=1
@@ -1078,58 +938,45 @@ go test ./... -count=1
 
 Expected: PASS.
 
-- [ ] **Step 3: Run the race detector on the new concurrency-sensitive packages**
+- [ ] **Step 3: Run race-sensitive tests**
 
 ```bash
 go test -race ./internal/minerva ./internal/qbit ./internal/download ./internal/api -count=1
 ```
 
-Expected: PASS. This specifically checks sync-state locking, concurrent search/sync access, and selective download watchers.
+Expected: PASS.
 
-- [ ] **Step 4: Run static checks and build**
+- [ ] **Step 4: Vet and build**
 
 ```bash
 go vet ./...
 go build ./cmd/gamarr
 ```
 
-Expected: both commands exit 0.
+Expected: both exit 0.
 
-- [ ] **Step 5: Verify disabled-by-default zero-side-effect behavior**
+- [ ] **Step 5: Verify disabled zero-side-effect behavior**
 
-Run the config/source tests plus an API test with a Minerva `httptest.Server` counter but `enabled=false`; assert the counter remains zero after `/api/search`, scheduler construction, router construction, and `/api/minerva/status`.
+Add/retain a test with Minerva disabled and a counted fake Minerva HTTP endpoint; router construction, `/api/search`, scheduler construction, and `/api/minerva/status` must leave the count at zero.
 
 ```bash
 go test ./internal/sources ./internal/config ./internal/api -run 'Minerva|Default' -count=1 -v
 ```
 
-Expected: PASS and zero external Minerva calls in the disabled test.
+Expected: PASS.
 
-- [ ] **Step 6: Review the branch diff against the approved spec**
+- [ ] **Step 6: Review the diff against the spec**
 
 ```bash
 git diff --stat main...HEAD
 git diff main...HEAD -- internal/minerva internal/sources internal/qbit internal/download internal/search internal/api internal/models cmd/gamarr README.md
 ```
 
-Confirm all of these are true before opening the PR:
+Confirm: disabled default; multi-platform configured slugs; local SQLite; incremental 24h + manual/full sync; no aria2c; qB-only payload path; live file-list validation before start; target-only import; old index survives sync failures; existing sources remain intact.
 
-```text
-Minerva disabled by default
-multi-platform via configured Gamarr slugs
-local SQLite index
-incremental 24h sync + manual/full sync
-no aria2c dependency
-qBittorrent-only payload path
-real qB file-list validation before start
-target-only import
-failed sync preserves old index
-Myrient/Vimm/Prowlarr unchanged
-```
+- [ ] **Step 7: Confirm clean working tree**
 
-- [ ] **Step 7: Commit any verification-only fixes, then confirm clean tree**
-
-If verification required code changes, commit them with a narrowly scoped message. Finish with:
+After any narrowly scoped verification fix is committed:
 
 ```bash
 git status --short
@@ -1137,12 +984,12 @@ git status --short
 
 Expected: no output.
 
-- [ ] **Step 8: Prepare upstream PR body without merging it**
+- [ ] **Step 8: Prepare, but do not merge, the upstream PR**
 
-Use a PR title such as:
+Title:
 
 ```text
 feat: add optional Minerva Archive source
 ```
 
-PR body must summarize: optional/disabled default, local metadata-only index, incremental sync, qBittorrent selective-file download, safety validation, test coverage, and explicit v1 limitation to qBittorrent. Do not merge the upstream PR automatically.
+PR body must cover optional/disabled default, metadata-only local index, incremental sync, qB selective download, live-file validation, tests, and qB-only v1 limitation. Target `JeremiahM37/gamarr:main` from `tiagofcp:feat/minerva-source`. Do not merge automatically.
