@@ -69,7 +69,7 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 		sab = sabnzbd.New(cfg.SABnzbdURL, cfg.SABnzbdAPIKey)
 	}
 
-	router := NewRouter(cfg, mgr, nil, sab, nil)
+	router := NewRouter(cfg, mgr, nil, sab, nil, nil)
 	return &testEnv{t: t, cfg: cfg, jobs: store, mgr: mgr, router: router}
 }
 

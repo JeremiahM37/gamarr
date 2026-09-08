@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"gamarr/internal/db"
 	"gamarr/internal/download"
 	"gamarr/internal/fileops"
+	"gamarr/internal/minerva"
 	"gamarr/internal/models"
 	"gamarr/internal/monitor"
 	"gamarr/internal/qbit"
@@ -66,6 +68,96 @@ func warnIfHardlinkImportCannotWork(cfg *config.Config, mgr *download.Manager) {
 			slog.Warn("hardlink import will fail with this layout",
 				"downloads", cfg.QBSavePath, "library", dest, "error", err)
 		}
+	}
+}
+
+func newSchedulerSearch(cfg *config.Config, minervaSvc *minerva.Service) func(string, string) []*models.SearchResult {
+	return func(query, platformSlug string) []*models.SearchResult {
+		var allResults []*models.SearchResult
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		slug := platformSlug
+		if slug == "all" {
+			slug = ""
+		}
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			results := search.SearchProwlarr(cfg, query, slug)
+			mu.Lock()
+			allResults = append(allResults, results...)
+			mu.Unlock()
+		}()
+		go func() {
+			defer wg.Done()
+			results := search.SearchMyrient(cfg.Sources, query, slug)
+			mu.Lock()
+			allResults = append(allResults, results...)
+			mu.Unlock()
+		}()
+		go func() {
+			defer wg.Done()
+			results := search.SearchVimm(cfg.Sources, query, slug)
+			mu.Lock()
+			allResults = append(allResults, results...)
+			mu.Unlock()
+		}()
+		if minervaSvc != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results := search.SearchMinerva(minervaSvc, query, slug)
+				mu.Lock()
+				allResults = append(allResults, results...)
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		// Filter and score
+		var torrentResults, ddlResults []*models.SearchResult
+		for _, r := range allResults {
+			if r.SourceType == "torrent" && r.TorrentFileIndex == nil {
+				torrentResults = append(torrentResults, r)
+			} else {
+				ddlResults = append(ddlResults, r)
+			}
+		}
+		filtered := search.FilterGameResults(torrentResults, query)
+		var results []*models.SearchResult
+		results = append(results, filtered...)
+		results = append(results, ddlResults...)
+		if results == nil {
+			results = []*models.SearchResult{}
+		}
+		results = search.ScoreResults(results, query, platformSlug)
+		return results
+	}
+}
+
+func newSchedulerDownload(mgr *download.Manager, sab *sabnzbd.Client) func(*models.SearchResult) (string, error) {
+	return func(result *models.SearchResult) (string, error) {
+		if result.TorrentFileIndex != nil {
+			if strings.TrimSpace(result.DownloadURL) == "" || strings.TrimSpace(result.InfoHash) == "" || strings.TrimSpace(result.TorrentFilePath) == "" {
+				return "", fmt.Errorf("Selective torrent requires URL, info hash and file path")
+			}
+			return mgr.DownloadSelectiveTorrent(result.DownloadURL, result.InfoHash, *result.TorrentFileIndex,
+				result.TorrentFilePath, result.TorrentFileSize, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
+		}
+		if result.SourceType == "ddl" {
+			jobID := mgr.DownloadDDL(result.DownloadURL, result.VimmID, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
+			return jobID, nil
+		}
+		if result.DownloadProtocol == "nzb" {
+			return mgr.DownloadNZB(sab, result.DownloadURL, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
+		}
+		url := result.DownloadURL
+		if url == "" {
+			url = result.MagnetURL
+		}
+		if url == "" && result.InfoHash != "" {
+			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", result.InfoHash)
+		}
+		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
 	}
 }
 
@@ -170,74 +262,8 @@ func main() {
 	}
 
 	// Initialize scheduler
-	searchFn := func(query, platformSlug string) []*models.SearchResult {
-		var allResults []*models.SearchResult
-		var mu sync.Mutex
-		var wg sync.WaitGroup
-		slug := platformSlug
-		if slug == "all" {
-			slug = ""
-		}
-		wg.Add(3)
-		go func() {
-			defer wg.Done()
-			results := search.SearchProwlarr(cfg, query, slug)
-			mu.Lock()
-			allResults = append(allResults, results...)
-			mu.Unlock()
-		}()
-		go func() {
-			defer wg.Done()
-			results := search.SearchMyrient(cfg.Sources, query, slug)
-			mu.Lock()
-			allResults = append(allResults, results...)
-			mu.Unlock()
-		}()
-		go func() {
-			defer wg.Done()
-			results := search.SearchVimm(cfg.Sources, query, slug)
-			mu.Lock()
-			allResults = append(allResults, results...)
-			mu.Unlock()
-		}()
-		wg.Wait()
-		// Filter and score
-		var torrentResults, ddlResults []*models.SearchResult
-		for _, r := range allResults {
-			if r.SourceType == "torrent" {
-				torrentResults = append(torrentResults, r)
-			} else {
-				ddlResults = append(ddlResults, r)
-			}
-		}
-		filtered := search.FilterGameResults(torrentResults, query)
-		var results []*models.SearchResult
-		results = append(results, filtered...)
-		results = append(results, ddlResults...)
-		if results == nil {
-			results = []*models.SearchResult{}
-		}
-		results = search.ScoreResults(results, query, platformSlug)
-		return results
-	}
-
-	downloadFn := func(result *models.SearchResult) (string, error) {
-		if result.SourceType == "ddl" {
-			jobID := mgr.DownloadDDL(result.DownloadURL, result.VimmID, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
-			return jobID, nil
-		}
-		if result.DownloadProtocol == "nzb" {
-			return mgr.DownloadNZB(sab, result.DownloadURL, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
-		}
-		url := result.DownloadURL
-		if url == "" {
-			url = result.MagnetURL
-		}
-		if url == "" && result.InfoHash != "" {
-			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", result.InfoHash)
-		}
-		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
-	}
+	searchFn := newSchedulerSearch(cfg, nil)
+	downloadFn := newSchedulerDownload(mgr, sab)
 
 	webhookFn := func() []webhook.WebhookConfig {
 		return enabledWebhooks(database, cfg)
@@ -290,7 +316,7 @@ func main() {
 	// Create HTTP router. The API reports this over /api/health and /api/config,
 	// so an image pulled from the registry can say which build it is.
 	api.Version = Version
-	router := api.NewRouter(cfg, mgr, mon, sab, sched)
+	router := api.NewRouter(cfg, mgr, mon, sab, sched, nil)
 
 	// Start HTTP server
 	server := &http.Server{

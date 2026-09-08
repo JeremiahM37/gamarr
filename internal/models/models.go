@@ -23,6 +23,9 @@ type SearchResult struct {
 	SafetyScore      int      `json:"safety_score"`
 	SafetyWarnings   []string `json:"safety_warnings"`
 	VimmID           string   `json:"vimm_id,omitempty"`
+	TorrentFileIndex *int     `json:"torrent_file_index,omitempty"`
+	TorrentFilePath  string   `json:"torrent_file_path,omitempty"`
+	TorrentFileSize  int64    `json:"torrent_file_size,omitempty"`
 
 	// Library duplicate detection
 	InLibrary bool `json:"in_library"`
@@ -91,6 +94,9 @@ type DownloadRequest struct {
 	SourceType       string `json:"source_type"`
 	VimmID           string `json:"vimm_id"`
 	DownloadProtocol string `json:"download_protocol"` // "torrent" or "nzb"
+	TorrentFileIndex *int   `json:"torrent_file_index,omitempty"`
+	TorrentFilePath  string `json:"torrent_file_path,omitempty"`
+	TorrentFileSize  int64  `json:"torrent_file_size,omitempty"`
 }
 
 // DDLSource represents a custom direct-download source.

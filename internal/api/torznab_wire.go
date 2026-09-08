@@ -9,7 +9,7 @@ import (
 )
 
 // searchForTorznab is the SearchFunc passed to the Torznab handler. It runs
-// the same 3-source fan-out as /api/search but skips the user-facing
+// the same source fan-out as /api/search but skips the user-facing
 // post-processing (blocklist filter, library-dedup, quality-profile rank,
 // release-profile scoring) that downstream *arr consumers do themselves —
 // they only want raw indexer-style results.
@@ -45,13 +45,23 @@ func (s *Server) searchForTorznab(ctx context.Context, query, platformSlug strin
 		allResults = append(allResults, results...)
 		mu.Unlock()
 	}()
+	if s.minerva != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results := search.SearchMinerva(s.minerva, query, slug)
+			mu.Lock()
+			allResults = append(allResults, results...)
+			mu.Unlock()
+		}()
+	}
 	wg.Wait()
 
-	// Split + filter torrent results; pass DDL through (FilterGameResults
-	// targets torrent-only release artefacts like NFO/SFV/sample dirs).
+	// Split + filter generic torrent results; pass curated selections and DDL
+	// through, preserving Minerva's safety score without live seeder metadata.
 	var torrentResults, ddlResults []*models.SearchResult
 	for _, r := range allResults {
-		if r.SourceType == "torrent" {
+		if r.SourceType == "torrent" && r.TorrentFileIndex == nil {
 			torrentResults = append(torrentResults, r)
 		} else {
 			ddlResults = append(ddlResults, r)

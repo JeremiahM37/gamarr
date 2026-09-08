@@ -56,6 +56,14 @@ func ResultToItem(r *models.SearchResult) Item {
 	if r.Indexer != "" {
 		item.Attrs = append(item.Attrs, Attr{Name: "indexer", Value: r.Indexer})
 	}
+	if r.TorrentFileIndex != nil {
+		item.Attrs = append(item.Attrs,
+			Attr{Name: "infohash", Value: r.InfoHash},
+			Attr{Name: "torrent_file_index", Value: fmt.Sprintf("%d", *r.TorrentFileIndex)},
+			Attr{Name: "torrent_file_path", Value: r.TorrentFilePath},
+			Attr{Name: "torrent_file_size", Value: fmt.Sprintf("%d", r.TorrentFileSize)},
+		)
+	}
 
 	// Download link — prefer magnet, fall back to direct URL, then synthesize
 	// from info_hash if that's all we have.

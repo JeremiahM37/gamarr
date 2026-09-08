@@ -21,6 +21,7 @@ import (
 	"gamarr/internal/config"
 	"gamarr/internal/download"
 	"gamarr/internal/fileops"
+	"gamarr/internal/minerva"
 	"gamarr/internal/models"
 	"gamarr/internal/monitor"
 	"gamarr/internal/platform"
@@ -47,13 +48,14 @@ type Server struct {
 	sessions  *SessionStore
 	scheduler *scheduler.Scheduler
 	oidc      *OIDCHandler
+	minerva   *minerva.Service
 }
 
 // NewRouter creates a new chi router with all routes.
-func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMonitor, sab *sabnzbd.Client, sched *scheduler.Scheduler) http.Handler {
+func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMonitor, sab *sabnzbd.Client, sched *scheduler.Scheduler, minervaSvc *minerva.Service) http.Handler {
 	sessions := NewSessionStore()
 	oidcHandler := NewOIDCHandler(cfg, mgr.Jobs(), sessions)
-	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab, sessions: sessions, scheduler: sched, oidc: oidcHandler}
+	s := &Server{cfg: cfg, mgr: mgr, mon: mon, sab: sab, sessions: sessions, scheduler: sched, oidc: oidcHandler, minerva: minervaSvc}
 
 	// Rate limiter: 60-second window.
 	rl := NewRateLimiter(60, map[string]int{
@@ -442,12 +444,23 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		allResults = append(allResults, results...)
 		mu.Unlock()
 	}()
+	if s.minerva != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results := search.SearchMinerva(s.minerva, query, platformFilter)
+			mu.Lock()
+			allResults = append(allResults, results...)
+			mu.Unlock()
+		}()
+	}
 	wg.Wait()
 
-	// Filter torrent results, pass through DDL
+	// Curated file selections have no live seeder count; preserve their safety
+	// and selected ROM size alongside DDL results.
 	var torrentResults, ddlResults []*models.SearchResult
 	for _, r := range allResults {
-		if r.SourceType == "torrent" {
+		if r.SourceType == "torrent" && r.TorrentFileIndex == nil {
 			torrentResults = append(torrentResults, r)
 		} else {
 			ddlResults = append(ddlResults, r)
@@ -597,6 +610,20 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		duplicateWarning = fmt.Sprintf("Game already exists in library: %s (%s)", existing.Title, existing.Platform)
 	}
 
+	if req.TorrentFileIndex != nil {
+		jobID, err := s.downloadSelectiveTorrent(req)
+		if err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		resp := map[string]interface{}{"success": true, "job_id": jobID}
+		if duplicateWarning != "" {
+			resp["warning"] = duplicateWarning
+		}
+		writeJSON(w, 200, resp)
+		return
+	}
+
 	if req.SourceType == "ddl" {
 		if req.DownloadURL == "" && req.VimmID == "" {
 			writeError(w, 400, "No download URL")
@@ -650,6 +677,16 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		resp["warning"] = duplicateWarning
 	}
 	writeJSON(w, 200, resp)
+}
+
+// A selection must never fall back to a generic torrent or another protocol.
+func (s *Server) downloadSelectiveTorrent(req models.DownloadRequest) (string, error) {
+	if req.TorrentFileIndex == nil || *req.TorrentFileIndex < 0 || req.TorrentFileSize < 0 ||
+		strings.TrimSpace(req.DownloadURL) == "" || strings.TrimSpace(req.InfoHash) == "" || strings.TrimSpace(req.TorrentFilePath) == "" {
+		return "", fmt.Errorf("Selective torrent requires URL, info hash, file path and nonnegative file index/size")
+	}
+	return s.mgr.DownloadSelectiveTorrent(req.DownloadURL, req.InfoHash, *req.TorrentFileIndex,
+		req.TorrentFilePath, req.TorrentFileSize, req.Title, req.Platform, req.PlatformSlug, req.IsPC)
 }
 
 func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {

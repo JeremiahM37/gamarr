@@ -245,12 +245,22 @@ func (s *Server) handleSearchRequest(w http.ResponseWriter, r *http.Request) {
 		allResults = append(allResults, results...)
 		mu.Unlock()
 	}()
+	if s.minerva != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results := search.SearchMinerva(s.minerva, query, platformFilter)
+			mu.Lock()
+			allResults = append(allResults, results...)
+			mu.Unlock()
+		}()
+	}
 	wg.Wait()
 
 	// Filter and sort
 	var torrentResults, ddlResults []*models.SearchResult
 	for _, r := range allResults {
-		if r.SourceType == "torrent" {
+		if r.SourceType == "torrent" && r.TorrentFileIndex == nil {
 			torrentResults = append(torrentResults, r)
 		} else {
 			ddlResults = append(ddlResults, r)
@@ -305,14 +315,16 @@ func (s *Server) handleDownloadForRequest(w http.ResponseWriter, r *http.Request
 		body.Title = req.Title
 	}
 
-	// Update request status.
-	req.Status = models.RequestStatusDownloading
-	req.UpdatedAt = time.Now()
-	_ = s.mgr.Jobs().UpdateRequest(req)
-
 	var jobID string
 
-	if body.SourceType == "ddl" {
+	if body.TorrentFileIndex != nil {
+		var dlErr error
+		jobID, dlErr = s.downloadSelectiveTorrent(body)
+		if dlErr != nil {
+			writeError(w, http.StatusBadRequest, dlErr.Error())
+			return
+		}
+	} else if body.SourceType == "ddl" {
 		if body.DownloadURL == "" && body.VimmID == "" {
 			writeError(w, http.StatusBadRequest, "No download URL")
 			return
@@ -350,6 +362,9 @@ func (s *Server) handleDownloadForRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	// Watch this job in the background to update request status and notify on completion.
+	req.Status = models.RequestStatusDownloading
+	req.UpdatedAt = time.Now()
+	_ = s.mgr.Jobs().UpdateRequest(req)
 	go s.watchRequestJob(req, jobID)
 
 	slog.Info("download started for request", "request_id", req.ID, "job_id", jobID, "title", body.Title)
