@@ -185,6 +185,47 @@ func TestAddTorrentPaused_ReauthOn403(t *testing.T) {
 	}
 }
 
+func TestAddTorrentPaused_QBit52JSONResponses(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "accepted",
+			body: `{"added_torrent_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"failure_count":0,"pending_count":0,"success_count":1}`,
+			want: true,
+		},
+		{
+			name: "rejected",
+			body: `{"added_torrent_ids":[],"failure_count":1,"pending_count":0,"success_count":0}`,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v2/auth/login":
+					w.WriteHeader(http.StatusNoContent)
+				case "/api/v2/torrents/add":
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(tc.body))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			c := New(srv.URL, "admin", "pass")
+			if got := c.AddTorrentPaused("magnet:?xt=urn:btih:abc", "Test", "/downloads", "games"); got != tc.want {
+				t.Errorf("AddTorrentPaused()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGetTorrents(t *testing.T) {
 	torrents := []Torrent{
 		{Name: "Game1", Hash: "abc", Progress: 0.5, State: "downloading"},
@@ -249,18 +290,14 @@ func TestGetTorrents_ReauthOn403(t *testing.T) {
 }
 
 func TestGetTorrentFiles(t *testing.T) {
-	files := []TorrentFile{
-		{Name: "game/setup.exe", Size: 42, Priority: 1, Index: 3, Progress: 0.75},
-		{Name: "game/data.bin"},
-	}
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v2/auth/login" {
 			w.Write([]byte("Ok."))
 			return
 		}
 		if r.URL.Path == "/api/v2/torrents/files" {
-			json.NewEncoder(w).Encode(files)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[{"name":"game/setup.exe","size":42,"priority":1,"index":3,"progress":0.75},{"name":"game/data.bin","size":0,"priority":0,"index":4,"progress":0}]`))
 			return
 		}
 	}))
@@ -273,6 +310,15 @@ func TestGetTorrentFiles(t *testing.T) {
 	}
 	if result[0].Name != "game/setup.exe" {
 		t.Errorf("name=%q", result[0].Name)
+	}
+	if result[0].Size != 42 {
+		t.Errorf("size=%d, want 42", result[0].Size)
+	}
+	if result[0].Priority != 1 {
+		t.Errorf("priority=%d, want 1", result[0].Priority)
+	}
+	if result[0].Index != 3 {
+		t.Errorf("index=%d, want 3", result[0].Index)
 	}
 	if result[0].Progress != 0.75 {
 		t.Errorf("progress=%v, want 0.75", result[0].Progress)
@@ -652,6 +698,36 @@ func TestStartTorrent_FallsBackToResumeOn404(t *testing.T) {
 	}
 }
 
+func TestStartTorrent_DoesNotResumeOnNon404Failure(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			w.Write([]byte("Ok."))
+		case "/api/v2/torrents/start":
+			paths = append(paths, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/api/v2/torrents/resume":
+			paths = append(paths, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if c.StartTorrent("abc123") {
+		t.Fatal("expected start to fail on a 500 response")
+	}
+	if got, want := len(paths), 1; got != want {
+		t.Fatalf("endpoint calls=%d, want %d (%v)", got, want, paths)
+	}
+	if paths[0] != "/api/v2/torrents/start" {
+		t.Errorf("endpoint path=%q, want /api/v2/torrents/start", paths[0])
+	}
+}
+
 func TestStartTorrent_ReauthOn403(t *testing.T) {
 	attempts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -846,6 +922,49 @@ func TestRejectedAPIKeyIsNotRetried(t *testing.T) {
 	// One probe from the initial ensureAuth; none from a pointless re-login.
 	if probes > 1 {
 		t.Errorf("version probes = %d, want at most 1", probes)
+	}
+}
+
+func TestNewMutatorsRejectedAPIKeyAreNotRetried(t *testing.T) {
+	var mu sync.Mutex
+	attempts := map[string]int{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts[r.URL.Path]++
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := NewWithAPIKey(srv.URL, "qbt_rejected")
+	c.authenticated = true
+	if c.AddTorrentPaused("magnet:?xt=urn:btih:abc", "T", "/downloads", "games") {
+		t.Fatal("AddTorrentPaused reported success against a rejecting API key")
+	}
+	if c.SetFilePriority("abc", []int{0}, 0) {
+		t.Fatal("SetFilePriority reported success against a rejecting API key")
+	}
+	if c.StartTorrent("abc") {
+		t.Fatal("StartTorrent reported success against a rejecting API key")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range []string{
+		"/api/v2/torrents/add",
+		"/api/v2/torrents/filePrio",
+		"/api/v2/torrents/start",
+	} {
+		if got := attempts[path]; got != 1 {
+			t.Errorf("%s attempts=%d, want 1 for a rejected API key", path, got)
+		}
+	}
+	if got := attempts["/api/v2/torrents/resume"]; got != 0 {
+		t.Errorf("resume attempts=%d, want 0 after a 403", got)
+	}
+	if got := attempts["/api/v2/app/version"]; got != 0 {
+		t.Errorf("version probes=%d, want 0 after pre-authentication", got)
 	}
 }
 
