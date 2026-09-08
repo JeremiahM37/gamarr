@@ -44,6 +44,7 @@ func New(dbPath string) (*JobStore, error) {
 		path:  dbPath,
 	}
 	if err := s.migrate(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	s.migrateExtra()
@@ -53,7 +54,12 @@ func New(dbPath string) (*JobStore, error) {
 }
 
 func (s *JobStore) migrate() error {
-	_, err := s.db.Exec(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`
 		CREATE TABLE IF NOT EXISTS jobs (
 			job_id TEXT PRIMARY KEY,
 			data TEXT NOT NULL,
@@ -61,7 +67,13 @@ func (s *JobStore) migrate() error {
 			updated_at REAL DEFAULT (strftime('%s','now'))
 		)
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := migrateMinervaOwnership(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *JobStore) loadAll() {
@@ -277,6 +289,14 @@ func (s *JobStore) Close() error {
 }
 
 func (s *JobStore) persist(jobID string, data map[string]interface{}) {
+	// Persist ownership before writing a selective row.
+	// It deliberately has no foreign key to jobs: job history is disposable.
+	if hash := minervaJobHash(data); hash != "" {
+		if err := s.MarkMinervaTorrent(hash); err != nil {
+			slog.Error("failed to persist Minerva ownership", "error", err)
+			return
+		}
+	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		slog.Error("failed to marshal job", "error", err)

@@ -1,6 +1,7 @@
 package download
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -91,6 +92,10 @@ func (w *Watcher) checkCompleted() {
 		}
 
 		// Skip if we already have a tracked job for this torrent.
+		if err := w.mgr.checkGenericTorrent(t.Hash); err != nil {
+			slog.Warn("watcher: skipping torrent", "hash", t.Hash, "error", err)
+			continue
+		}
 		if w.hasMatchingJob(t) {
 			continue
 		}
@@ -117,6 +122,11 @@ func (w *Watcher) hasMatchingJob(t qbit.Torrent) bool {
 // importTorrent auto-imports a completed torrent into the library.
 func (w *Watcher) importTorrent(t qbit.Torrent) {
 	defer w.processing.Delete(t.Hash)
+	// Recheck a queued dispatch before creating a job or importing anything.
+	if err := w.mgr.checkGenericTorrent(t.Hash); err != nil {
+		slog.Warn("watcher: skipping torrent", "hash", t.Hash, "error", err)
+		return
+	}
 
 	slog.Info("watcher: auto-importing completed torrent", "name", t.Name, "hash", t.Hash)
 
@@ -166,4 +176,17 @@ func (w *Watcher) importTorrent(t qbit.Torrent) {
 	// broken import must not spin forever, but it could not tell a transient miss
 	// from a permanent one and so treated every failure as permanent.
 	w.imported.Store(t.Hash, struct{}{})
+}
+
+// Job history can be cleared while qB retains a Minerva collection. Only the
+// persistent ownership registry can authorize a generic import of its hash.
+func (m *Manager) checkGenericTorrent(hash string) error {
+	owned, err := m.jobs.IsMinervaTorrent(hash)
+	if err != nil {
+		return fmt.Errorf("cannot check Minerva collection ownership: %w", err)
+	}
+	if owned {
+		return fmt.Errorf("Minerva collections require selective file downloads")
+	}
+	return nil
 }

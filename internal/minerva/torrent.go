@@ -45,7 +45,7 @@ func ParseTorrent(data []byte) (TorrentMeta, error) {
 	if !found || nameValue.value.kind != bstring {
 		return TorrentMeta{}, errors.New("torrent: missing string name")
 	}
-	name, err := cleanRelativePath(string(nameValue.value.string))
+	name, err := cleanPathComponent(string(nameValue.value.string))
 	if err != nil {
 		return TorrentMeta{}, fmt.Errorf("torrent: invalid name: %w", err)
 	}
@@ -106,6 +106,9 @@ func parseFiles(info bvalue, name string) ([]FileMeta, error) {
 		if err != nil {
 			return nil, fmt.Errorf("torrent: file %d has invalid path: %w", index, err)
 		}
+		// qB/libtorrent file names are relative to SavePath and include info.name
+		// for multi-file torrents. Keep that root in the indexed validation path.
+		cleanPath = name + "/" + cleanPath
 		result = append(result, FileMeta{
 			Index: index,
 			Path:  cleanPath,

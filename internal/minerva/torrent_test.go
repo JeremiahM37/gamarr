@@ -1,9 +1,21 @@
 package minerva
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestParseTorrentRejectsUnsafeCollectionRoot(t *testing.T) {
+	for _, name := range []string{"", ".", "..", "/absolute", "../escape", "pack/../safe", `C:\pack`, "C:/pack", `\\server\share`, "bad\x00root"} {
+		t.Run(name, func(t *testing.T) {
+			data := fmt.Sprintf("d4:infod5:filesld6:lengthi3e4:pathl5:a.ndseee4:name%d:%see", len(name), name)
+			if _, err := ParseTorrent([]byte(data)); err == nil {
+				t.Fatalf("unsafe collection root accepted: %q", name)
+			}
+		})
+	}
+}
 
 func TestParseTorrentSingleFile(t *testing.T) {
 	// Mutation caught: hashing re-encoded info data (or the whole torrent) instead of its original bytes.
@@ -42,8 +54,8 @@ func TestParseTorrentMultiFile(t *testing.T) {
 		t.Fatalf("InfoHash=%q", got.InfoHash)
 	}
 	want := []FileMeta{
-		{Index: 0, Path: "dir/b.nds", Name: "b.nds", Size: 4},
-		{Index: 1, Path: "a.nds", Name: "a.nds", Size: 3},
+		{Index: 0, Path: "collection/dir/b.nds", Name: "b.nds", Size: 4},
+		{Index: 1, Path: "collection/a.nds", Name: "a.nds", Size: 3},
 	}
 	if len(got.Files) != len(want) {
 		t.Fatalf("files=%+v", got.Files)

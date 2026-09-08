@@ -133,6 +133,9 @@ func (m *Manager) DownloadSelectiveTorrent(url, infoHash string, fileIndex int, 
 	if m.qb == nil || !m.cfg.HasQBittorrent() {
 		return "", fmt.Errorf("Minerva requires qBittorrent")
 	}
+	if err := m.jobs.MarkMinervaTorrent(infoHash); err != nil {
+		return "", fmt.Errorf("cannot persist Minerva collection ownership: %w", err)
+	}
 	jobID := newJobID()
 	m.jobs.Set(jobID, map[string]interface{}{
 		"status": "downloading", "title": title, "info_hash": infoHash,
@@ -171,6 +174,10 @@ func (m *Manager) retrySelectiveJob(jobID string, job map[string]interface{}) (b
 	}
 	retries := jobRetryCount(job) + 1
 	hash := strings.ToLower(strings.TrimSpace(strVal(job, "info_hash")))
+	if err := m.jobs.MarkMinervaTorrent(hash); err != nil {
+		m.activeSelective.Delete(jobID)
+		return false, fmt.Sprintf("cannot persist Minerva collection ownership: %v", err)
+	}
 	m.jobs.UpdateMulti(jobID, map[string]interface{}{
 		"status": "downloading", "error": nil, "detail": fmt.Sprintf("Retry #%d", retries), "retry_count": retries, "info_hash": hash,
 	})
@@ -702,6 +709,9 @@ func (m *Manager) DownloadDDL(url, vimmID, title, platf, platSlug string, isPC b
 
 // OrganizeTorrent manually triggers organize for a completed torrent.
 func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (string, error) {
+	if err := m.checkGenericTorrent(hash); err != nil {
+		return "", err
+	}
 	torrents, err := m.qb.GetTorrents(m.cfg.QBCategory)
 	if err != nil {
 		return "", fmt.Errorf("cannot read the download client: %w", err)
@@ -1296,6 +1306,11 @@ var (
 // callers that act on success, since the terminal state is written to the job
 // row here before returning either way.
 func (m *Manager) importFinishedTorrent(via, jobID string, t qbit.Torrent, platf, platSlug string, isPC bool) bool {
+	if err := m.checkGenericTorrent(t.Hash); err != nil {
+		slog.Warn("skipping generic torrent import", "via", via, "hash", t.Hash, "error", err)
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{"status": "error", "error": err.Error()})
+		return false
+	}
 	// Record the hash before anything can return. The job row's own copy comes
 	// from a request parameter that is empty for any result carrying a .torrent
 	// URL rather than a magnet, this is the one place holding the torrent
@@ -1329,6 +1344,11 @@ func (m *Manager) importFinishedTorrent(via, jobID string, t qbit.Torrent, platf
 	// telling the user to go organize it by hand would be wrong.
 	var giveUp string
 	for {
+		if err := m.checkGenericTorrent(t.Hash); err != nil {
+			slog.Warn("stopping generic torrent import", "via", via, "hash", t.Hash, "error", err)
+			m.jobs.UpdateMulti(jobID, map[string]interface{}{"status": "error", "error": err.Error()})
+			return false
+		}
 		attempt++
 		retryable := m.organizeWithScan(jobID, &t, platf, platSlug, isPC, attempt)
 
@@ -2215,6 +2235,10 @@ func (m *Manager) RecoverOrphanedTorrents() {
 	}
 
 	for _, t := range torrents {
+		if err := m.checkGenericTorrent(t.Hash); err != nil {
+			slog.Warn("orphan recovery: skipping torrent", "hash", t.Hash, "error", err)
+			continue
+		}
 		// Reuse the row already tracking this torrent. Recovery is not a
 		// once-per-install routine, so minting an id per pass accumulated a
 		// duplicate row per torrent every time it ran.
