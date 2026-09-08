@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIndexCollectionStateAndCounts(t *testing.T) {
@@ -78,7 +79,7 @@ func TestSearchReturnsTorrentDetailsAndIsolatesPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 1 || hits[0].FileIndex != 7 || hits[0].InfoHash != strings.Repeat("a", 40) || hits[0].TorrentURL != nds.TorrentURL || hits[0].Size != 134217728 {
+	if len(hits) != 1 || hits[0].FileIndex != 7 || hits[0].Path != "Pokemon HeartGold.nds" || hits[0].InfoHash != strings.Repeat("a", 40) || hits[0].TorrentURL != nds.TorrentURL || hits[0].Size != 134217728 {
 		t.Fatalf("hits=%+v", hits)
 	}
 	hits, err = idx.Search(ctx, "pokemon crystal", "nds", 20)
@@ -97,6 +98,66 @@ func TestSearchReturnsTorrentDetailsAndIsolatesPlatform(t *testing.T) {
 	}
 	if _, err := idx.Search(ctx, "pokemon", "", 20); err == nil {
 		t.Fatal("Search with empty platform slug succeeded")
+	}
+}
+
+func TestIndexForeignKeysApplyToNewConnections(t *testing.T) {
+	ctx := context.Background()
+	idx, err := OpenIndex(filepath.Join(t.TempDir(), "minerva.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+
+	record := CollectionRecord{
+		PlatformSlug: "nds", BrowsePath: "/nds", BundleVersion: "1", TorrentURL: "https://example.test/nds.torrent",
+		InfoHash: strings.Repeat("a", 40), ContentSHA256: "sha256-nds",
+	}
+	if err := idx.ReplaceCollection(ctx, record, []FileMeta{{Index: 0, Path: "Game.nds", Name: "Game.nds", Size: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	idx.db.SetConnMaxLifetime(time.Nanosecond)
+	time.Sleep(time.Millisecond)
+	if _, err := idx.db.ExecContext(ctx, `DELETE FROM minerva_collections WHERE platform_slug = ?`, "nds"); err != nil {
+		t.Fatal(err)
+	}
+	collections, files, err := idx.Counts(ctx)
+	if err != nil || collections != 0 || files != 0 {
+		t.Fatalf("Counts after cascade = (%d, %d, %v), want (0, 0, nil)", collections, files, err)
+	}
+	if _, err := idx.db.ExecContext(ctx, `
+INSERT INTO minerva_files (platform_slug, file_index, path, name, size)
+VALUES (?, ?, ?, ?, ?)`, "missing", 0, "Orphan.nds", "Orphan.nds", 1); err == nil {
+		t.Fatal("orphan file insert succeeded after connection replacement")
+	}
+}
+
+func TestSearchTreatsLikeWildcardsAsLiteralTokens(t *testing.T) {
+	ctx := context.Background()
+	idx, err := OpenIndex(filepath.Join(t.TempDir(), "minerva.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+
+	if err := idx.ReplaceCollection(ctx, CollectionRecord{
+		PlatformSlug: "nds", BrowsePath: "/nds", BundleVersion: "1", TorrentURL: "https://example.test/nds.torrent",
+		InfoHash: strings.Repeat("a", 40), ContentSHA256: "sha256-nds",
+	}, []FileMeta{
+		{Index: 1, Path: "Percent%_Back\\Slash.nds", Name: "Percent%_Back\\Slash.nds", Size: 1},
+		{Index: 2, Path: "PercentZZBack\\Slash.nds", Name: "PercentZZBack\\Slash.nds", Size: 2},
+		{Index: 3, Path: "Percent%XBack\\Slash.nds", Name: "Percent%XBack\\Slash.nds", Size: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := idx.Search(ctx, `percent%_back\slash`, "nds", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].FileIndex != 1 || hits[0].Name != "Percent%_Back\\Slash.nds" {
+		t.Fatalf("literal wildcard hits=%+v", hits)
 	}
 }
 

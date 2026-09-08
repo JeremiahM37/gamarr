@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -35,13 +36,8 @@ type Index struct {
 }
 
 func OpenIndex(dbPath string) (*Index, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
 	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(`
@@ -73,6 +69,15 @@ CREATE TABLE IF NOT EXISTS minerva_state (
 		return nil, err
 	}
 	return &Index{db: db}, nil
+}
+
+func sqliteDSN(dbPath string) string {
+	separator := "?"
+	if strings.Contains(dbPath, "?") {
+		separator = "&"
+	}
+	pragma := url.Values{"_pragma": {"foreign_keys(ON)"}}
+	return dbPath + separator + pragma.Encode()
 }
 
 func (i *Index) Close() error {
@@ -146,8 +151,8 @@ JOIN minerva_collections AS c ON c.platform_slug = f.platform_slug
 WHERE f.platform_slug = ?`)
 	args := []any{platformSlug}
 	for _, token := range strings.Fields(strings.ToLower(query)) {
-		statement.WriteString(` AND LOWER(f.name) LIKE ?`)
-		args = append(args, "%"+token+"%")
+		statement.WriteString(` AND LOWER(f.name) LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLikeToken(token)+"%")
 	}
 	statement.WriteString(` ORDER BY f.name, f.file_index LIMIT ?`)
 	args = append(args, limit)
@@ -169,6 +174,10 @@ WHERE f.platform_slug = ?`)
 		return nil, err
 	}
 	return hits, nil
+}
+
+func escapeLikeToken(token string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(token)
 }
 
 func (i *Index) Collection(ctx context.Context, platformSlug string) (CollectionRecord, bool, error) {
