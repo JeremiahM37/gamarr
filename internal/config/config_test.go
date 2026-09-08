@@ -11,7 +11,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"QB_CONTAINER_NAME", "GAMARR_PORT", "MAX_RETRIES", "METRICS_ENABLED", "PROWLARR_GAME_INDEXERS",
 		"AI_MONITOR_ENABLED", "EXTRACT_ARCHIVES", "SABNZBD_URL", "SABNZBD_API_KEY",
 		"NZBGET_URL", "NZBGET_USER", "NZBGET_PASS", "NZBGET_CATEGORY", "FLARESOLVERR_URL",
-		"FLARESOLVERR_MAX_TIMEOUT", "FLARESOLVERR_TABS_TILL_VERIFY"} {
+		"FLARESOLVERR_MAX_TIMEOUT", "FLARESOLVERR_TABS_TILL_VERIFY", "MINERVA_ENABLED",
+		"MINERVA_URL", "MINERVA_ASSETS_URL", "MINERVA_SYNC_INTERVAL_HOURS"} {
 		os.Unsetenv(k)
 	}
 
@@ -40,6 +41,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.ExtractArchives {
 		t.Error("ExtractArchives should default to false")
+	}
+	if cfg.Sources.Minerva.Enabled {
+		t.Fatal("Minerva must be disabled unless explicitly enabled")
 	}
 	if cfg.FlareSolverrURL != "" || cfg.FlareSolverrMaxTimeout != 55_000 || cfg.FlareSolverrTabsTillVerify != 74 {
 		t.Errorf("FlareSolverr defaults = (%q, %d, %d), want disabled, 55000, 74", cfg.FlareSolverrURL, cfg.FlareSolverrMaxTimeout, cfg.FlareSolverrTabsTillVerify)

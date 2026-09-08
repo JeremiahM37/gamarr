@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -93,6 +94,25 @@ func (r *Registry) ApplyEnvOverrides(getenv func(string) string) *Registry {
 	}
 	if v := getenv("VIMM_URL"); v != "" {
 		r.Vimm.BaseURL = v
+	}
+	if v := getenv("MINERVA_ENABLED"); v != "" {
+		switch strings.ToLower(v) {
+		case "true", "1", "yes":
+			r.Minerva.Enabled = true
+		case "false", "0", "no":
+			r.Minerva.Enabled = false
+		}
+	}
+	if v := getenv("MINERVA_URL"); v != "" {
+		r.Minerva.BaseURL = v
+	}
+	if v := getenv("MINERVA_ASSETS_URL"); v != "" {
+		r.Minerva.AssetsURL = v
+	}
+	if v := getenv("MINERVA_SYNC_INTERVAL_HOURS"); v != "" {
+		if hours, err := strconv.Atoi(v); err == nil && hours > 0 {
+			r.Minerva.SyncIntervalHours = hours
+		}
 	}
 	return r
 }

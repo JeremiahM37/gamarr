@@ -50,5 +50,32 @@
       "gamecube":  "ngc",
       "dreamcast": "dc"
     }
+  },
+  "minerva": {
+    "enabled": false,
+    "base_url": "https://minerva-archive.org/",
+    "assets_url": "https://minerva-archive.org/assets/",
+    "sync_interval_hours": 24,
+    "platform_paths": {
+      "gba": "No-Intro/Nintendo - Game Boy Advance/",
+      "gb": "No-Intro/Nintendo - Game Boy/",
+      "gbc": "No-Intro/Nintendo - Game Boy Color/",
+      "nes": "No-Intro/Nintendo - Nintendo Entertainment System (Headered)/",
+      "snes": "No-Intro/Nintendo - Super Nintendo Entertainment System/",
+      "n64": "No-Intro/Nintendo - Nintendo 64 (BigEndian)/",
+      "nds": "No-Intro/Nintendo - Nintendo DS (Decrypted)/",
+      "3ds": "No-Intro/Nintendo - Nintendo 3DS (Decrypted)/",
+      "psx": "Redump/Sony - PlayStation/",
+      "ps2": "Redump/Sony - PlayStation 2/",
+      "ps3": "Redump/Sony - PlayStation 3/",
+      "psp": "Redump/Sony - PlayStation Portable/",
+      "dc": "Redump/Sega - Dreamcast/",
+      "saturn": "Redump/Sega - Saturn/",
+      "genesis": "No-Intro/Sega - Mega Drive - Genesis/",
+      "ngc": "Redump/Nintendo - GameCube - NKit RVZ [zstd-19-128k]/",
+      "wii": "Redump/Nintendo - Wii - NKit RVZ [zstd-19-128k]/",
+      "xbox": "Redump/Microsoft - Xbox/",
+      "xbox360": "Redump/Microsoft - Xbox 360/"
+    }
   }
 }

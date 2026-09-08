@@ -26,6 +26,7 @@ type Registry struct {
 	Version int         `json:"version"`
 	Myrient MyrientSpec `json:"myrient"`
 	Vimm    VimmSpec    `json:"vimm"`
+	Minerva MinervaSpec `json:"minerva"`
 }
 
 // MyrientSpec carries the configurable bits of the Myrient direct-download driver.
@@ -45,6 +46,17 @@ type VimmSpec struct {
 	// item or an API request onto the canonical slug in PlatformSystems. Kept
 	// separate so aliases never enter the inverted map.
 	PlatformAliases map[string]string `json:"platform_aliases,omitempty"`
+}
+
+// MinervaSpec carries the configurable bits of the optional Minerva archive
+// source. It is disabled by default so existing deployments retain their
+// current source behavior until they opt in.
+type MinervaSpec struct {
+	Enabled           bool              `json:"enabled"`
+	BaseURL           string            `json:"base_url"`
+	AssetsURL         string            `json:"assets_url"`
+	SyncIntervalHours int               `json:"sync_interval_hours"`
+	PlatformPaths     map[string]string `json:"platform_paths"`
 }
 
 // Default returns the embedded fallback registry.

@@ -33,6 +33,28 @@ func TestDefault_EmbeddedRegistryIsComplete(t *testing.T) {
 	}
 }
 
+func TestDefault_MinervaDisabledAndConfigured(t *testing.T) {
+	r, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Minerva.Enabled {
+		t.Fatal("Minerva must be disabled by default")
+	}
+	if r.Minerva.BaseURL != "https://minerva-archive.org/" {
+		t.Fatalf("BaseURL=%q", r.Minerva.BaseURL)
+	}
+	if r.Minerva.AssetsURL != "https://minerva-archive.org/assets/" {
+		t.Fatalf("AssetsURL=%q", r.Minerva.AssetsURL)
+	}
+	if r.Minerva.SyncIntervalHours != 24 {
+		t.Fatalf("SyncIntervalHours=%d", r.Minerva.SyncIntervalHours)
+	}
+	if r.Minerva.PlatformPaths["nds"] != "No-Intro/Nintendo - Nintendo DS (Decrypted)/" {
+		t.Fatalf("nds path=%q", r.Minerva.PlatformPaths["nds"])
+	}
+}
+
 func TestLoad(t *testing.T) {
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"version":3,"myrient":{"base_url":"https://url-example.test/","platform_paths":{"foo":"bar/"}},"vimm":{"base_url":"https://url-vimm.test/","platform_systems":{"foo":"FOO"}}}`))
@@ -85,20 +107,33 @@ func TestLoad(t *testing.T) {
 
 func TestApplyEnvOverrides(t *testing.T) {
 	cases := []struct {
-		name        string
-		envs        map[string]string
-		wantMyrient string // "" => embedded default
-		wantVimm    string
+		name                         string
+		envs                         map[string]string
+		wantMyrient                  string // "" => embedded default
+		wantVimm                     string
+		wantMinervaEnabled           bool
+		wantMinervaBaseURL           string
+		wantMinervaAssetsURL         string
+		wantMinervaSyncIntervalHours int
+		initialMinervaEnabled        bool
 	}{
-		{"unset leaves values", nil, "", ""},
-		{"MYRIENT_URL overrides", map[string]string{"MYRIENT_URL": "https://my-override.test/"}, "https://my-override.test/", ""},
-		{"VIMM_URL overrides", map[string]string{"VIMM_URL": "https://vimm-override.test/"}, "", "https://vimm-override.test/"},
-		{"both overridden", map[string]string{"MYRIENT_URL": "https://m.test/", "VIMM_URL": "https://v.test/"}, "https://m.test/", "https://v.test/"},
+		{"unset leaves values", nil, "", "", false, "", "", 0, false},
+		{"MYRIENT_URL overrides", map[string]string{"MYRIENT_URL": "https://my-override.test/"}, "https://my-override.test/", "", false, "", "", 0, false},
+		{"VIMM_URL overrides", map[string]string{"VIMM_URL": "https://vimm-override.test/"}, "", "https://vimm-override.test/", false, "", "", 0, false},
+		{"both overridden", map[string]string{"MYRIENT_URL": "https://m.test/", "VIMM_URL": "https://v.test/"}, "https://m.test/", "https://v.test/", false, "", "", 0, false},
+		{"Minerva values overridden", map[string]string{
+			"MINERVA_ENABLED": "yes", "MINERVA_URL": "https://minerva-override.test/", "MINERVA_ASSETS_URL": "https://minerva-override.test/assets/", "MINERVA_SYNC_INTERVAL_HOURS": "6",
+		}, "", "", true, "https://minerva-override.test/", "https://minerva-override.test/assets/", 6, false},
+		{"MINERVA_ENABLED no disables source", map[string]string{"MINERVA_ENABLED": "no"}, "", "", false, "", "", 0, true},
+		{"invalid Minerva booleans and intervals leave defaults", map[string]string{"MINERVA_ENABLED": "invalid", "MINERVA_SYNC_INTERVAL_HOURS": "0"}, "", "", true, "", "", 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := Default()
+			r.Minerva.Enabled = tc.initialMinervaEnabled
 			origM, origV := r.Myrient.BaseURL, r.Vimm.BaseURL
+			origMinervaBaseURL, origMinervaAssetsURL := r.Minerva.BaseURL, r.Minerva.AssetsURL
+			origMinervaSyncIntervalHours := r.Minerva.SyncIntervalHours
 			r.ApplyEnvOverrides(func(k string) string { return tc.envs[k] })
 			wantM, wantV := tc.wantMyrient, tc.wantVimm
 			if wantM == "" {
@@ -112,6 +147,29 @@ func TestApplyEnvOverrides(t *testing.T) {
 			}
 			if r.Vimm.BaseURL != wantV {
 				t.Errorf("Vimm.BaseURL = %q, want %q", r.Vimm.BaseURL, wantV)
+			}
+			wantMinervaBaseURL, wantMinervaAssetsURL := tc.wantMinervaBaseURL, tc.wantMinervaAssetsURL
+			wantMinervaSyncIntervalHours := tc.wantMinervaSyncIntervalHours
+			if wantMinervaBaseURL == "" {
+				wantMinervaBaseURL = origMinervaBaseURL
+			}
+			if wantMinervaAssetsURL == "" {
+				wantMinervaAssetsURL = origMinervaAssetsURL
+			}
+			if wantMinervaSyncIntervalHours == 0 {
+				wantMinervaSyncIntervalHours = origMinervaSyncIntervalHours
+			}
+			if r.Minerva.Enabled != tc.wantMinervaEnabled {
+				t.Errorf("Minerva.Enabled = %v, want %v", r.Minerva.Enabled, tc.wantMinervaEnabled)
+			}
+			if r.Minerva.BaseURL != wantMinervaBaseURL {
+				t.Errorf("Minerva.BaseURL = %q, want %q", r.Minerva.BaseURL, wantMinervaBaseURL)
+			}
+			if r.Minerva.AssetsURL != wantMinervaAssetsURL {
+				t.Errorf("Minerva.AssetsURL = %q, want %q", r.Minerva.AssetsURL, wantMinervaAssetsURL)
+			}
+			if r.Minerva.SyncIntervalHours != wantMinervaSyncIntervalHours {
+				t.Errorf("Minerva.SyncIntervalHours = %d, want %d", r.Minerva.SyncIntervalHours, wantMinervaSyncIntervalHours)
 			}
 		})
 	}
