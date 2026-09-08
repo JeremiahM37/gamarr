@@ -10,8 +10,9 @@ import (
 
 // ResultToItem converts a gamarr SearchResult to a Torznab feed item.
 //
-// The download link priority is magnet > download URL > info_hash-derived
-// magnet > result GUID (typically a detail-page URL).
+// Selected files are discovery-only: conventional Torznab clients cannot
+// enforce their file selection. Other results prefer magnet > download URL >
+// info_hash-derived magnet > result GUID (typically a detail-page URL).
 func ResultToItem(r *models.SearchResult) Item {
 	category := CategoryForPlatform(r.PlatformSlug)
 
@@ -19,7 +20,14 @@ func ResultToItem(r *models.SearchResult) Item {
 	// result has no native identifier so the same release gets the same GUID
 	// across requests.
 	guid := r.GUID
-	if guid == "" {
+	if r.TorrentFileIndex != nil {
+		// Never fall back to a collection URL or magnet as the selection GUID.
+		identity := r.InfoHash
+		if identity == "" {
+			identity = fmt.Sprintf("%x", md5.Sum([]byte(r.Title+"\x00"+r.Indexer+"\x00"+r.TorrentFilePath)))
+		}
+		guid = fmt.Sprintf("minerva:%s:%d", identity, *r.TorrentFileIndex)
+	} else if guid == "" {
 		switch {
 		case r.InfoHash != "":
 			guid = r.InfoHash
@@ -63,6 +71,9 @@ func ResultToItem(r *models.SearchResult) Item {
 			Attr{Name: "torrent_file_path", Value: r.TorrentFilePath},
 			Attr{Name: "torrent_file_size", Value: fmt.Sprintf("%d", r.TorrentFileSize)},
 		)
+		// No raw collection URL or synthesized magnet may reach a downstream
+		// grabber. Internal API/scheduler routes own the selective handoff.
+		return item
 	}
 
 	// Download link — prefer magnet, fall back to direct URL, then synthesize

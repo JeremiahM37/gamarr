@@ -218,10 +218,13 @@ func TestMinervaSearchFanouts(t *testing.T) {
 					if route.name == "torznab" {
 						var feed struct {
 							Items []struct {
-								Title string `xml:"title"`
-								Size  int64  `xml:"size"`
-								GUID  string `xml:"guid"`
-								Link  string `xml:"link"`
+								Title     string `xml:"title"`
+								Size      int64  `xml:"size"`
+								GUID      string `xml:"guid"`
+								Link      string `xml:"link"`
+								Enclosure *struct {
+									URL string `xml:"url,attr"`
+								} `xml:"enclosure"`
 								Attrs []struct {
 									Name  string `xml:"name,attr"`
 									Value string `xml:"value,attr"`
@@ -234,8 +237,13 @@ func TestMinervaSearchFanouts(t *testing.T) {
 						count = len(feed.Items)
 						if enabled && count == 1 {
 							item := feed.Items[0]
-							if item.Size != 134217728 || item.Link != "https://minerva.invalid/nds.torrent" || item.GUID != "minerva:0123456789012345678901234567890123456789:7" {
+							if item.Size != 134217728 || item.Link != "" || item.Enclosure != nil || item.GUID != "minerva:0123456789012345678901234567890123456789:7" {
 								t.Fatalf("item = %+v", item)
+							}
+							for _, forbidden := range []string{"https://minerva.invalid/nds.torrent", "magnet:", "<link", "<enclosure"} {
+								if strings.Contains(rr.Body.String(), forbidden) {
+									t.Errorf("Torznab selection exposes %q: %s", forbidden, rr.Body.String())
+								}
 							}
 							attrs := map[string]string{}
 							for _, attr := range item.Attrs {
