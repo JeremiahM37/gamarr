@@ -434,7 +434,7 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 	// Advisory only. The import's own claim is what excludes a second one; this
 	// just answers with the specific reason before touching the row, since the
 	// status alone cannot say whether an import is running.
-	if _, busy := m.importing.Load(torrent.Hash); busy {
+	if _, busy := m.importing.Load(strings.ToLower(strings.TrimSpace(torrent.Hash))); busy {
 		return false, "An import is already running for this download"
 	}
 

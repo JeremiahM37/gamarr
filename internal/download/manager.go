@@ -55,6 +55,8 @@ type Manager struct {
 	// blaming the user's mounts. Keyed by hash rather than job id because
 	// OrganizeTorrent mints a fresh job per call, so two rows can name one
 	// physical download.
+	// Selective registration also claims the normalized hash until ownership
+	// is durable, so it cannot race an already running generic import.
 	importing sync.Map
 
 	// watching holds the download hashes a watcher goroutine is polling for.
@@ -79,6 +81,9 @@ type Manager struct {
 	// treat the same torrent as new and clear one another's wanted files.
 	selectiveMu     sync.Mutex
 	activeSelective sync.Map
+	// Registrations wait for one another, but refuse a hash held by a generic
+	// import. Payload setup keeps its existing independent selectiveMu guard.
+	selectiveRegistrationMu sync.Mutex
 }
 
 // New creates a new download Manager.
@@ -133,6 +138,11 @@ func (m *Manager) DownloadSelectiveTorrent(url, infoHash string, fileIndex int, 
 	if m.qb == nil || !m.cfg.HasQBittorrent() {
 		return "", fmt.Errorf("Minerva requires qBittorrent")
 	}
+	release, err := m.claimSelectiveRegistration(infoHash)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	if err := m.jobs.MarkMinervaTorrent(infoHash); err != nil {
 		return "", fmt.Errorf("cannot persist Minerva collection ownership: %w", err)
 	}
@@ -152,6 +162,18 @@ func (m *Manager) DownloadSelectiveTorrent(url, infoHash string, fileIndex int, 
 	return jobID, nil
 }
 
+func (m *Manager) claimSelectiveRegistration(hash string) (func(), error) {
+	m.selectiveRegistrationMu.Lock()
+	if _, busy := m.importing.LoadOrStore(hash, struct{}{}); busy {
+		m.selectiveRegistrationMu.Unlock()
+		return nil, fmt.Errorf("a generic import is already running for this torrent")
+	}
+	return func() {
+		m.importing.Delete(hash)
+		m.selectiveRegistrationMu.Unlock()
+	}, nil
+}
+
 // Retrying shares the fresh-download worker while retaining the original row,
 // retry count and file selection, including after a JSON-backed store reload.
 func (m *Manager) retrySelectiveJob(jobID string, job map[string]interface{}) (bool, string) {
@@ -169,11 +191,16 @@ func (m *Manager) retrySelectiveJob(jobID string, job map[string]interface{}) (b
 	if _, err := cleanSelectivePath(strVal(job, "torrent_file_path")); err != nil {
 		return false, err.Error()
 	}
+	hash := strings.ToLower(strings.TrimSpace(strVal(job, "info_hash")))
+	release, err := m.claimSelectiveRegistration(hash)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer release()
 	if _, busy := m.activeSelective.LoadOrStore(jobID, struct{}{}); busy {
 		return false, "A selective download is already running for this job"
 	}
 	retries := jobRetryCount(job) + 1
-	hash := strings.ToLower(strings.TrimSpace(strVal(job, "info_hash")))
 	if err := m.jobs.MarkMinervaTorrent(hash); err != nil {
 		m.activeSelective.Delete(jobID)
 		return false, fmt.Sprintf("cannot persist Minerva collection ownership: %v", err)
@@ -1322,7 +1349,7 @@ func (m *Manager) importFinishedTorrent(via, jobID string, t qbit.Torrent, platf
 	// excluded rather than only the one that was looked at. The hash is what two
 	// rows naming one download share; the job id stands in when there is none,
 	// so an empty hash cannot collapse unrelated imports onto one key.
-	claim := t.Hash
+	claim := strings.ToLower(strings.TrimSpace(t.Hash))
 	if claim == "" {
 		claim = jobID
 	}

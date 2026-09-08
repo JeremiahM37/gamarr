@@ -3,9 +3,12 @@ package download
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +17,131 @@ import (
 	"gamarr/internal/search"
 	"gamarr/internal/sources"
 )
+
+// The Docker API barrier holds the real generic importer inside ScanWithClamAV,
+// after it has claimed the hash. Selective registration must not take ownership
+// or launch work while that import can still publish or clean up the torrent.
+func TestMinervaRegistrationRefusesActiveGenericImport(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		t.Run(fmt.Sprint(retry), func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			q.exists = true
+			torrent := q.torrent
+			torrent.Hash = " \tABCDEF1234 "
+			id := "legacy"
+			if retry {
+				m.jobs.Set(id, map[string]interface{}{
+					"status": "error", "source": "minerva", "download_url": "https://example.test/collection.torrent", "info_hash": "abcdef1234",
+					"torrent_file_index": 7, "torrent_file_path": "Collection/HeartGold.nds", "torrent_file_size": int64(3),
+					"title": "HeartGold", "platform": "DS", "platform_slug": "nds", "is_pc": false,
+				})
+				if _, err := m.jobs.DB().Exec("DELETE FROM minerva_torrent_ownership"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Keep the Unix socket path below its platform length limit.
+			dir, err := os.MkdirTemp("", "scan-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(dir)
+			m.cfg.DockerSocket = filepath.Join(dir, "docker.sock")
+			m.cfg.ClamAVSocket = filepath.Join(dir, "clam.sock")
+			listener, err := net.Listen("unix", m.cfg.DockerSocket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			var enterOnce sync.Once
+			srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/start") {
+					enterOnce.Do(func() { close(entered) })
+					<-release
+					if err := os.WriteFile(m.cfg.ClamAVSocket, nil, 0600); err != nil {
+						t.Error(err)
+					}
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})}
+			go srv.Serve(listener)
+			defer srv.Close()
+			m.jobs.Set("generic", map[string]interface{}{"status": "organizing", "info_hash": torrent.Hash, "title": torrent.Name})
+			finished := make(chan bool, 1)
+			go func() { finished <- m.importFinishedTorrent("test", "generic", torrent, "DS", "nds", false) }()
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				close(release)
+				t.Fatal("generic import did not reach scan barrier")
+			}
+			// Isolate registration from payload setup and inspect its synchronous
+			// result. Even a broken registration cannot mutate qB during assertions.
+			m.selectiveMu.Lock()
+			accepted := false
+			if retry {
+				var reason string
+				accepted, reason = m.RetryJob(id)
+				if accepted || !strings.Contains(strings.ToLower(reason), "import") {
+					t.Errorf("retry ignored active generic import: accepted=%v reason=%s", accepted, reason)
+				}
+				if job, _ := m.jobs.Get(id); job["status"] != "error" {
+					t.Errorf("refused retry changed job: %v", job)
+				}
+			} else {
+				id, err = m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+				accepted = err == nil
+				if err == nil || !strings.Contains(strings.ToLower(err.Error()), "import") {
+					t.Errorf("fresh selection ignored active generic import: id=%s error=%v", id, err)
+				}
+				if len(m.jobs.Items()) != 1 {
+					t.Error("refused selection created a job")
+				}
+			}
+			if owned, err := m.jobs.IsMinervaTorrent("abcdef1234"); err != nil || owned {
+				t.Errorf("ownership changed during generic import: %v %v", owned, err)
+			}
+			if _, active := m.activeSelective.Load(id); active {
+				t.Error("selective worker launched during generic import")
+			}
+			if calls := q.callLog(); calls != "" {
+				t.Errorf("selective registration contacted qB: %s", calls)
+			}
+			close(release)
+			select {
+			case ok := <-finished:
+				if !ok {
+					t.Error("existing generic import failed")
+				}
+			case <-time.After(3 * time.Second):
+				t.Error("generic import deadlocked")
+			}
+			m.selectiveMu.Unlock()
+			if accepted {
+				selectiveJobDone(t, m, id)
+			}
+			if _, busy := m.importing.Load("abcdef1234"); busy {
+				t.Error("generic import did not release normalized hash")
+			}
+			// A completed generic import no longer owns the claim. The refused
+			// registration can now proceed, proving refusal did not leak locks.
+			if !accepted {
+				if retry {
+					if ok, reason := m.RetryJob(id); !ok {
+						t.Fatal(reason)
+					}
+				} else {
+					id, err = m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+					t.Fatal(job)
+				}
+			}
+		})
+	}
+}
 
 // This starts with real bencoded metadata, not manually rooted index rows.
 // Omitting info.name in ParseTorrent must fail at the real qB validation boundary.
