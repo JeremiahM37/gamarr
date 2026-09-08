@@ -31,7 +31,7 @@ func TestConfigEndpointReportsConfiguredServices(t *testing.T) {
 	wantStatus(t, rr, 200)
 	m := decodeMap(t, rr)
 
-	for _, svc := range []string{"prowlarr", "qbittorrent", "sabnzbd", "nzbget", "transmission", "deluge", "rawg"} {
+	for _, svc := range []string{"prowlarr", "qbittorrent", "sabnzbd", "nzbget", "transmission", "deluge", "rawg", "minerva"} {
 		section, ok := m[svc].(map[string]interface{})
 		if !ok {
 			t.Fatalf("config missing %q section: %v", svc, m)
@@ -80,8 +80,8 @@ func TestSourcesEndpoint(t *testing.T) {
 	m := decodeMap(t, rr)
 
 	srcs, ok := m["sources"].([]interface{})
-	if !ok || len(srcs) != 3 {
-		t.Fatalf("expected 3 sources, got %v", m["sources"])
+	if !ok || len(srcs) != 4 {
+		t.Fatalf("expected 4 sources, got %v", m["sources"])
 	}
 	names := map[string]bool{}
 	for _, s := range srcs {
@@ -89,7 +89,7 @@ func TestSourcesEndpoint(t *testing.T) {
 		name, _ := sm["name"].(string)
 		names[name] = true
 	}
-	for _, want := range []string{"prowlarr", "myrient", "vimm"} {
+	for _, want := range []string{"prowlarr", "myrient", "vimm", "minerva"} {
 		if !names[want] {
 			t.Errorf("sources missing %q (got %v)", want, names)
 		}

@@ -9,7 +9,7 @@ import (
 
 var startTime = time.Now()
 
-func (s *Server) handleAdminDashboard(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	// Library stats by platform.
 	libStats := s.mgr.Jobs().LibraryStats()
 	libTotal := s.mgr.Jobs().LibraryTotal()
@@ -28,6 +28,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, _ *http.Request) {
 		{"name": "prowlarr", "label": "Prowlarr", "status": sourceStatus(s.cfg.HasProwlarr())},
 		{"name": "myrient", "label": "Myrient", "status": "ok"},
 		{"name": "vimm", "label": "Vimm's Lair", "status": "ok"},
+		{"name": "minerva", "label": "Minerva", "status": minervaSourceStatus(s.minervaStatus(r.Context()))},
 	}
 
 	// Total users.

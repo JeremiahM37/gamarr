@@ -170,6 +170,8 @@ func main() {
 
 	// Load config
 	cfg := config.Load()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Ensure directories exist. DataDir holds the database, so the binary
 	// cannot run without it. The download/library paths default to /data/*
@@ -192,6 +194,16 @@ func main() {
 		os.Exit(1)
 	}
 	defer database.Close()
+
+	// The optional index is opened only when enabled. Initial metadata sync
+	// claims its guard now and runs independently of HTTP server startup.
+	minervaSvc, stopMinerva, err := startMinerva(ctx, cfg, newSyncTicker)
+	if err != nil {
+		slog.Error("failed to initialize Minerva index", "error", err)
+		os.Exit(1)
+	}
+	// Runs after HTTP handlers and scheduler searches have drained below.
+	defer stopMinerva()
 
 	// Initialize qBittorrent client (API key preferred when set — qB ≥ 5.2).
 	var qb *qbit.Client
@@ -262,7 +274,7 @@ func main() {
 	}
 
 	// Initialize scheduler
-	searchFn := newSchedulerSearch(cfg, nil)
+	searchFn := newSchedulerSearch(cfg, minervaSvc)
 	downloadFn := newSchedulerDownload(mgr, sab)
 
 	webhookFn := func() []webhook.WebhookConfig {
@@ -316,7 +328,7 @@ func main() {
 	// Create HTTP router. The API reports this over /api/health and /api/config,
 	// so an image pulled from the registry can say which build it is.
 	api.Version = Version
-	router := api.NewRouter(cfg, mgr, mon, sab, sched, nil)
+	router := &drainingHandler{next: api.NewRouter(cfg, mgr, mon, sab, sched, minervaSvc)}
 
 	// Start HTTP server
 	server := &http.Server{
@@ -336,9 +348,6 @@ func main() {
 	}()
 
 	// Graceful shutdown
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	<-ctx.Done()
 	slog.Info("shutting down...")
 
@@ -350,6 +359,9 @@ func main() {
 	mon.Stop()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
+		_ = server.Close()
 	}
+	router.Drain()
+	stopMinerva()
 	slog.Info("shutdown complete")
 }

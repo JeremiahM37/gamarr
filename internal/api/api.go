@@ -96,6 +96,8 @@ func NewRouter(cfg *config.Config, mgr *download.Manager, mon *monitor.GamarrMon
 	r.Get("/api/search", s.handleSearch)
 	r.Get("/api/platforms", s.handlePlatforms)
 	r.Get("/api/sources", s.handleSources)
+	r.Get("/api/minerva/status", s.handleMinervaStatus)
+	r.Post("/api/minerva/sync", requireAdmin(s.handleMinervaSync))
 
 	// Torznab indexer endpoint — lets Prowlarr / Sonarr / other *arr apps
 	// query Gamarr as if it were a Torznab indexer. /api alias is the path
@@ -582,10 +584,12 @@ func (s *Server) handlePlatforms(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	healthData := search.GetAllSourceHealth()
+	minervaState := s.minervaStatus(r.Context())
 	sourceMeta := []map[string]interface{}{
 		{"name": "prowlarr", "label": "Prowlarr", "color": "#f97316", "source_type": "torrent", "enabled": s.cfg.HasProwlarr()},
 		{"name": "myrient", "label": "Myrient", "color": "#10b981", "source_type": "ddl", "enabled": true},
 		{"name": "vimm", "label": "Vimm's Lair", "color": "#6366f1", "source_type": "ddl", "enabled": true},
+		{"name": "minerva", "label": "Minerva", "color": "#0891b2", "source_type": "torrent", "enabled": minervaState.Enabled, "status": minervaSourceStatus(minervaState), "index": minervaState},
 	}
 	// Attach health data to each source
 	for _, src := range sourceMeta {

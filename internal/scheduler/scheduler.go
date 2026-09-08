@@ -40,6 +40,7 @@ type Scheduler struct {
 	lastResults   int
 	autoDownloads int
 	stopCh        chan struct{}
+	workers       sync.WaitGroup
 	rateLimit     time.Duration // wait between wishlist searches
 }
 
@@ -64,21 +65,32 @@ func New(cfg *config.Config, jobs *db.JobStore, searchFn SearchFunc, downloadFn 
 
 // Start begins the scheduler loop if enabled.
 func (s *Scheduler) Start() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.stopCh:
+		return
+	default:
+	}
 	if !s.cfg.SchedulerEnabled {
 		slog.Info("scheduler disabled")
 		return
 	}
-	go s.loop()
+	s.workers.Add(1)
+	go func() { defer s.workers.Done(); s.loop() }()
 	slog.Info("scheduler started", "interval_hours", s.cfg.SchedulerIntervalHours)
 }
 
-// Stop halts the scheduler.
+// Stop halts scheduling and waits for active cycles to finish.
 func (s *Scheduler) Stop() {
+	s.mu.Lock()
 	select {
 	case <-s.stopCh:
 	default:
 		close(s.stopCh)
 	}
+	s.mu.Unlock()
+	s.workers.Wait()
 }
 
 // RunNow triggers an immediate search cycle.
@@ -122,17 +134,25 @@ func (s *Scheduler) loop() {
 
 func (s *Scheduler) run() {
 	s.mu.Lock()
+	select {
+	case <-s.stopCh:
+		s.mu.Unlock()
+		return
+	default:
+	}
 	if s.running {
 		s.mu.Unlock()
 		return
 	}
 	s.running = true
+	s.workers.Add(1)
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
 		s.running = false
 		s.mu.Unlock()
+		s.workers.Done()
 	}()
 
 	slog.Info("scheduler: starting wishlist search")

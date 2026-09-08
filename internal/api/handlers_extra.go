@@ -300,7 +300,13 @@ func (s *Server) handleSourceReset(w http.ResponseWriter, r *http.Request) {
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	minervaState := s.minervaStatus(r.Context())
 	writeJSON(w, 200, map[string]interface{}{
+		"minerva": map[string]interface{}{
+			"configured": minervaState.Enabled,
+			"status":     minervaSourceStatus(minervaState),
+			"index":      minervaState,
+		},
 		"prowlarr": map[string]interface{}{
 			"configured": s.cfg.HasProwlarr(),
 			"url":        s.cfg.ProwlarrURL,
