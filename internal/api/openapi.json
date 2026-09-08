@@ -52,7 +52,47 @@
           "source_type":    {"type": "string", "enum": ["torrent", "ddl"]},
           "safety_score":   {"type": "integer", "description": "0-100; higher is safer."},
           "score":          {"type": "integer"},
+          "torrent_file_index": {"type": ["integer", "null"], "minimum": 0, "description": "Selected file index within a Minerva collection torrent. Omitted for ordinary results."},
+          "torrent_file_path":  {"type": "string", "description": "Selected file path within a Minerva collection torrent. Omitted for ordinary results."},
+          "torrent_file_size":  {"type": "integer", "format": "int64", "minimum": 0, "description": "Selected file size in bytes within a Minerva collection torrent. Omitted for ordinary results."},
           "in_library":     {"type": "boolean"}
+        }
+      },
+      "DownloadRequest": {
+        "type": "object",
+        "description": "A download selected from a search result. Minerva selected-file fields are optional and, when present, route the collection torrent through qBittorrent's validated selective-download flow.",
+        "properties": {
+          "download_url":       {"type": "string", "format": "uri"},
+          "magnet_url":         {"type": "string"},
+          "info_hash":          {"type": "string"},
+          "title":              {"type": "string"},
+          "platform":           {"type": "string"},
+          "platform_slug":      {"type": "string"},
+          "source_type":        {"type": "string"},
+          "download_protocol":  {"type": "string", "enum": ["torrent", "nzb"]},
+          "torrent_file_index": {"type": ["integer", "null"], "minimum": 0, "description": "Selected Minerva collection-file index; omit for ordinary downloads."},
+          "torrent_file_path":  {"type": "string", "description": "Selected Minerva collection-file path; omit for ordinary downloads."},
+          "torrent_file_size":  {"type": "integer", "format": "int64", "minimum": 0, "description": "Selected Minerva collection-file size in bytes; omit for ordinary downloads."}
+        }
+      },
+      "MinervaStatus": {
+        "type": "object",
+        "description": "State of the optional local Minerva metadata index. A disabled source returns enabled=false and zero counts.",
+        "required": ["enabled", "ready", "syncing", "collections", "files"],
+        "properties": {
+          "enabled":     {"type": "boolean"},
+          "ready":       {"type": "boolean", "description": "Whether the local index contains searchable files."},
+          "syncing":     {"type": "boolean"},
+          "last_sync":   {"type": "string", "format": "date-time"},
+          "last_error":  {"type": "string"},
+          "collections": {"type": "integer", "minimum": 0},
+          "files":       {"type": "integer", "minimum": 0}
+        }
+      },
+      "MinervaSyncRequest": {
+        "type": "object",
+        "properties": {
+          "full": {"type": "boolean", "default": false, "description": "Set true to rebuild all configured collections instead of performing the normal incremental sync."}
         }
       },
       "WishlistItem": {
@@ -153,6 +193,46 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/download": {
+      "post": {
+        "summary": "Start a download",
+        "description": "Pass a search result's download fields. For a Minerva selected file, Gamarr validates the live qBittorrent collection file list before enabling and starting only that file.",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DownloadRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Download accepted"},
+          "400": {"description": "Invalid request or selected-file metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/minerva/status": {
+      "get": {
+        "summary": "Get Minerva index status",
+        "description": "Returns the local Minerva metadata-index state. Minerva remains disabled unless explicitly enabled in the source registry.",
+        "responses": {
+          "200": {"description": "Minerva index status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MinervaStatus"}}}}
+        }
+      }
+    },
+    "/api/minerva/sync": {
+      "post": {
+        "summary": "Start a Minerva metadata sync",
+        "description": "Administrator only. Starts an asynchronous metadata-only sync; it does not download ROM payloads. Omit full or set it false for an incremental sync.",
+        "requestBody": {
+          "required": false,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MinervaSyncRequest"}}}
+        },
+        "responses": {
+          "202": {"description": "Sync accepted", "content": {"application/json": {"schema": {"type": "object", "required": ["success"], "properties": {"success": {"type": "boolean", "enum": [true]}}}}}},
+          "400": {"description": "Minerva is disabled or the request body is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "Authenticated user is not an administrator", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "A Minerva sync is already in progress", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "The sync could not be started", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
         }
       }
     },

@@ -133,6 +133,17 @@ func TestOpenAPISpec(t *testing.T) {
 	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
+	for _, want := range []string{
+		`"torrent_file_index"`,
+		`"torrent_file_path"`,
+		`"torrent_file_size"`,
+		`"/api/minerva/status"`,
+		`"/api/minerva/sync"`,
+	} {
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Errorf("openapi.json missing %s", want)
+		}
+	}
 }
 
 func TestMetricsEndpoint(t *testing.T) {

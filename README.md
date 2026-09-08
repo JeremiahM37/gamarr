@@ -240,6 +240,46 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `VIMM_RATE_LIMIT_DEFAULT_SEC` | `60` | Backoff applied when Vimm answers `429` without a usable `Retry-After` header. A `Retry-After` that is present is honoured instead, capped at 15 minutes |
 | `SCHEDULER_ITEM_INTERVAL_SEC` | `5` | Gap between wishlist items in a scheduled run |
 
+### Minerva Archive (optional)
+
+Minerva is an optional source and is disabled by default. When enabled, Gamarr
+builds a local search index from Minerva collection torrent metadata; it does
+not bundle a Minerva database in the image or repository.
+
+```text
+MINERVA_ENABLED=false
+MINERVA_URL=https://minerva-archive.org/
+MINERVA_ASSETS_URL=https://minerva-archive.org/assets/
+MINERVA_SYNC_INTERVAL_HOURS=24
+index: <DATA_DIR>/minerva/index.db
+qBittorrent required for Minerva downloads
+initial sync: automatic only when enabled and index is not ready
+scheduled sync: incremental
+manual sync: POST /api/minerva/sync
+full rebuild: POST /api/minerva/sync with {"full":true}
+```
+
+Sync downloads only torrent metadata, not ROM payloads. The initial sync starts
+automatically only when Minerva is enabled and its local index is not ready;
+later scheduled syncs are incremental at `MINERVA_SYNC_INTERVAL_HOURS` (24 by
+default). An administrator can start the same incremental flow with
+`POST /api/minerva/sync`, or request a full rebuild with
+`POST /api/minerva/sync` and `{"full":true}`. `GET /api/minerva/status` reports
+the index state; a sync request is accepted asynchronously with `202`, and
+returns `409` when another sync is already running.
+
+qBittorrent is required for Minerva downloads in v1. Before downloading any
+payload, Gamarr adds the collection in a non-downloading state, checks
+qBittorrent's live file list against the indexed file index, path, and size,
+then enables and starts only the requested file. A mismatch aborts the
+selection rather than downloading an arbitrary collection member. Other
+download clients are not Minerva payload downloaders in v1.
+
+Minerva Torznab entries are discovery-only: they intentionally have no
+downloadable collection enclosure. Use Gamarr's internal API, UI, or scheduler
+for actionable selective downloads; external Torznab clients cannot directly
+grab a Minerva collection in v1.
+
 ### Search Sources
 
 | Variable | Default | Description |
