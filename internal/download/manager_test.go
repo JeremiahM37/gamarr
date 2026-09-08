@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,7 +23,901 @@ import (
 	"gamarr/internal/fileops"
 	"gamarr/internal/platform"
 	"gamarr/internal/qbit"
+	"gamarr/internal/search"
 )
+
+// selectiveQbit exercises the real Web API client while keeping the collection
+// and its on-disk payload independent from the requested selection.
+type selectiveQbit struct {
+	mu              sync.Mutex
+	srv             *httptest.Server
+	torrent         qbit.Torrent
+	exists          bool
+	files           []qbit.TorrentFile
+	calls           []string
+	infoFails       bool
+	fileReads       int
+	emptyReads      int
+	readyAfter      int
+	changeAfter     int
+	failAction      string
+	outsideCategory bool
+}
+
+func newSelectiveTest(t *testing.T) (*Manager, *selectiveQbit) {
+	t.Helper()
+	oldInterval, oldTimeout := selectiveMetadataInterval, selectiveMetadataTimeout
+	oldPoll, oldDownload := selectivePollInterval, selectiveDownloadTimeout
+	selectiveMetadataInterval, selectiveMetadataTimeout = time.Millisecond, time.Second
+	selectivePollInterval, selectiveDownloadTimeout = time.Millisecond, time.Second
+	t.Cleanup(func() {
+		selectiveMetadataInterval, selectiveMetadataTimeout = oldInterval, oldTimeout
+		selectivePollInterval, selectiveDownloadTimeout = oldPoll, oldDownload
+	})
+	cfg := newTestConfig(t)
+	cfg.QBURL = "configured"
+	cfg.ImportMode = fileops.ModeCopy
+	q := &selectiveQbit{torrent: qbit.Torrent{
+		Hash: "abcdef1234", Name: "Collection", SavePath: cfg.QBSavePath,
+		ContentPath: filepath.Join(cfg.QBSavePath, "Collection"), State: "stoppedDL", Progress: .2,
+	}, files: []qbit.TorrentFile{
+		{Index: 2, Name: "Collection/Other.nds", Size: 5, Progress: 0, Priority: 1},
+		{Index: 7, Name: "Collection/HeartGold.nds", Size: 3, Progress: 1, Priority: 1},
+		{Index: 9, Name: "Collection/unwanted.cmd", Size: 3, Progress: 0, Priority: 1},
+	}}
+	for _, f := range q.files {
+		data := []byte("rom")
+		if f.Index == 2 {
+			data = []byte("other")
+		}
+		writeFileT(t, filepath.Join(cfg.QBSavePath, filepath.FromSlash(f.Name)), data)
+	}
+	q.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		r.ParseForm()
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			fmt.Fprint(w, "Ok.")
+		case "/api/v2/torrents/info":
+			q.calls = append(q.calls, "info")
+			if q.infoFails {
+				w.WriteHeader(500)
+				return
+			}
+			if q.outsideCategory && r.Form.Get("category") != "" {
+				fmt.Fprint(w, "[]")
+				return
+			}
+			if q.exists {
+				json.NewEncoder(w).Encode([]qbit.Torrent{q.torrent})
+			} else {
+				fmt.Fprint(w, "[]")
+			}
+		case "/api/v2/torrents/add":
+			q.calls = append(q.calls, "add:"+r.Form.Get("paused")+":"+r.Form.Get("stopped"))
+			if q.failAction == "add" {
+				fmt.Fprint(w, "Fails.")
+				return
+			}
+			q.exists = true
+			fmt.Fprint(w, "Ok.")
+		case "/api/v2/torrents/files":
+			q.calls = append(q.calls, "files:"+r.Form.Get("hash"))
+			q.fileReads++
+			if q.fileReads <= q.emptyReads {
+				fmt.Fprint(w, "[]")
+				return
+			}
+			files := append([]qbit.TorrentFile(nil), q.files...)
+			if q.fileReads < q.readyAfter {
+				files[1].Progress = .4
+			}
+			if q.changeAfter > 0 && q.fileReads >= q.changeAfter {
+				files[1].Name = "Collection/Different.nds"
+			}
+			json.NewEncoder(w).Encode(files)
+		case "/api/v2/torrents/filePrio":
+			q.calls = append(q.calls, "priority:"+r.Form.Get("hash")+":"+r.Form.Get("id")+":"+r.Form.Get("priority"))
+			if q.failAction == "priority:"+r.Form.Get("priority") {
+				w.WriteHeader(500)
+				return
+			}
+			priority, _ := strconv.Atoi(r.Form.Get("priority"))
+			for _, id := range strings.Split(r.Form.Get("id"), "|") {
+				for i := range q.files {
+					if strconv.Itoa(q.files[i].Index) == id {
+						q.files[i].Priority = priority
+					}
+				}
+			}
+		case "/api/v2/torrents/start", "/api/v2/torrents/resume":
+			q.calls = append(q.calls, "start:"+r.Form.Get("hashes"))
+			if q.failAction == "start" {
+				w.WriteHeader(500)
+				return
+			}
+			q.torrent.State = "downloading"
+		case "/api/v2/torrents/delete":
+			q.calls = append(q.calls, "delete:"+r.Form.Get("hashes")+":"+r.Form.Get("deleteFiles"))
+			q.exists = false
+		default:
+			t.Errorf("unexpected qB request: %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(q.srv.Close)
+	return New(cfg, newTestJobs(t), qbit.New(q.srv.URL, "user", "pass")), q
+}
+
+func (q *selectiveQbit) callLog() string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return strings.Join(q.calls, ",")
+}
+
+func selectiveJobDone(t *testing.T, m *Manager, id string) map[string]interface{} {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		job, _ := jobFromDB(t, m.jobs, id)
+		if job["status"] == "completed" || job["status"] == "error" {
+			if _, active := m.activeSelective.Load(id); !active {
+				return job
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	job, _ := m.jobs.Get(id)
+	t.Fatalf("selective job did not finish: %#v", job)
+	return nil
+}
+
+func TestDownloadSelectiveTorrentMismatchBeforeStart(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.files[1].Name = "Collection/Different.nds"
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := selectiveJobDone(t, m, id)
+	if job["status"] != "error" {
+		t.Fatalf("mismatched live file imported: %#v", job)
+	}
+	if calls := q.callLog(); strings.Contains(calls, "priority:") || strings.Contains(calls, "start:") {
+		t.Fatalf("mismatch mutated selection or started transfer: %s", calls)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+		t.Fatalf("mismatch imported library items: %#v", items)
+	}
+}
+
+func TestDownloadSelectiveTorrentSuccessfulSelection(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := selectiveJobDone(t, m, id)
+	if job["status"] != "completed" {
+		t.Fatalf("selection failed: %#v", job)
+	}
+	want := "add:true:true,files:abcdef1234,priority:abcdef1234:2|7|9:0,priority:abcdef1234:7:7,start:abcdef1234"
+	if calls := q.callLog(); !strings.Contains(calls, want) {
+		t.Fatalf("unsafe order: %s; want %s", calls, want)
+	}
+	dest := filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")
+	if data, err := os.ReadFile(dest); err != nil || string(data) != "rom" {
+		t.Fatalf("target payload = %q, %v", data, err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(dest))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("want only target and sidecar, got %v (%v)", entries, err)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 1 || items[0].FilePath != dest {
+		t.Fatalf("target-only library import: %#v", items)
+	}
+}
+
+func TestDownloadSelectiveTorrentExistingPreservesSelection(t *testing.T) {
+	for _, state := range []string{"downloading", "stalledDL", "stoppedDL", "pausedDL", "stoppedUP", "pausedUP"} {
+		t.Run(state, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			q.exists = true
+			q.torrent.State = state
+			q.torrent.Hash = "ABCDEF1234"
+			q.files[0].Priority = 6
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", " ABCDEF1234 ", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := selectiveJobDone(t, m, id)
+			if job["status"] != "completed" {
+				t.Fatalf("existing selection failed: %#v", job)
+			}
+			calls := q.callLog()
+			if strings.Contains(calls, "add:") || strings.Contains(calls, ":0") || strings.Contains(calls, "delete:") {
+				t.Fatalf("existing torrent changed: %s", calls)
+			}
+			if !strings.Contains(calls, "priority:abcdef1234:7:7") {
+				t.Fatalf("hash was not normalized: %s", calls)
+			}
+			wantStart := strings.HasPrefix(state, "stopped") || strings.HasPrefix(state, "paused")
+			if strings.Contains(calls, "start:") != wantStart {
+				t.Fatalf("start for state %s: %s", state, calls)
+			}
+			q.mu.Lock()
+			priority := q.files[0].Priority
+			q.mu.Unlock()
+			if priority != 6 {
+				t.Fatalf("other selected priority changed to %d", priority)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentConcurrentSelectionsCoexist(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.files[0].Progress = 1
+	var ids [2]string
+	var errs [2]error
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			index, path, size := 7, "Collection/HeartGold.nds", int64(3)
+			if i == 1 {
+				index, path, size = 2, "Collection/Other.nds", 5
+			}
+			ids[i], errs[i] = m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", index, path, size, "Selected", "DS", "nds", false)
+		}(i)
+	}
+	wg.Wait()
+	for i, id := range ids {
+		if errs[i] != nil {
+			t.Fatal(errs[i])
+		}
+		if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+			t.Fatalf("concurrent selection failed: %#v", job)
+		}
+	}
+	calls := q.callLog()
+	if strings.Count(calls, "add:") != 1 || strings.Count(calls, "2|7|9:0") != 1 {
+		t.Fatalf("collection initialized more than once: %s", calls)
+	}
+	q.mu.Lock()
+	p0, p1 := q.files[0].Priority, q.files[1].Priority
+	q.mu.Unlock()
+	if p0 != 7 || p1 != 7 {
+		t.Fatalf("selected files clobbered: priorities = %d, %d", p0, p1)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 2 {
+		t.Fatalf("wanted two file-specific library records: %#v", items)
+	}
+}
+
+func TestDownloadSelectiveTorrentLiveValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, requested, live string
+		index                 int
+		size                  int64
+		wantOK                bool
+	}{
+		{"wrong_index", "Collection/HeartGold.nds", "Collection/HeartGold.nds", 8, 3, false},
+		{"size_mismatch", "Collection/HeartGold.nds", "Collection/HeartGold.nds", 7, 4, false},
+		{"unknown_size", "Collection/HeartGold.nds", "Collection/HeartGold.nds", 7, 0, true},
+		{"clean_paths", "./Collection//HeartGold.nds", "Collection/./HeartGold.nds", 7, 3, true},
+		{"case_mismatch", "Collection/heartgold.nds", "Collection/HeartGold.nds", 7, 3, false},
+		{"absolute", "/Collection/HeartGold.nds", "/Collection/HeartGold.nds", 7, 3, false},
+		{"drive", "C:/Collection/HeartGold.nds", "C:/Collection/HeartGold.nds", 7, 3, false},
+		{"backslash", `Collection\HeartGold.nds`, `Collection\HeartGold.nds`, 7, 3, false},
+		{"traversal", "Collection/../Collection/HeartGold.nds", "Collection/../Collection/HeartGold.nds", 7, 3, false},
+		{"parent", "../HeartGold.nds", "../HeartGold.nds", 7, 3, false},
+		{"empty", "", "", 7, 3, false},
+		{"directory", ".", ".", 7, 3, false},
+		{"live_traversal", "Collection/HeartGold.nds", "Collection/../Collection/HeartGold.nds", 7, 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			q.files[1].Name = tc.live
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", tc.index, tc.requested, tc.size, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				if tc.wantOK {
+					t.Fatal(err)
+				}
+				return
+			}
+			job := selectiveJobDone(t, m, id)
+			if (job["status"] == "completed") != tc.wantOK {
+				t.Errorf("validation outcome: %#v", job)
+			}
+			if !tc.wantOK {
+				if calls := q.callLog(); strings.Contains(calls, "priority:") || strings.Contains(calls, "start:") {
+					t.Errorf("invalid target mutated transfer: %s", calls)
+				}
+				if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+					t.Errorf("invalid target imported: %#v", items)
+				}
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentMismatchCleanupCreatedOnly(t *testing.T) {
+	for _, exists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing_%v", exists), func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			q.exists = exists
+			q.files[1].Name = "Different.nds"
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+				t.Fatal(job)
+			}
+			calls := q.callLog()
+			if strings.Contains(calls, "delete:abcdef1234:true") != !exists {
+				t.Fatalf("created-only cleanup: %s", calls)
+			}
+			if exists && (strings.Contains(calls, "delete:") || strings.Contains(calls, "priority:") || strings.Contains(calls, "start:")) {
+				t.Fatalf("mismatch changed pre-existing torrent: %s", calls)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentWaitsForMetadata(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.emptyReads = 2
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+		t.Fatalf("failed before metadata arrived: %#v", job)
+	}
+	if calls := q.callLog(); !strings.Contains(calls, "add:true:true,files:abcdef1234,files:abcdef1234,files:abcdef1234,priority:") {
+		t.Fatalf("priority preceded metadata: %s", calls)
+	}
+}
+
+func TestDownloadSelectiveTorrentUnreadableListingDoesNotAdd(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.infoFails = true
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+		t.Fatal(job)
+	}
+	if calls := q.callLog(); calls != "info" {
+		t.Fatalf("unknown torrent state caused writes: %s", calls)
+	}
+}
+
+func TestDownloadSelectiveTorrentWaitsOnlyForTarget(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.torrent.Progress = 1
+	q.readyAfter = 3
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+		t.Fatal(job)
+	}
+	q.mu.Lock()
+	reads := q.fileReads
+	q.mu.Unlock()
+	if reads < 3 {
+		t.Fatalf("imported incomplete target based on collection progress: %s", q.callLog())
+	}
+}
+
+func TestDownloadSelectiveTorrentRevalidatesBeforeImport(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.readyAfter, q.changeAfter = 2, 2
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+		t.Fatalf("changed target imported: %#v", job)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+		t.Fatal(items)
+	}
+}
+
+func TestDownloadSelectiveTorrentRejectsNonFileAndMissingSavePath(t *testing.T) {
+	for _, kind := range []string{"directory", "empty_save_path", "relative_save_path"} {
+		t.Run(kind, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			name := "Collection/HeartGold.nds"
+			if kind == "directory" {
+				name = "Collection"
+				q.files[1].Name = name
+			}
+			if kind == "empty_save_path" {
+				q.torrent.SavePath = ""
+			}
+			if kind == "relative_save_path" {
+				q.torrent.SavePath = "."
+			}
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, name, 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+				t.Fatalf("non-file target imported: %#v", job)
+			}
+			if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+				t.Fatal(items)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentSavePathSymlinkEscape(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	outside := filepath.Join(t.TempDir(), "outside.nds")
+	writeFileT(t, outside, []byte("outside"))
+	link := filepath.Join(m.cfg.QBSavePath, "escape")
+	if err := os.Symlink(filepath.Dir(outside), link); err != nil {
+		if runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command("cmd", "/c", "mklink", "/J", link, filepath.Dir(outside)).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v: %s", err, output)
+		}
+	}
+	q.files[1].Name = "escape/outside.nds"
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "escape/outside.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+		t.Fatalf("SavePath escape imported: %#v", job)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+		t.Fatal(items)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "outside" {
+		t.Fatalf("outside file modified: %q, %v", data, err)
+	}
+}
+
+func minervaDownloadCounts() (int, int) {
+	if h := search.GetSourceHealth("minerva"); h != nil {
+		return h.DownloadOK, h.DownloadFail
+	}
+	return 0, 0
+}
+
+func TestDownloadSelectiveTorrentScanAndHealth(t *testing.T) {
+	for _, kind := range []string{"success", "infected", "import_failure"} {
+		t.Run(kind, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			q.exists = true
+			oldScan := selectiveScan
+			var scanned []string
+			selectiveScan = func(src, container, socket, docker string) (bool, []string) {
+				scanned = append(scanned, src)
+				if container != m.cfg.ClamAVContainer || socket != m.cfg.ClamAVSocket || docker != m.cfg.DockerSocket {
+					t.Error("scan did not use configured ClamAV")
+				}
+				if data, err := os.ReadFile(src); err != nil || string(data) != "rom" {
+					t.Errorf("scanned something other than selected file: %q, %v", data, err)
+				}
+				if kind == "infected" {
+					return false, []string{"selected file: Eicar FOUND"}
+				}
+				return true, nil
+			}
+			t.Cleanup(func() { selectiveScan = oldScan })
+			if kind == "import_failure" {
+				writeFileT(t, filepath.Join(m.cfg.GamesRomsPath, "nds"), []byte("blocked directory"))
+			}
+			okBefore, failBefore := minervaDownloadCounts()
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := selectiveJobDone(t, m, id)
+			wantSuccess := kind == "success"
+			if (job["status"] == "completed") != wantSuccess {
+				t.Fatalf("scan/import outcome: %#v", job)
+			}
+			if len(scanned) != 1 || scanned[0] != filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds") {
+				t.Fatalf("scan targets: %v", scanned)
+			}
+			oks, fails := minervaDownloadCounts()
+			if wantSuccess {
+				if oks != okBefore+1 || fails != failBefore {
+					t.Fatalf("success health delta = %d/%d", oks-okBefore, fails-failBefore)
+				}
+				items := m.jobs.RecentLibraryItems(10)
+				if len(items) != 1 || items[0].Source != "minerva" || items[0].FileSize != 3 || items[0].PlatformSlug != "nds" || items[0].Title != "HeartGold" {
+					t.Fatalf("Minerva metadata: %#v", items)
+				}
+				data, err := os.ReadFile(items[0].FilePath + ".gamarr.json")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var sidecar map[string]interface{}
+				if err := json.Unmarshal(data, &sidecar); err != nil {
+					t.Fatal(err)
+				}
+				if sidecar["source"] != "minerva" || sidecar["title"] != "HeartGold" || sidecar["platform_slug"] != "nds" {
+					t.Fatalf("sidecar: %#v", sidecar)
+				}
+			} else {
+				if oks != okBefore || fails != failBefore+1 {
+					t.Fatalf("failure health delta = %d/%d", oks-okBefore, fails-failBefore)
+				}
+				if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+					t.Fatalf("failed scan/import recorded success: %#v", items)
+				}
+			}
+			if strings.Contains(q.callLog(), "delete:") {
+				t.Fatalf("deleted an existing collection: %s", q.callLog())
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentSetupFailures(t *testing.T) {
+	for _, action := range []string{"add", "priority:0", "priority:7", "start", "metadata_timeout", "mismatch"} {
+		t.Run(action, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			q.failAction = action
+			if action == "metadata_timeout" {
+				selectiveMetadataTimeout = 20 * time.Millisecond
+				q.emptyReads = 10000
+			}
+			if action == "mismatch" {
+				q.files[1].Size = 42
+			}
+			okBefore, failBefore := minervaDownloadCounts()
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+				t.Fatalf("failed setup continued: %#v", job)
+			}
+			calls := q.callLog()
+			if action != "start" && strings.Contains(calls, "start:") {
+				t.Fatalf("started despite failed setup: %s", calls)
+			}
+			if strings.Contains(calls, "delete:abcdef1234:true") != (action != "add") {
+				t.Fatalf("incorrect created-only cleanup: %s", calls)
+			}
+			if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+				t.Fatal(items)
+			}
+			oks, fails := minervaDownloadCounts()
+			if oks != okBefore || fails != failBefore+1 {
+				t.Fatalf("setup failure health delta = %d/%d", oks-okBefore, fails-failBefore)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentImportModes(t *testing.T) {
+	for _, mode := range []fileops.Mode{fileops.ModeMove, fileops.ModeCopy, fileops.ModeHardlink, fileops.ModeSymlink} {
+		t.Run(string(mode), func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			if mode == fileops.ModeSymlink && runtime.GOOS == "windows" {
+				probe := filepath.Join(t.TempDir(), "link")
+				if err := os.Symlink(m.cfg.QBSavePath, probe); err != nil {
+					t.Skipf("symlink privilege unavailable: %v", err)
+				}
+			}
+			m.SaveSettings(&Settings{ImportMode: string(mode)})
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+				t.Fatal(job)
+			}
+			src := filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds")
+			dest := filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")
+			if pathExists(src) != (mode != fileops.ModeMove) {
+				t.Fatalf("mode %s did not preserve/move source", mode)
+			}
+			if mode == fileops.ModeHardlink {
+				a, _ := os.Stat(src)
+				b, _ := os.Stat(dest)
+				if !os.SameFile(a, b) {
+					t.Fatal("hardlink does not share the selected file")
+				}
+			}
+			if mode == fileops.ModeSymlink {
+				info, err := os.Lstat(dest)
+				if err != nil || info.Mode()&os.ModeSymlink == 0 {
+					t.Fatalf("not a symlink: %v", err)
+				}
+			}
+			if !pathExists(filepath.Join(m.cfg.QBSavePath, "Collection", "Other.nds")) {
+				t.Fatal("unselected source removed")
+			}
+			if strings.Contains(q.callLog(), "delete:") {
+				t.Fatalf("removed shared collection after import: %s", q.callLog())
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentPersistsAndRetriesSelection(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.files[1].Size = 42
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", " ABCDEF1234 ", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := selectiveJobDone(t, m, id)
+	if job["status"] != "error" {
+		t.Fatal(job)
+	}
+	for key, want := range map[string]interface{}{
+		"source": "minerva", "download_url": "https://example.test/collection.torrent", "info_hash": "abcdef1234",
+		"torrent_file_index": float64(7), "torrent_file_path": "Collection/HeartGold.nds", "torrent_file_size": float64(3),
+		"title": "HeartGold", "platform": "DS", "platform_slug": "nds", "is_pc": false,
+	} {
+		if job[key] != want {
+			t.Fatalf("persisted %s = %#v; want %#v", key, job[key], want)
+		}
+	}
+	// Reload the persisted JSON representation: numeric fields are float64,
+	// unlike the int/int64 values held immediately after the original request.
+	m.jobs.Set(id, job)
+	q.mu.Lock()
+	q.files[1].Size = 3
+	q.calls = nil
+	q.mu.Unlock()
+	if ok, reason := m.RetryJob(id); !ok {
+		t.Fatalf("selective retry rejected: %s", reason)
+	}
+	job = selectiveJobDone(t, m, id)
+	if job["status"] != "completed" || jobRetryCount(job) != 1 {
+		t.Fatalf("retry did not complete on same row: %#v", job)
+	}
+	if len(m.jobs.Items()) != 1 {
+		t.Fatal("retry created a duplicate job")
+	}
+	if calls := q.callLog(); !strings.Contains(calls, "add:true:true,files:abcdef1234,priority:abcdef1234:2|7|9:0,priority:abcdef1234:7:7,start:abcdef1234") {
+		t.Fatalf("retry bypassed selective path: %s", calls)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 1 || items[0].FilePath != filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds") {
+		t.Fatal(items)
+	}
+}
+
+func TestDownloadSelectiveTorrentRetryRequiresAllFields(t *testing.T) {
+	for _, key := range []string{"download_url", "info_hash", "torrent_file_index", "torrent_file_path", "torrent_file_size", "title", "platform", "platform_slug", "is_pc"} {
+		t.Run(key, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			q.exists = true
+			q.torrent.Progress = 1
+			job := map[string]interface{}{
+				"status": "error", "source": "minerva", "download_url": "https://example.test/collection.torrent", "info_hash": "abcdef1234",
+				"torrent_file_index": 7, "torrent_file_path": "Collection/HeartGold.nds", "torrent_file_size": int64(3),
+				"title": "HeartGold", "platform": "DS", "platform_slug": "nds", "is_pc": false,
+			}
+			delete(job, key)
+			m.jobs.Set("missing", job)
+			if ok, reason := m.RetryJob("missing"); ok {
+				selectiveJobDone(t, m, "missing")
+				t.Fatalf("retried without %s: %s", key, reason)
+			}
+			if calls := q.callLog(); calls != "" {
+				t.Fatalf("missing selection fell through to generic torrent: %s", calls)
+			}
+			if job, _ := m.jobs.Get("missing"); job["status"] != "error" {
+				t.Fatalf("refusal changed failed row: %#v", job)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentRetryRejectsInvalidNumericFields(t *testing.T) {
+	for _, value := range []interface{}{-1, 7.5, "7", nil} {
+		t.Run(fmt.Sprintf("%v", value), func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			m.jobs.Set("invalid", map[string]interface{}{
+				"status": "error", "source": "minerva", "download_url": "https://example.test/collection.torrent", "info_hash": "abcdef1234",
+				"torrent_file_index": value, "torrent_file_path": "Collection/HeartGold.nds", "torrent_file_size": int64(3),
+				"title": "HeartGold", "platform": "DS", "platform_slug": "nds", "is_pc": false,
+			})
+			if ok, reason := m.RetryJob("invalid"); ok {
+				t.Fatalf("invalid index retried: %s", reason)
+			}
+			if calls := q.callLog(); calls != "" {
+				t.Fatalf("invalid selection contacted client: %s", calls)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentRetryRefusesActiveWorker(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.torrent.Progress = 1
+	entered, release := make(chan struct{}), make(chan struct{})
+	oldScan := selectiveScan
+	selectiveScan = func(string, string, string, string) (bool, []string) {
+		close(entered)
+		<-release
+		return true, nil
+	}
+	t.Cleanup(func() { selectiveScan = oldScan })
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("scan not reached")
+	}
+	m.jobs.Update(id, "status", "error")
+	before := q.callLog()
+	ok, reason := m.RetryJob(id)
+	close(release)
+	// Wait for the held worker even if the assertion fails, keeping test-owned
+	// globals and temp files alive until it exits.
+	selectiveJobDone(t, m, id)
+	if ok {
+		t.Fatalf("active selective worker retried: %s", reason)
+	}
+	if calls := q.callLog(); calls != before {
+		t.Fatalf("active retry touched collection: %s", calls)
+	}
+}
+
+func TestDownloadSelectiveTorrentExistingOutsideCategory(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.exists, q.outsideCategory = true, true
+	q.torrent.State = "downloading"
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := selectiveJobDone(t, m, id)
+	if calls := q.callLog(); strings.Contains(calls, "add:") || strings.Contains(calls, ":0") || strings.Contains(calls, "delete:") {
+		t.Fatalf("existing torrent outside category treated as new: %s", calls)
+	}
+	if job["status"] != "completed" {
+		t.Fatal(job)
+	}
+}
+
+func TestDownloadSelectiveTorrentRecoveryPreservesSelection(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	q.exists = true
+	q.torrent.Progress = 1
+	m.jobs.Set("interrupted", map[string]interface{}{
+		"status": "interrupted", "source": "minerva", "download_url": "https://example.test/collection.torrent", "info_hash": "abcdef1234",
+		"torrent_file_index": 7, "torrent_file_path": "Collection/HeartGold.nds", "torrent_file_size": int64(3),
+		"title": "HeartGold", "platform": "DS", "platform_slug": "nds", "is_pc": false,
+	})
+	m.RecoverOrphanedTorrents()
+	job, _ := m.jobs.Get("interrupted")
+	if job["source"] != "minerva" || job["status"] != "interrupted" || job["torrent_file_index"] != 7 {
+		t.Fatalf("recovery discarded selected-file identity: %#v", job)
+	}
+	if calls := q.callLog(); calls != "info" {
+		t.Fatalf("recovery touched selective collection: %s", calls)
+	}
+}
+
+func TestDownloadSelectiveTorrentRejectsIncompleteRequest(t *testing.T) {
+	for _, missing := range []string{"url", "hash", "index", "size", "title", "platform", "slug"} {
+		t.Run(missing, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			url, hash, index, size, title, platf, slug := "https://example.test/collection.torrent", "abcdef1234", 7, int64(3), "HeartGold", "DS", "nds"
+			switch missing {
+			case "url":
+				url = ""
+			case "hash":
+				hash = ""
+			case "index":
+				index = -1
+			case "size":
+				size = -1
+			case "title":
+				title = ""
+			case "platform":
+				platf = ""
+			case "slug":
+				slug = ""
+			}
+			id, err := m.DownloadSelectiveTorrent(url, hash, index, "Collection/HeartGold.nds", size, title, platf, slug, false)
+			if err == nil {
+				selectiveJobDone(t, m, id)
+				t.Fatalf("accepted incomplete %s request", missing)
+			}
+			if calls := q.callLog(); calls != "" {
+				t.Fatalf("invalid request touched qB: %s", calls)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentRequiresQBittorrent(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	m.cfg.QBURL = ""
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		return
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+		t.Fatalf("download accepted without configured qB: %#v", job)
+	}
+	if calls := q.callLog(); calls != "" {
+		t.Fatalf("unconfigured qB used: %s", calls)
+	}
+}
+
+func TestDownloadSelectiveTorrentImportRefusesOccupiedDestination(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	dest := filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")
+	writeFileT(t, dest, []byte("existing library ROM"))
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+		t.Fatalf("occupied destination overwritten: %#v", job)
+	}
+	if data, err := os.ReadFile(dest); err != nil || string(data) != "existing library ROM" {
+		t.Fatalf("existing ROM modified: %q, %v", data, err)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+		t.Fatal(items)
+	}
+	if strings.Contains(q.callLog(), "delete:") {
+		t.Fatalf("deleted shared collection: %s", q.callLog())
+	}
+}
+
+func TestDownloadSelectiveTorrentImportFailureClearsOwnPartial(t *testing.T) {
+	m, _ := newSelectiveTest(t)
+	dest := filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")
+	oldImport := fileImport
+	fileImport = func(src, target string, opt fileops.Options) error {
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, []byte("partial"), 0644); err != nil {
+			return err
+		}
+		return errors.New("simulated disk write failure")
+	}
+	t.Cleanup(func() { fileImport = oldImport })
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+		t.Fatal(job)
+	}
+	if destPresent(dest) {
+		t.Fatal("failed import left its own partial destination")
+	}
+	fileImport = oldImport
+	if ok, reason := m.RetryJob(id); !ok {
+		t.Fatal(reason)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+		t.Fatalf("partial debris blocked retry: %#v", job)
+	}
+}
 
 func TestNewJobID(t *testing.T) {
 	seen := map[string]bool{}

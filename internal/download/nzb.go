@@ -410,6 +410,9 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 	if status != "error" && status != "interrupted" && status != "dead_letter" {
 		return false, fmt.Sprintf("Job not in failed state (status=%s)", status)
 	}
+	if strVal(job, "source") == "minerva" {
+		return m.retrySelectiveJob(jobID, job)
+	}
 	if vimmID := strVal(job, "vimm_id"); vimmID != "" {
 		return m.retryVimmJob(jobID, job, vimmID)
 	}

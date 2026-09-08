@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -72,6 +74,11 @@ type Manager struct {
 	// returns, so the persisted status alone cannot safely exclude a second
 	// click during that small window.
 	activeDDL sync.Map
+
+	// Serialize collection initialization so concurrent selections cannot both
+	// treat the same torrent as new and clear one another's wanted files.
+	selectiveMu     sync.Mutex
+	activeSelective sync.Map
 }
 
 // New creates a new download Manager.
@@ -115,6 +122,286 @@ func newJobID() string {
 	b := make([]byte, 4)
 	_, _ = io.ReadFull(cryptoReader(), b)
 	return fmt.Sprintf("%x", b)
+}
+
+// DownloadSelectiveTorrent downloads and imports one file from a Minerva collection.
+func (m *Manager) DownloadSelectiveTorrent(url, infoHash string, fileIndex int, filePath string, fileSize int64, title, platf, platSlug string, isPC bool) (string, error) {
+	infoHash = strings.ToLower(strings.TrimSpace(infoHash))
+	if strings.TrimSpace(url) == "" || infoHash == "" || fileIndex < 0 || fileSize < 0 || strings.TrimSpace(title) == "" || strings.TrimSpace(platf) == "" || strings.TrimSpace(platSlug) == "" {
+		return "", fmt.Errorf("Minerva requires URL, hash, nonnegative file index/size, title and platform fields")
+	}
+	if m.qb == nil || !m.cfg.HasQBittorrent() {
+		return "", fmt.Errorf("Minerva requires qBittorrent")
+	}
+	jobID := newJobID()
+	m.jobs.Set(jobID, map[string]interface{}{
+		"status": "downloading", "title": title, "info_hash": infoHash,
+		"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+		"source": "minerva", "source_type": "torrent", "download_url": url,
+		"torrent_file_index": fileIndex, "torrent_file_path": filePath, "torrent_file_size": fileSize,
+		"error": nil, "detail": "Selecting Minerva file...",
+	})
+	m.activeSelective.Store(jobID, struct{}{})
+	go func() {
+		defer m.activeSelective.Delete(jobID)
+		m.runSelectiveTorrent(jobID, url, infoHash, fileIndex, filePath, fileSize, title, platf, platSlug, isPC)
+	}()
+	return jobID, nil
+}
+
+// Retrying shares the fresh-download worker while retaining the original row,
+// retry count and file selection, including after a JSON-backed store reload.
+func (m *Manager) retrySelectiveJob(jobID string, job map[string]interface{}) (bool, string) {
+	for _, key := range []string{"download_url", "info_hash", "torrent_file_path", "title", "platform", "platform_slug"} {
+		if strings.TrimSpace(strVal(job, key)) == "" {
+			return false, "Minerva retry is missing " + key
+		}
+	}
+	index, indexOK := selectiveJobInteger(job["torrent_file_index"])
+	size, sizeOK := selectiveJobInteger(job["torrent_file_size"])
+	isPC, isPCOK := job["is_pc"].(bool)
+	if !indexOK || int64(int(index)) != index || !sizeOK || !isPCOK {
+		return false, "Minerva retry requires valid file index, size and platform fields"
+	}
+	if _, err := cleanSelectivePath(strVal(job, "torrent_file_path")); err != nil {
+		return false, err.Error()
+	}
+	if _, busy := m.activeSelective.LoadOrStore(jobID, struct{}{}); busy {
+		return false, "A selective download is already running for this job"
+	}
+	retries := jobRetryCount(job) + 1
+	hash := strings.ToLower(strings.TrimSpace(strVal(job, "info_hash")))
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{
+		"status": "downloading", "error": nil, "detail": fmt.Sprintf("Retry #%d", retries), "retry_count": retries, "info_hash": hash,
+	})
+	m.jobs.LogActivity("download_retried", strVal(job, "title"), fmt.Sprintf("Retry #%d", retries), jobID, nil)
+	go func() {
+		defer m.activeSelective.Delete(jobID)
+		m.runSelectiveTorrent(jobID, strVal(job, "download_url"), hash, int(index), strVal(job, "torrent_file_path"), size, strVal(job, "title"), strVal(job, "platform"), strVal(job, "platform_slug"), isPC)
+	}()
+	return true, fmt.Sprintf("Retrying (#%d)", retries)
+}
+
+func selectiveJobInteger(value interface{}) (int64, bool) {
+	var n int64
+	switch v := value.(type) {
+	case int:
+		n = int64(v)
+	case int64:
+		n = v
+	case float64:
+		if math.IsNaN(v) || v < 0 || v >= float64(math.MaxInt64) || math.Trunc(v) != v {
+			return 0, false
+		}
+		n = int64(v)
+	default:
+		return 0, false
+	}
+	return n, n >= 0
+}
+
+var (
+	selectiveMetadataInterval = 250 * time.Millisecond
+	selectiveMetadataTimeout  = 30 * time.Second
+	selectivePollInterval     = 5 * time.Second
+	selectiveDownloadTimeout  = 7 * 24 * time.Hour
+	selectiveScan             = safety.ScanWithClamAV
+)
+
+// Minerva paths use the qB slash-relative format on every host. Reject parent
+// segments before cleaning, including traversal that would land back inside.
+func cleanSelectivePath(name string) (string, error) {
+	if name == "" || strings.ContainsAny(name, "\\:\x00") || strings.HasPrefix(name, "/") {
+		return "", fmt.Errorf("unsafe Minerva file path %q", name)
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("unsafe Minerva file path %q", name)
+		}
+	}
+	clean := path.Clean(name)
+	if clean == "." || !filepath.IsLocal(filepath.FromSlash(clean)) {
+		return "", fmt.Errorf("unsafe Minerva file path %q", name)
+	}
+	return clean, nil
+}
+
+func selectiveTarget(files []qbit.TorrentFile, index int, filePath string, size int64) (qbit.TorrentFile, error) {
+	want, err := cleanSelectivePath(filePath)
+	if err != nil {
+		return qbit.TorrentFile{}, err
+	}
+	for _, file := range files {
+		if file.Index != index {
+			continue
+		}
+		name, err := cleanSelectivePath(file.Name)
+		if err != nil {
+			return qbit.TorrentFile{}, err
+		}
+		if name != want || (size > 0 && file.Size != size) {
+			return qbit.TorrentFile{}, fmt.Errorf("Minerva target path or size does not match the live torrent")
+		}
+		file.Name = name
+		return file, nil
+	}
+	return qbit.TorrentFile{}, fmt.Errorf("Minerva target index is missing from the live torrent")
+}
+
+// Resolve the target through a rooted open so symlinks and Windows junctions
+// cannot redirect a relative torrent path outside the client's SavePath.
+func selectiveSource(savePath, name string) (string, error) {
+	if !filepath.IsAbs(savePath) {
+		return "", fmt.Errorf("Minerva torrent has no absolute SavePath")
+	}
+	name, err := cleanSelectivePath(name)
+	if err != nil {
+		return "", err
+	}
+	src, err := safeChild(savePath, filepath.FromSlash(name))
+	if err != nil {
+		return "", err
+	}
+	file, err := os.OpenInRoot(savePath, filepath.FromSlash(name))
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve selected Minerva file inside SavePath: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("selected Minerva path is not a regular file")
+	}
+	return src, nil
+}
+
+func (m *Manager) runSelectiveTorrent(jobID, url, hash string, index int, filePath string, size int64, title, platf, platSlug string, isPC bool) {
+	created := false
+	selectionReady := false
+	fail := func(err error) {
+		// Setup is still serialized here: no second selection can have joined a
+		// torrent this invocation just added. Once released it is shared state.
+		if created && !selectionReady {
+			m.qb.DeleteTorrent(hash, true)
+		}
+		search.RecordDownloadFail("minerva", err.Error())
+		m.jobs.UpdateMulti(jobID, map[string]interface{}{"status": "error", "error": err.Error()})
+	}
+	if m.qb == nil || !m.cfg.HasQBittorrent() {
+		fail(fmt.Errorf("Minerva requires qBittorrent"))
+		return
+	}
+	m.selectiveMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			m.selectiveMu.Unlock()
+		}
+	}()
+	// Hash identity is global to qBittorrent, including torrents in a different
+	// category that this invocation must never reinitialize or delete.
+	torrent, exists, err := m.torrentByHash(hash, "")
+	if err != nil {
+		fail(fmt.Errorf("cannot read the download client: %w", err))
+		return
+	}
+	if !exists && !m.qb.AddTorrentPaused(url, title, m.cfg.QBSavePath, m.cfg.QBCategory) {
+		fail(fmt.Errorf("could not add paused Minerva torrent"))
+		return
+	}
+	created = !exists
+	deadline := time.Now().Add(selectiveMetadataTimeout)
+	var files []qbit.TorrentFile
+	for {
+		files = m.qb.GetTorrentFiles(hash)
+		if len(files) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			fail(fmt.Errorf("timed out waiting for Minerva torrent files"))
+			return
+		}
+		time.Sleep(selectiveMetadataInterval)
+	}
+	target, err := selectiveTarget(files, index, filePath, size)
+	if err != nil {
+		fail(err)
+		return
+	}
+	var indices []int
+	for i := range files {
+		indices = append(indices, files[i].Index)
+	}
+	if (!exists && !m.qb.SetFilePriority(hash, indices, 0)) || !m.qb.SetFilePriority(hash, []int{index}, 7) {
+		fail(fmt.Errorf("could not select and start Minerva file"))
+		return
+	}
+	stopped := strings.HasPrefix(torrent.State, "stopped") || strings.HasPrefix(torrent.State, "paused")
+	if (!exists || stopped) && !m.qb.StartTorrent(hash) {
+		fail(fmt.Errorf("could not start Minerva file"))
+		return
+	}
+	m.selectiveMu.Unlock()
+	locked = false
+	selectionReady = true
+	deadline = time.Now().Add(selectiveDownloadTimeout)
+	for {
+		var found bool
+		torrent, found, err = m.torrentByHash(hash, "")
+		if err == nil && !found {
+			fail(fmt.Errorf("Minerva torrent no longer exists"))
+			return
+		}
+		if err == nil {
+			files = m.qb.GetTorrentFiles(hash)
+			if len(files) > 0 {
+				target, err = selectiveTarget(files, index, filePath, size)
+				if err != nil {
+					fail(err)
+					return
+				}
+				m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloading selected file... %.1f%%", target.Progress*100))
+				if target.Progress >= 1 {
+					break
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			fail(fmt.Errorf("timed out waiting for selected Minerva file"))
+			return
+		}
+		time.Sleep(selectivePollInterval)
+	}
+	src, err := selectiveSource(torrent.SavePath, target.Name)
+	if err != nil {
+		fail(err)
+		return
+	}
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{"status": "scanning", "detail": "Running virus scan on selected file..."})
+	clean, infected := selectiveScan(src, m.cfg.ClamAVContainer, m.cfg.ClamAVSocket, m.cfg.DockerSocket)
+	if !clean {
+		fail(fmt.Errorf("Virus detected: %s", strings.Join(infected, "; ")))
+		return
+	}
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{"status": "organizing", "detail": "Importing selected Minerva file..."})
+	dest := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug), path.Base(target.Name))
+	defer lockDest(dest)()
+	if destPresent(dest) {
+		fail(fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, dest))
+		return
+	}
+	if _, err := m.importContent(src, dest); err != nil {
+		removePartialDest(dest)
+		fail(fmt.Errorf("Minerva import failed: %w", err))
+		return
+	}
+	writeMetadataSidecar(dest, title, platf, platSlug, isPC, "minerva")
+	m.TrackInLibrary(title, platf, platSlug, isPC, dest, target.Size, "minerva", "torrent", fmt.Sprintf("minerva:%s:%d", hash, index))
+	m.jobs.LogActivity("download_completed", title, "Minerva file imported to "+platf, jobID, nil)
+	search.RecordDownloadSuccess("minerva")
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{"status": "completed", "detail": "Imported selected Minerva file", "error": nil})
 }
 
 // DownloadTorrent starts a torrent download.
@@ -979,8 +1266,12 @@ func (m *Manager) importFinishedTorrent(via, jobID string, t qbit.Torrent, platf
 // anything only when the error is nil: a read that failed is not evidence the
 // client stopped holding the torrent, and acting on it as though it were turns
 // one bad request into a permanent give-up.
-func (m *Manager) torrentByHash(hash string) (qbit.Torrent, bool, error) {
-	torrents, err := m.qb.GetTorrents(m.cfg.QBCategory)
+func (m *Manager) torrentByHash(hash string, categories ...string) (qbit.Torrent, bool, error) {
+	category := m.cfg.QBCategory
+	if len(categories) > 0 {
+		category = categories[0]
+	}
+	torrents, err := m.qb.GetTorrents(category)
 	if err != nil {
 		return qbit.Torrent{}, false, err
 	}
@@ -1812,6 +2103,12 @@ func (m *Manager) RecoverOrphanedTorrents() {
 			// to completed_unorganized would put an Organize button on a game that
 			// is already organized, and pressing it imports it a second time.
 			if job, ok := m.jobs.Get(jobID); ok {
+				// Selective rows retain their replay fields and interrupted/error
+				// state for RetryJob. Recovering one as a generic torrent would
+				// discard the target and permit importing the entire collection.
+				if strVal(job, "source") == "minerva" {
+					continue
+				}
 				if status, _ := job["status"].(string); status == "completed" {
 					continue
 				}
