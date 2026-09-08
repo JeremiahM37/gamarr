@@ -96,7 +96,11 @@ func parseFiles(info bvalue, name string) ([]FileMeta, error) {
 			if part.kind != bstring {
 				return nil, fmt.Errorf("torrent: file %d path contains a non-string", index)
 			}
-			pathParts = append(pathParts, string(part.string))
+			component, err := cleanPathComponent(string(part.string))
+			if err != nil {
+				return nil, fmt.Errorf("torrent: file %d has invalid path component: %w", index, err)
+			}
+			pathParts = append(pathParts, component)
 		}
 		cleanPath, err := cleanRelativePath(strings.Join(pathParts, "/"))
 		if err != nil {
@@ -125,9 +129,32 @@ func cleanRelativePath(value string) (string, error) {
 	if strings.IndexByte(value, 0) >= 0 {
 		return "", errors.New("NUL byte")
 	}
+	if strings.Contains(value, `\`) {
+		return "", fmt.Errorf("unsafe Windows path %q", value)
+	}
+	if hasWindowsVolume(value) {
+		return "", fmt.Errorf("unsafe Windows volume path %q", value)
+	}
 	cleaned := path.Clean(value)
 	if cleaned == "." || strings.HasPrefix(cleaned, "/") || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("unsafe relative path %q", value)
 	}
 	return cleaned, nil
+}
+
+func cleanPathComponent(value string) (string, error) {
+	if value == "" || value == "." || value == ".." {
+		return "", fmt.Errorf("unsafe path component %q", value)
+	}
+	if strings.IndexByte(value, 0) >= 0 {
+		return "", errors.New("NUL byte")
+	}
+	if strings.ContainsAny(value, `/\`) || hasWindowsVolume(value) {
+		return "", fmt.Errorf("unsafe path component %q", value)
+	}
+	return value, nil
+}
+
+func hasWindowsVolume(value string) bool {
+	return len(value) >= 2 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':'
 }

@@ -29,7 +29,7 @@ func TestParseTorrentSingleFile(t *testing.T) {
 
 func TestParseTorrentMultiFile(t *testing.T) {
 	// Mutation caught: sorting files or assigning non-qBittorrent file indices while parsing a files list.
-	data := []byte("d4:infod5:filesld6:lengthi3e4:pathl5:a.ndseed6:lengthi4e4:pathl3:dir5:b.ndseee4:name10:collectionee")
+	data := []byte("d4:infod5:filesld6:lengthi4e4:pathl3:dir5:b.ndseed6:lengthi3e4:pathl5:a.ndseee4:name10:collectionee")
 
 	got, err := ParseTorrent(data)
 	if err != nil {
@@ -38,12 +38,12 @@ func TestParseTorrentMultiFile(t *testing.T) {
 	if got.Name != "collection" {
 		t.Fatalf("Name=%q", got.Name)
 	}
-	if got.InfoHash != "8bb2f8c3d23c4a8f85247b8ffb8de2c227637a24" {
+	if got.InfoHash != "331ff39814d5684c324e3d1c96b90d8f58b977ba" {
 		t.Fatalf("InfoHash=%q", got.InfoHash)
 	}
 	want := []FileMeta{
-		{Index: 0, Path: "a.nds", Name: "a.nds", Size: 3},
-		{Index: 1, Path: "dir/b.nds", Name: "b.nds", Size: 4},
+		{Index: 0, Path: "dir/b.nds", Name: "b.nds", Size: 4},
+		{Index: 1, Path: "a.nds", Name: "a.nds", Size: 3},
 	}
 	if len(got.Files) != len(want) {
 		t.Fatalf("files=%+v", got.Files)
@@ -88,6 +88,47 @@ func TestParseTorrentRejectsUnsafePaths(t *testing.T) {
 	}
 }
 
+func TestParseTorrentRejectsWindowsSingleFileNames(t *testing.T) {
+	// Mutation caught: accepting a Windows traversal, volume, or UNC name that becomes unsafe downstream.
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"backslash_parent", `d4:infod6:lengthi1e4:name13:..\escape.ndsee`},
+		{"backslash_volume", `d4:infod6:lengthi1e4:name13:C:\escape.ndsee`},
+		{"slash_volume", `d4:infod6:lengthi1e4:name13:C:/escape.ndsee`},
+		{"unc", `d4:infod6:lengthi1e4:name25:\\server\share\escape.ndsee`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseTorrent([]byte(tt.data)); err == nil {
+				t.Fatal("ParseTorrent accepted unsafe Windows single-file name")
+			}
+		})
+	}
+}
+
+func TestParseTorrentRejectsMalformedFilePathComponents(t *testing.T) {
+	// Mutation caught: joining invalid components before validation lets path.Clean erase them into safe-looking paths.
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"empty", "d4:infod5:filesld6:lengthi1e4:pathl3:dir0:eee4:name4:packee"},
+		{"dot", "d4:infod5:filesld6:lengthi1e4:pathl3:dir1:.eee4:name4:packee"},
+		{"absolute", "d4:infod5:filesld6:lengthi1e4:pathl3:dir11:/escape.ndseee4:name4:packee"},
+		{"embedded_slash", "d4:infod5:filesld6:lengthi1e4:pathl3:dir9:nest/fileeee4:name4:packee"},
+		{"embedded_backslash", `d4:infod5:filesld6:lengthi1e4:pathl3:dir9:nest\fileeee4:name4:packee`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseTorrent([]byte(tt.data)); err == nil {
+				t.Fatal("ParseTorrent accepted malformed file path component")
+			}
+		})
+	}
+}
+
 func TestParseTorrentRejectsMalformedMetadata(t *testing.T) {
 	// Mutation caught: treating invalid bencode or an absent/ambiguous top-level info dictionary as valid metadata.
 	tests := []struct {
@@ -112,11 +153,20 @@ func TestParseTorrentRejectsMalformedMetadata(t *testing.T) {
 	}
 }
 
-func TestParseTorrentRejectsExcessiveNesting(t *testing.T) {
-	// Mutation caught: removing the decoder nesting limit lets hostile metadata consume unbounded stack space.
-	data := "d4:info" + strings.Repeat("d1:a", 64) + "i1e" + strings.Repeat("e", 65)
-
-	if _, err := ParseTorrent([]byte(data)); err == nil {
-		t.Fatal("ParseTorrent accepted metadata nested beyond 64 levels")
+func TestDecodeBencodeNestingBoundary(t *testing.T) {
+	// Mutation caught: removing the decoder nesting limit accepts metadata beyond the allowed 64 containers.
+	tests := []struct {
+		depth   int
+		wantErr bool
+	}{
+		{depth: 64, wantErr: false},
+		{depth: 65, wantErr: true},
+	}
+	for _, tt := range tests {
+		data := strings.Repeat("l", tt.depth) + "0:" + strings.Repeat("e", tt.depth)
+		_, err := decodeBencode([]byte(data))
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("depth %d: err=%v, wantErr=%t", tt.depth, err, tt.wantErr)
+		}
 	}
 }
