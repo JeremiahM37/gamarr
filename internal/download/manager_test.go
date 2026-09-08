@@ -639,8 +639,8 @@ func TestDownloadSelectiveTorrentImportModes(t *testing.T) {
 			}
 			src := filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds")
 			dest := filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")
-			if pathExists(src) != (mode != fileops.ModeMove) {
-				t.Fatalf("mode %s did not preserve/move source", mode)
+			if !pathExists(src) {
+				t.Fatalf("mode %s removed qB's mutable source", mode)
 			}
 			if mode == fileops.ModeHardlink {
 				a, _ := os.Stat(src)
@@ -1126,14 +1126,145 @@ func TestDownloadSelectiveTorrentSnapshotLifecycle(t *testing.T) {
 				t.Fatal("library is not a hardlink to the scanned snapshot")
 			}
 			original := filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds")
-			if pathExists(original) != (mode != fileops.ModeMove) {
-				t.Fatalf("source retention differs for %s", mode)
+			if !pathExists(original) {
+				t.Fatalf("mode %s removed qB's mutable source", mode)
 			}
 			writeFileT(t, original, []byte("later qB change"))
 			if data, err := os.ReadFile(dest); err != nil || string(data) != "rom" {
 				t.Fatalf("library changed after qB source update: %q, %v", data, err)
 			}
 		})
+	}
+}
+
+func TestDownloadSelectiveTorrentMoveRetainsMutablePayload(t *testing.T) {
+	for _, mutation := range []string{"unchanged", "in_place", "leaf_replacement", "ancestor_replacement"} {
+		t.Run(mutation, func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			m.cfg.ImportMode = fileops.ModeMove
+			original := filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds")
+			want := "rom"
+			if mutation != "unchanged" {
+				want = "new qB payload"
+			}
+			oldScan := selectiveScan
+			selectiveScan = func(src, _, _, _ string) (bool, []string) {
+				if data, err := os.ReadFile(src); err != nil || string(data) != "rom" {
+					t.Errorf("snapshot contents: %q, %v", data, err)
+				}
+				switch mutation {
+				case "leaf_replacement":
+					if err := os.Rename(original, original+"-saved"); err != nil {
+						t.Error(err)
+						return false, []string{err.Error()}
+					}
+				case "ancestor_replacement":
+					ancestor := filepath.Dir(original)
+					if err := os.Rename(ancestor, ancestor+"-saved"); err != nil {
+						t.Error(err)
+						return false, []string{err.Error()}
+					}
+					if err := os.Mkdir(ancestor, 0755); err != nil {
+						t.Error(err)
+						return false, []string{err.Error()}
+					}
+				}
+				if mutation != "unchanged" {
+					if err := os.WriteFile(original, []byte(want), 0644); err != nil {
+						t.Error(err)
+						return false, []string{err.Error()}
+					}
+				}
+				return true, nil
+			}
+			t.Cleanup(func() { selectiveScan = oldScan })
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+				t.Fatal(job)
+			}
+			if data, err := os.ReadFile(original); err != nil || string(data) != want {
+				t.Fatalf("move removed or changed qB payload: %q, %v", data, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")); err != nil || string(data) != "rom" {
+				t.Fatalf("published unscanned bytes: %q, %v", data, err)
+			}
+			if strings.Contains(q.callLog(), "delete:") {
+				t.Fatal("move deleted the shared collection")
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentPublicationPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits and symlink traversal require a Unix host")
+	}
+	for _, mode := range []fileops.Mode{fileops.ModeMove, fileops.ModeCopy, fileops.ModeHardlink, fileops.ModeSymlink} {
+		for _, permission := range []os.FileMode{0644, 0754} {
+			t.Run(fmt.Sprintf("%s_%o", mode, permission), func(t *testing.T) {
+				m, _ := newSelectiveTest(t)
+				m.cfg.ImportMode = mode
+				original := filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds")
+				if err := os.Chmod(original, permission); err != nil {
+					t.Fatal(err)
+				}
+				var scanned string
+				oldScan := selectiveScan
+				selectiveScan = func(src, _, _, _ string) (bool, []string) {
+					scanned = src
+					info, err := os.Stat(src)
+					if err != nil {
+						t.Error(err)
+						return false, []string{err.Error()}
+					}
+					if info.Mode().Perm() != permission {
+						t.Errorf("snapshot mode = %o, want original %o", info.Mode().Perm(), permission)
+					}
+					parent, err := os.Stat(filepath.Dir(src))
+					if err != nil {
+						t.Error(err)
+						return false, []string{err.Error()}
+					}
+					if parent.Mode().Perm() != 0700 {
+						t.Errorf("snapshot parent not private during scan: %o", parent.Mode().Perm())
+					}
+					return true, nil
+				}
+				t.Cleanup(func() { selectiveScan = oldScan })
+				id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+					t.Fatal(job)
+				}
+				dest := filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")
+				info, err := os.Stat(dest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != permission {
+					t.Errorf("published mode = %o, want original %o", info.Mode().Perm(), permission)
+				}
+				if mode == fileops.ModeSymlink {
+					parent, err := os.Stat(filepath.Dir(scanned))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if parent.Mode().Perm() != 0755 {
+						t.Errorf("symlink backing directory inaccessible to library readers: %o", parent.Mode().Perm())
+					}
+					if data, err := os.ReadFile(dest); err != nil || string(data) != "rom" {
+						t.Fatalf("symlink backing unavailable: %q, %v", data, err)
+					}
+				} else if destPresent(filepath.Dir(scanned)) {
+					t.Fatal("non-symlink publication left staging behind")
+				}
+			})
+		}
 	}
 }
 

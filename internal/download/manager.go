@@ -4,7 +4,6 @@ package download
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -249,53 +248,15 @@ func selectiveTarget(files []qbit.TorrentFile, index int, filePath string, size 
 	return qbit.TorrentFile{}, fmt.Errorf("Minerva target index is missing from the live torrent")
 }
 
-// The scanner and importer only reopen a private snapshot, never a mutable qB
-// pathname. Keeping the source root also confines move-mode cleanup.
+// The scanner and importer only reopen an owned snapshot, never a mutable qB
+// pathname. Every import mode leaves qB's original payload untouched.
 type selectiveSnapshot struct {
-	path, dir, name string
-	root            *os.Root
-	info            os.FileInfo
-	digest          [sha256.Size]byte
+	path, dir string
 }
 
 func (s *selectiveSnapshot) close(keep bool) {
-	s.root.Close()
 	if !keep {
 		removePartialDest(s.dir)
-	}
-}
-
-// A source replaced or changed after snapshotting is no longer ours to remove.
-// Root.Remove cannot follow a swapped ancestor outside the original SavePath.
-func (s *selectiveSnapshot) removeUnchangedSource() {
-	current, err := s.root.Lstat(s.name)
-	if err != nil || !current.Mode().IsRegular() || !os.SameFile(s.info, current) {
-		return
-	}
-	source, err := s.root.Open(s.name)
-	if err != nil {
-		return
-	}
-	opened, err := source.Stat()
-	if err != nil || !os.SameFile(s.info, opened) {
-		source.Close()
-		return
-	}
-	hash := sha256.New()
-	_, readErr := io.Copy(hash, source)
-	source.Close()
-	if readErr != nil {
-		return
-	}
-	if string(hash.Sum(nil)) != string(s.digest[:]) {
-		return
-	}
-	current, err = s.root.Lstat(s.name)
-	if err != nil || !current.Mode().IsRegular() || !os.SameFile(s.info, current) {
-		return
-	}
-	if err := s.root.Remove(s.name); err != nil {
-		slog.Warn("could not remove original Minerva file after move", "error", err)
 	}
 }
 
@@ -311,11 +272,7 @@ func (m *Manager) snapshotSelectiveSource(savePath, name string) (_ *selectiveSn
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if resultErr != nil {
-			root.Close()
-		}
-	}()
+	defer root.Close()
 	local := filepath.FromSlash(name)
 	leaf, err := root.Lstat(local)
 	if err != nil {
@@ -358,8 +315,12 @@ func (m *Manager) snapshotSelectiveSource(savePath, name string) (_ *selectiveSn
 	if err != nil {
 		return nil, err
 	}
-	hash := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(out, hash), source)
+	n, copyErr := io.Copy(out, source)
+	if copyErr == nil {
+		// Construction stays exclusive inside the private directory, but the
+		// published ROM must preserve the validated source's access permissions.
+		copyErr = out.Chmod(info.Mode().Perm())
+	}
 	closeErr := out.Close()
 	if copyErr != nil {
 		return nil, copyErr
@@ -374,9 +335,7 @@ func (m *Manager) snapshotSelectiveSource(savePath, name string) (_ *selectiveSn
 	if n != info.Size() || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
 		return nil, fmt.Errorf("selected file changed while snapshotting")
 	}
-	snapshot := &selectiveSnapshot{path: snapshotPath, dir: dir, name: local, root: root, info: info}
-	copy(snapshot.digest[:], hash.Sum(nil))
-	return snapshot, nil
+	return &selectiveSnapshot{path: snapshotPath, dir: dir}, nil
 }
 
 // qB's client has no context-aware file-list method. One read-only poller owns
@@ -551,11 +510,15 @@ func (m *Manager) runSelectiveTorrent(jobID, url, hash string, index int, filePa
 	}
 	// A successful symlink (including a configured hardlink fallback) needs a
 	// durable scanned source. Other modes can discard the owned staging name.
-	if info, err := os.Lstat(dest); err == nil {
-		keepSnapshot = info.Mode()&os.ModeSymlink != 0
-	}
-	if !destPresent(snapshot.path) {
-		snapshot.removeUnchangedSource()
+	if info, err := os.Lstat(dest); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		// A retained backing directory must be traversable by library readers,
+		// without allowing them to replace the scanned backing file.
+		if err := os.Chmod(snapshot.dir, 0755); err != nil {
+			removePartialDest(dest)
+			fail(fmt.Errorf("Minerva snapshot publication failed: %w", err))
+			return
+		}
+		keepSnapshot = true
 	}
 	writeMetadataSidecar(dest, title, platf, platSlug, isPC, "minerva")
 	m.TrackInLibrary(title, platf, platSlug, isPC, dest, target.Size, "minerva", "torrent", fmt.Sprintf("minerva:%s:%d", hash, index))
