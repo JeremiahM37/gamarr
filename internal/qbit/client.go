@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,10 +31,11 @@ type Torrent struct {
 
 // TorrentFile represents a file within a torrent.
 type TorrentFile struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Priority int    `json:"priority"`
-	Index    int    `json:"index"`
+	Name     string  `json:"name"`
+	Size     int64   `json:"size"`
+	Priority int     `json:"priority"`
+	Index    int     `json:"index"`
+	Progress float64 `json:"progress"`
 }
 
 // Client is a qBittorrent API client. Auth is either a session cookie
@@ -228,6 +230,41 @@ func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
 	return addAccepted(resp.StatusCode, body)
 }
 
+// AddTorrentPaused adds a torrent without starting it. stopped supports
+// current qBittorrent versions while paused keeps compatibility with older
+// releases that accepted only the legacy field.
+func (c *Client) AddTorrentPaused(torrentURL, title, savePath, category string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureAuth()
+
+	data := url.Values{
+		"urls":     {torrentURL},
+		"savepath": {savePath},
+		"category": {category},
+		"stopped":  {"true"},
+		"paused":   {"true"},
+	}
+	resp, err := c.postForm("/api/v2/torrents/add", data)
+	if err != nil {
+		slog.Error("qBittorrent add paused torrent failed", "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden && c.canReauth() {
+		c.login()
+		resp2, err := c.postForm("/api/v2/torrents/add", data)
+		if err != nil {
+			return false
+		}
+		defer resp2.Body.Close()
+		body, _ := io.ReadAll(resp2.Body)
+		return addAccepted(resp2.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return addAccepted(resp.StatusCode, body)
+}
+
 // GetTorrents returns torrents, optionally filtered by category. An error means
 // the client could not be read, which is a different answer from it holding
 // nothing: a caller acting on absence has to tell the two apart.
@@ -336,6 +373,44 @@ func (c *Client) StopTorrent(hash string) bool {
 	status := c.postWithReauth("/api/v2/torrents/stop", data)
 	if status == http.StatusNotFound {
 		status = c.postWithReauth("/api/v2/torrents/pause", data)
+	}
+	return is2xx(status)
+}
+
+// SetFilePriority updates the priority for one or more files in a torrent.
+func (c *Client) SetFilePriority(hash string, ids []int, priority int) bool {
+	if len(ids) == 0 {
+		return false
+	}
+
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.Itoa(id)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureAuth()
+
+	data := url.Values{
+		"hash":     {hash},
+		"id":       {strings.Join(parts, "|")},
+		"priority": {strconv.Itoa(priority)},
+	}
+	return is2xx(c.postWithReauth("/api/v2/torrents/filePrio", data))
+}
+
+// StartTorrent starts a stopped torrent. qBittorrent versions before 5.0 use
+// the resume endpoint instead of start.
+func (c *Client) StartTorrent(hash string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureAuth()
+
+	data := url.Values{"hashes": {hash}}
+	status := c.postWithReauth("/api/v2/torrents/start", data)
+	if status == http.StatusNotFound {
+		status = c.postWithReauth("/api/v2/torrents/resume", data)
 	}
 	return is2xx(status)
 }
