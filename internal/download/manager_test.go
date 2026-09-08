@@ -42,6 +42,8 @@ type selectiveQbit struct {
 	changeAfter     int
 	failAction      string
 	outsideCategory bool
+	filesEntered    chan struct{}
+	filesRelease    chan struct{}
 }
 
 func newSelectiveTest(t *testing.T) (*Manager, *selectiveQbit) {
@@ -105,6 +107,13 @@ func newSelectiveTest(t *testing.T) (*Manager, *selectiveQbit) {
 		case "/api/v2/torrents/files":
 			q.calls = append(q.calls, "files:"+r.Form.Get("hash"))
 			q.fileReads++
+			if q.fileReads == 1 && q.filesRelease != nil {
+				entered, release := q.filesEntered, q.filesRelease
+				q.mu.Unlock()
+				close(entered)
+				<-release
+				q.mu.Lock()
+			}
 			if q.fileReads <= q.emptyReads {
 				fmt.Fprint(w, "[]")
 				return
@@ -531,7 +540,7 @@ func TestDownloadSelectiveTorrentScanAndHealth(t *testing.T) {
 			if (job["status"] == "completed") != wantSuccess {
 				t.Fatalf("scan/import outcome: %#v", job)
 			}
-			if len(scanned) != 1 || scanned[0] != filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds") {
+			if len(scanned) != 1 || filepath.Base(scanned[0]) != "HeartGold.nds" || !strings.HasPrefix(filepath.Base(filepath.Dir(scanned[0])), ".minerva-") {
 				t.Fatalf("scan targets: %v", scanned)
 			}
 			oks, fails := minervaDownloadCounts()
@@ -589,6 +598,9 @@ func TestDownloadSelectiveTorrentSetupFailures(t *testing.T) {
 			if job := selectiveJobDone(t, m, id); job["status"] != "error" {
 				t.Fatalf("failed setup continued: %#v", job)
 			}
+			// Metadata timeout reports failure before its owned cleanup finishes.
+			m.selectiveMu.Lock()
+			m.selectiveMu.Unlock()
 			calls := q.callLog()
 			if action != "start" && strings.Contains(calls, "start:") {
 				t.Fatalf("started despite failed setup: %s", calls)
@@ -633,8 +645,8 @@ func TestDownloadSelectiveTorrentImportModes(t *testing.T) {
 			if mode == fileops.ModeHardlink {
 				a, _ := os.Stat(src)
 				b, _ := os.Stat(dest)
-				if !os.SameFile(a, b) {
-					t.Fatal("hardlink does not share the selected file")
+				if os.SameFile(a, b) {
+					t.Fatal("hardlink shares qB's mutable source rather than the scanned snapshot")
 				}
 			}
 			if mode == fileops.ModeSymlink {
@@ -916,6 +928,212 @@ func TestDownloadSelectiveTorrentImportFailureClearsOwnPartial(t *testing.T) {
 	}
 	if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
 		t.Fatalf("partial debris blocked retry: %#v", job)
+	}
+}
+
+func TestDownloadSelectiveTorrentSnapshotSurvivesSourceReplacement(t *testing.T) {
+	for _, replacement := range []string{"in_place", "ancestor_junction"} {
+		t.Run(replacement, func(t *testing.T) {
+			m, _ := newSelectiveTest(t)
+			original := filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds")
+			outside := t.TempDir()
+			writeFileT(t, filepath.Join(outside, "HeartGold.nds"), []byte("unscanned outside bytes"))
+			oldScan := selectiveScan
+			selectiveScan = func(src, _, _, _ string) (bool, []string) {
+				data, err := os.ReadFile(src)
+				if err != nil || string(data) != "rom" {
+					t.Errorf("scanner received %q, %v", data, err)
+				}
+				if replacement == "in_place" {
+					if err := os.WriteFile(original, []byte("unscanned replacement"), 0644); err != nil {
+						t.Error(err)
+					}
+				} else {
+					collection := filepath.Dir(original)
+					if err := os.Rename(collection, collection+"-saved"); err != nil {
+						t.Error(err)
+						return false, []string{err.Error()}
+					}
+					if err := os.Symlink(outside, collection); err != nil {
+						if runtime.GOOS != "windows" {
+							t.Error(err)
+							return false, []string{err.Error()}
+						}
+						if out, err := exec.Command("cmd", "/c", "mklink", "/J", collection, outside).CombinedOutput(); err != nil {
+							t.Errorf("junction: %v: %s", err, out)
+							return false, []string{err.Error()}
+						}
+					}
+				}
+				return true, nil
+			}
+			t.Cleanup(func() { selectiveScan = oldScan })
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job := selectiveJobDone(t, m, id); job["status"] != "completed" {
+				t.Fatal(job)
+			}
+			data, err := os.ReadFile(filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds"))
+			if err != nil || string(data) != "rom" {
+				t.Fatalf("imported bytes differ from scanned bytes: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentRejectsRelativeLeafSymlink(t *testing.T) {
+	m, q := newSelectiveTest(t)
+	m.cfg.ImportMode = fileops.ModeMove
+	leaf := filepath.Join(m.cfg.QBSavePath, "Collection", "Selected.nds")
+	if err := os.Symlink("HeartGold.nds", leaf); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("file symlink privilege unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	q.files[1].Name = "Collection/Selected.nds"
+	id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/Selected.nds", 3, "Selected", "DS", "nds", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := selectiveJobDone(t, m, id); job["status"] != "error" {
+		t.Fatalf("accepted relative leaf symlink for move import: %#v", job)
+	}
+	if items := m.jobs.RecentLibraryItems(10); len(items) != 0 {
+		t.Fatal(items)
+	}
+	if data, err := os.ReadFile(leaf); err != nil || string(data) != "rom" {
+		t.Fatalf("symlink referent changed: %q, %v", data, err)
+	}
+}
+
+func TestDownloadSelectiveTorrentMetadataDeadlineRejectsLateResponse(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing_%v", existing), func(t *testing.T) {
+			m, q := newSelectiveTest(t)
+			selectiveMetadataTimeout = 20 * time.Millisecond
+			q.exists = existing
+			q.filesEntered, q.filesRelease = make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(q.filesRelease) }) }
+			t.Cleanup(release)
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-q.filesEntered:
+			case <-time.After(time.Second):
+				t.Fatal("metadata request not reached")
+			}
+			returned := false
+			deadline := time.Now().Add(200 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				job, _ := m.jobs.Get(id)
+				if job["status"] == "error" {
+					returned = true
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			release()
+			job := selectiveJobDone(t, m, id)
+			if !returned {
+				t.Error("metadata timeout waited for the blocked HTTP response")
+			}
+			if job["status"] != "error" {
+				t.Errorf("late metadata accepted: %#v", job)
+			}
+			// Synchronize with any created-only timeout cleanup before inspecting
+			// calls or allowing test-owned fixture state to be destroyed.
+			m.selectiveMu.Lock()
+			m.selectiveMu.Unlock()
+			if calls := q.callLog(); strings.Contains(calls, "priority:") || strings.Contains(calls, "start:") {
+				t.Errorf("late response changed selection: %s", calls)
+			}
+			if existing && strings.Contains(q.callLog(), "delete:") {
+				t.Fatal("timeout deleted existing collection")
+			}
+			if !existing && !strings.Contains(q.callLog(), "delete:abcdef1234:true") {
+				t.Fatal("timeout did not clean up the newly created collection")
+			}
+		})
+	}
+}
+
+func TestDownloadSelectiveTorrentSnapshotLifecycle(t *testing.T) {
+	for _, kind := range []string{"move", "copy", "hardlink", "symlink", "infected", "import_failure"} {
+		t.Run(kind, func(t *testing.T) {
+			m, _ := newSelectiveTest(t)
+			mode := fileops.Mode(kind)
+			if !mode.Valid() {
+				mode = fileops.ModeCopy
+			}
+			m.cfg.ImportMode = mode
+			if mode == fileops.ModeSymlink && runtime.GOOS == "windows" {
+				if err := os.Symlink(m.cfg.QBSavePath, filepath.Join(t.TempDir(), "probe")); err != nil {
+					t.Skipf("symlink privilege unavailable: %v", err)
+				}
+			}
+			if kind == "import_failure" {
+				writeFileT(t, filepath.Join(m.cfg.GamesRomsPath, "nds"), []byte("block"))
+			}
+			var scanned string
+			var scannedInfo os.FileInfo
+			oldScan := selectiveScan
+			selectiveScan = func(src, _, _, _ string) (bool, []string) {
+				scanned = src
+				file, err := os.Open(src)
+				if err != nil {
+					t.Error(err)
+					return false, []string{err.Error()}
+				}
+				scannedInfo, _ = file.Stat()
+				file.Close()
+				if kind == "infected" {
+					return false, []string{"infected"}
+				}
+				return true, nil
+			}
+			t.Cleanup(func() { selectiveScan = oldScan })
+			id, err := m.DownloadSelectiveTorrent("https://example.test/collection.torrent", "abcdef1234", 7, "Collection/HeartGold.nds", 3, "HeartGold", "DS", "nds", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := selectiveJobDone(t, m, id)
+			success := kind != "infected" && kind != "import_failure"
+			if (job["status"] == "completed") != success {
+				t.Fatalf("snapshot import result: %#v", job)
+			}
+			rel, err := filepath.Rel(m.cfg.GamesRomsPath, scanned)
+			if err != nil || !filepath.IsLocal(rel) || !strings.HasPrefix(rel, ".minerva-") {
+				t.Fatalf("scan did not use protected library snapshot: %q", scanned)
+			}
+			if destPresent(filepath.Dir(scanned)) != (mode == fileops.ModeSymlink && success) {
+				t.Fatalf("incorrect staging lifetime for %s: %s", kind, scanned)
+			}
+			if !success {
+				return
+			}
+			dest := filepath.Join(m.cfg.GamesRomsPath, "nds", "HeartGold.nds")
+			info, err := os.Stat(dest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == fileops.ModeHardlink && !os.SameFile(scannedInfo, info) {
+				t.Fatal("library is not a hardlink to the scanned snapshot")
+			}
+			original := filepath.Join(m.cfg.QBSavePath, "Collection", "HeartGold.nds")
+			if pathExists(original) != (mode != fileops.ModeMove) {
+				t.Fatalf("source retention differs for %s", mode)
+			}
+			writeFileT(t, original, []byte("later qB change"))
+			if data, err := os.ReadFile(dest); err != nil || string(data) != "rom" {
+				t.Fatalf("library changed after qB source update: %q, %v", data, err)
+			}
+		})
 	}
 }
 

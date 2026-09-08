@@ -4,6 +4,7 @@ package download
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -248,33 +249,179 @@ func selectiveTarget(files []qbit.TorrentFile, index int, filePath string, size 
 	return qbit.TorrentFile{}, fmt.Errorf("Minerva target index is missing from the live torrent")
 }
 
-// Resolve the target through a rooted open so symlinks and Windows junctions
-// cannot redirect a relative torrent path outside the client's SavePath.
-func selectiveSource(savePath, name string) (string, error) {
+// The scanner and importer only reopen a private snapshot, never a mutable qB
+// pathname. Keeping the source root also confines move-mode cleanup.
+type selectiveSnapshot struct {
+	path, dir, name string
+	root            *os.Root
+	info            os.FileInfo
+	digest          [sha256.Size]byte
+}
+
+func (s *selectiveSnapshot) close(keep bool) {
+	s.root.Close()
+	if !keep {
+		removePartialDest(s.dir)
+	}
+}
+
+// A source replaced or changed after snapshotting is no longer ours to remove.
+// Root.Remove cannot follow a swapped ancestor outside the original SavePath.
+func (s *selectiveSnapshot) removeUnchangedSource() {
+	current, err := s.root.Lstat(s.name)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(s.info, current) {
+		return
+	}
+	source, err := s.root.Open(s.name)
+	if err != nil {
+		return
+	}
+	opened, err := source.Stat()
+	if err != nil || !os.SameFile(s.info, opened) {
+		source.Close()
+		return
+	}
+	hash := sha256.New()
+	_, readErr := io.Copy(hash, source)
+	source.Close()
+	if readErr != nil {
+		return
+	}
+	if string(hash.Sum(nil)) != string(s.digest[:]) {
+		return
+	}
+	current, err = s.root.Lstat(s.name)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(s.info, current) {
+		return
+	}
+	if err := s.root.Remove(s.name); err != nil {
+		slog.Warn("could not remove original Minerva file after move", "error", err)
+	}
+}
+
+func (m *Manager) snapshotSelectiveSource(savePath, name string) (_ *selectiveSnapshot, resultErr error) {
 	if !filepath.IsAbs(savePath) {
-		return "", fmt.Errorf("Minerva torrent has no absolute SavePath")
+		return nil, fmt.Errorf("Minerva torrent has no absolute SavePath")
 	}
 	name, err := cleanSelectivePath(name)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	src, err := safeChild(savePath, filepath.FromSlash(name))
+	root, err := os.OpenRoot(savePath)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	file, err := os.OpenInRoot(savePath, filepath.FromSlash(name))
+	defer func() {
+		if resultErr != nil {
+			root.Close()
+		}
+	}()
+	local := filepath.FromSlash(name)
+	leaf, err := root.Lstat(local)
 	if err != nil {
-		return "", fmt.Errorf("cannot resolve selected Minerva file inside SavePath: %w", err)
+		return nil, err
 	}
-	defer file.Close()
-	info, err := file.Stat()
+	if !leaf.Mode().IsRegular() {
+		return nil, fmt.Errorf("selected Minerva path is not a regular file (symlinks/reparse points are not accepted)")
+	}
+	source, err := root.Open(local)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("cannot open selected file inside SavePath: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("selected Minerva path is not a regular file")
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return nil, err
 	}
-	return src, nil
+	if !info.Mode().IsRegular() || !os.SameFile(leaf, info) {
+		return nil, fmt.Errorf("selected file changed while opening")
+	}
+	if !filepath.IsAbs(m.cfg.GamesRomsPath) {
+		return nil, fmt.Errorf("Minerva requires an absolute ROM library path")
+	}
+	if err := os.MkdirAll(m.cfg.GamesRomsPath, 0755); err != nil {
+		return nil, err
+	}
+	// The library is Gamarr-controlled. A private, exclusively created directory
+	// on its filesystem also keeps hardlink imports on the destination volume.
+	dir, err := os.MkdirTemp(m.cfg.GamesRomsPath, ".minerva-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			removePartialDest(dir)
+		}
+	}()
+	snapshotPath := filepath.Join(dir, path.Base(name))
+	out, err := os.OpenFile(snapshotPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(out, hash), source)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return nil, copyErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	after, err := source.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if n != info.Size() || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
+		return nil, fmt.Errorf("selected file changed while snapshotting")
+	}
+	snapshot := &selectiveSnapshot{path: snapshotPath, dir: dir, name: local, root: root, info: info}
+	copy(snapshot.digest[:], hash.Sum(nil))
+	return snapshot, nil
+}
+
+// qB's client has no context-aware file-list method. One read-only poller owns
+// the blocking calls; deadline expiry returns immediately and cancels further
+// polls. A late HTTP result is discarded, never used for priorities or start.
+// finished lets created-only cleanup wait for that final read to release qB's
+// mutex without extending the job's metadata deadline.
+func (m *Manager) selectiveMetadata(hash string) ([]qbit.TorrentFile, <-chan struct{}, error) {
+	deadline := time.Now().Add(selectiveMetadataTimeout)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	interval := selectiveMetadataInterval
+	result := make(chan []qbit.TorrentFile)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for ctx.Err() == nil {
+			files := m.qb.GetTorrentFiles(hash)
+			if ctx.Err() != nil || !time.Now().Before(deadline) {
+				return
+			}
+			if len(files) > 0 {
+				select {
+				case result <- files:
+				case <-ctx.Done():
+				}
+				return
+			}
+			timer := time.NewTimer(interval)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		}
+	}()
+	select {
+	case files := <-result:
+		if ctx.Err() == nil && time.Now().Before(deadline) {
+			return files, finished, nil
+		}
+	case <-ctx.Done():
+	}
+	return nil, finished, fmt.Errorf("timed out waiting for Minerva torrent files: %w", context.DeadlineExceeded)
 }
 
 func (m *Manager) runSelectiveTorrent(jobID, url, hash string, index int, filePath string, size int64, title, platf, platSlug string, isPC bool) {
@@ -312,18 +459,21 @@ func (m *Manager) runSelectiveTorrent(jobID, url, hash string, index int, filePa
 		return
 	}
 	created = !exists
-	deadline := time.Now().Add(selectiveMetadataTimeout)
-	var files []qbit.TorrentFile
-	for {
-		files = m.qb.GetTorrentFiles(hash)
-		if len(files) > 0 {
-			break
+	files, metadataFinished, err := m.selectiveMetadata(hash)
+	if err != nil {
+		if created {
+			// Transfer the setup lock to cleanup, so another selection cannot
+			// join the newly created torrent before its delayed removal. The job
+			// fails now; a blocked read or delete cannot extend its deadline.
+			created, locked = false, false
+			go func() {
+				defer m.selectiveMu.Unlock()
+				<-metadataFinished
+				m.qb.DeleteTorrent(hash, true)
+			}()
 		}
-		if time.Now().After(deadline) {
-			fail(fmt.Errorf("timed out waiting for Minerva torrent files"))
-			return
-		}
-		time.Sleep(selectiveMetadataInterval)
+		fail(err)
+		return
 	}
 	target, err := selectiveTarget(files, index, filePath, size)
 	if err != nil {
@@ -346,7 +496,7 @@ func (m *Manager) runSelectiveTorrent(jobID, url, hash string, index int, filePa
 	m.selectiveMu.Unlock()
 	locked = false
 	selectionReady = true
-	deadline = time.Now().Add(selectiveDownloadTimeout)
+	deadline := time.Now().Add(selectiveDownloadTimeout)
 	for {
 		var found bool
 		torrent, found, err = m.torrentByHash(hash, "")
@@ -374,13 +524,15 @@ func (m *Manager) runSelectiveTorrent(jobID, url, hash string, index int, filePa
 		}
 		time.Sleep(selectivePollInterval)
 	}
-	src, err := selectiveSource(torrent.SavePath, target.Name)
+	snapshot, err := m.snapshotSelectiveSource(torrent.SavePath, target.Name)
 	if err != nil {
 		fail(err)
 		return
 	}
+	keepSnapshot := false
+	defer func() { snapshot.close(keepSnapshot) }()
 	m.jobs.UpdateMulti(jobID, map[string]interface{}{"status": "scanning", "detail": "Running virus scan on selected file..."})
-	clean, infected := selectiveScan(src, m.cfg.ClamAVContainer, m.cfg.ClamAVSocket, m.cfg.DockerSocket)
+	clean, infected := selectiveScan(snapshot.path, m.cfg.ClamAVContainer, m.cfg.ClamAVSocket, m.cfg.DockerSocket)
 	if !clean {
 		fail(fmt.Errorf("Virus detected: %s", strings.Join(infected, "; ")))
 		return
@@ -392,10 +544,18 @@ func (m *Manager) runSelectiveTorrent(jobID, url, hash string, index int, filePa
 		fail(fmt.Errorf("%w: %s", fileops.ErrDestinationOccupied, dest))
 		return
 	}
-	if _, err := m.importContent(src, dest); err != nil {
+	if _, err := m.importContent(snapshot.path, dest); err != nil {
 		removePartialDest(dest)
 		fail(fmt.Errorf("Minerva import failed: %w", err))
 		return
+	}
+	// A successful symlink (including a configured hardlink fallback) needs a
+	// durable scanned source. Other modes can discard the owned staging name.
+	if info, err := os.Lstat(dest); err == nil {
+		keepSnapshot = info.Mode()&os.ModeSymlink != 0
+	}
+	if !destPresent(snapshot.path) {
+		snapshot.removeUnchangedSource()
 	}
 	writeMetadataSidecar(dest, title, platf, platSlug, isPC, "minerva")
 	m.TrackInLibrary(title, platf, platSlug, isPC, dest, target.Size, "minerva", "torrent", fmt.Sprintf("minerva:%s:%d", hash, index))
