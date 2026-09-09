@@ -672,6 +672,16 @@ func TestSetFilePriority(t *testing.T) {
 	}
 }
 
+func TestSetFilePriority_InvalidInput(t *testing.T) {
+	c := New("http://localhost:8080", "admin", "pass")
+	if c.SetFilePriority("", []int{1}, 0) {
+		t.Fatal("empty hash should fail")
+	}
+	if !c.SetFilePriority("abc", nil, 0) {
+		t.Fatal("empty indexes should be a no-op success")
+	}
+}
+
 func TestRenameTorrent(t *testing.T) {
 	var gotHash, gotName string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -696,6 +706,31 @@ func TestRenameTorrent(t *testing.T) {
 	}
 	if gotHash != "abc" || gotName != "Super Nintendo" {
 		t.Fatalf("got hash=%q name=%q", gotHash, gotName)
+	}
+}
+
+func TestRenameTorrent_InvalidInput(t *testing.T) {
+	c := New("http://localhost:8080", "admin", "pass")
+	if c.RenameTorrent("", "name") {
+		t.Fatal("empty hash should fail")
+	}
+	if c.RenameTorrent("abc", "  ") {
+		t.Fatal("empty name should fail")
+	}
+}
+
+func TestLogBody(t *testing.T) {
+	short := logBody([]byte("  ok  "))
+	if short != "ok" {
+		t.Fatalf("short = %q", short)
+	}
+	long := strings.Repeat("x", maxLogBody+10)
+	got := logBody([]byte(long))
+	if len(got) != maxLogBody+len("…") {
+		t.Fatalf("len(got) = %d, want %d", len(got), maxLogBody+len("…"))
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("got = %q, want ellipsis suffix", got)
 	}
 }
 
