@@ -223,7 +223,7 @@ func (s *Server) handleSearchRequest(w http.ResponseWriter, r *http.Request) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		results := search.SearchProwlarr(s.cfg, query, platformFilter)
@@ -241,6 +241,13 @@ func (s *Server) handleSearchRequest(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		results := search.SearchVimm(s.cfg.Sources, query, platformFilter)
+		mu.Lock()
+		allResults = append(allResults, results...)
+		mu.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		results := search.SearchMinerva(s.cfg.Sources, query, platformFilter)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
@@ -341,8 +348,9 @@ func (s *Server) handleDownloadForRequest(w http.ResponseWriter, r *http.Request
 			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", body.InfoHash)
 		}
 		var dlErr error
+		selectFiles := body.Indexer == "Minerva" || strings.Contains(body.MagnetURL, "Minerva_Myrient")
 		jobID, dlErr = s.mgr.DownloadTorrent(url, body.InfoHash, body.Title,
-			body.Platform, body.PlatformSlug, body.IsPC)
+			body.Platform, body.PlatformSlug, body.IsPC, selectFiles)
 		if dlErr != nil {
 			writeError(w, http.StatusBadRequest, dlErr.Error())
 			return
