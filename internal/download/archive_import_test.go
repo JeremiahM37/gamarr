@@ -26,12 +26,21 @@ func TestResolveImportContentPathArchiveMember(t *testing.T) {
 		"info_hash": hash,
 	})
 	qm.setFiles([]qbit.TorrentFile{
-		{Name: "No-Intro/Nintendo - Game Boy/Trip World (Europe).zip", Index: 0},
-		{Name: "No-Intro/Nintendo - Game Boy/Other.zip", Index: 1},
+		{Name: "Minerva_Myrient/No-Intro/Nintendo - Game Boy/Trip World (Europe).zip", Index: 0},
+		{Name: "Minerva_Myrient/No-Intro/Nintendo - Game Boy/Other.zip", Index: 1},
 	})
 
 	got := m.resolveImportContentPath(jobID, torrent)
 	want := filepath.Join(torrent.ContentPath, "No-Intro", "Nintendo - Game Boy", "Trip World (Europe).zip")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestTorrentFileContentPathStripsTorrentRoot(t *testing.T) {
+	root := "/data/torrents/console-incomplete/Minerva_Myrient"
+	got := torrentFileContentPath(root, "Minerva_Myrient/No-Intro/Nintendo - Game Boy/Trip World (Europe).zip")
+	want := filepath.Join(root, "No-Intro", "Nintendo - Game Boy", "Trip World (Europe).zip")
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

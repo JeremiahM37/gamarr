@@ -683,9 +683,21 @@ func (m *Manager) resolveImportContentPath(jobID string, torrent *qbit.Torrent) 
 		return contentPath
 	}
 	if f, ok := TorrentFileForTitle(files, jobTitle); ok {
-		return filepath.Join(contentPath, filepath.FromSlash(f.Name))
+		return torrentFileContentPath(contentPath, f.Name)
 	}
 	return contentPath
+}
+
+// torrentFileContentPath joins a torrent's content root with a selected file name.
+// qBittorrent file names include the torrent's internal root folder, which
+// content_path already ends with after a rename (Minerva_Myrient → Game Boy).
+func torrentFileContentPath(contentPath, fileName string) string {
+	rel := filepath.FromSlash(fileName)
+	if base := filepath.Base(contentPath); base != "" {
+		prefix := base + string(os.PathSeparator)
+		rel = strings.TrimPrefix(rel, prefix)
+	}
+	return filepath.Join(contentPath, rel)
 }
 
 // shouldFinishTorrent reports whether the client may drop this torrent after an
