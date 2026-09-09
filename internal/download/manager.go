@@ -365,7 +365,7 @@ func (m *Manager) maybeRenameArchiveTorrent(hash, platf, platSlug string) {
 func (m *Manager) waitTorrentFiles(hash string) []qbit.TorrentFile {
 	for attempt := 0; attempt < 60; attempt++ {
 		files := m.qb.GetTorrentFiles(hash)
-		if files != nil && len(files) > 0 {
+		if len(files) > 0 {
 			return files
 		}
 		time.Sleep(500 * time.Millisecond)

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -251,14 +250,6 @@ func minervaListingURL(base, platformPath string) string {
 	return strings.TrimRight(base, "/") + "/browse/./" + strings.Join(parts, "/") + "/"
 }
 
-func minervaTitle(fullPath string) string {
-	name := path.Base(strings.ReplaceAll(strings.TrimSpace(fullPath), "\\", "/"))
-	if name == "" || name == "." || name == "/" {
-		return ""
-	}
-	return name
-}
-
 func minervaGUID(base string, id int64) string {
 	if id <= 0 {
 		return ""
@@ -272,21 +263,6 @@ func minervaInfoHash(magnet string) string {
 		return ""
 	}
 	return strings.ToLower(m[1])
-}
-
-// minervaFileURL maps a catalog path onto the Myrient file tree the listing
-// describes. Segment-escape so spaces and brackets survive as a single URL.
-func minervaFileURL(myrientBase, fullPath string) string {
-	p := strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(fullPath), "\\", "/"), "./")
-	p = strings.TrimPrefix(p, "/")
-	if myrientBase == "" || p == "" {
-		return ""
-	}
-	parts := strings.Split(p, "/")
-	for i, part := range parts {
-		parts[i] = url.PathEscape(part)
-	}
-	return strings.TrimRight(myrientBase, "/") + "/" + strings.Join(parts, "/")
 }
 
 func parseMinervaSize(s string) int64 {
