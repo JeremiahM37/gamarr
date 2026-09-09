@@ -13,7 +13,7 @@ import (
 	"gamarr/internal/sabnzbd"
 )
 
-// sabMock is a fake SABnzbd API server.
+// sabMock is a fake SABnzbd API server that also serves NZB bodies for fetch.
 type sabMock struct {
 	srv        *httptest.Server
 	addStatus  bool
@@ -22,6 +22,8 @@ type sabMock struct {
 	queueSlots []map[string]interface{}
 	histSlots  []map[string]interface{}
 }
+
+const testNZBBody = `<?xml version="1.0"?><nzb></nzb>`
 
 type nzbgetMock struct {
 	srv        *httptest.Server
@@ -74,13 +76,25 @@ func newSabMock(t *testing.T) *sabMock {
 	t.Helper()
 	s := &sabMock{addStatus: true, nzoID: "SABnzbd_nzo_test1"}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Query().Get("mode") {
-		case "addurl":
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, ".nzb") {
+			w.Write([]byte(testNZBBody))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api" {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("parse multipart: %v", err)
+			}
+			if r.FormValue("mode") != "addfile" {
+				t.Fatalf("mode=%q, want addfile", r.FormValue("mode"))
+			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":  s.addStatus,
 				"nzo_ids": []string{s.nzoID},
 				"error":   s.addError,
 			})
+			return
+		}
+		switch r.URL.Query().Get("mode") {
 		case "queue":
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"queue": map[string]interface{}{"slots": s.queueSlots},
@@ -95,6 +109,10 @@ func newSabMock(t *testing.T) *sabMock {
 	}))
 	t.Cleanup(s.srv.Close)
 	return s
+}
+
+func (s *sabMock) nzbURL(path string) string {
+	return s.srv.URL + path
 }
 
 func (s *sabMock) client() *sabnzbd.Client {
@@ -117,7 +135,7 @@ func TestDownloadNZBAddError(t *testing.T) {
 	sab.addError = "invalid api key"
 
 	m := New(cfg, jobs, nil)
-	jobID, err := m.DownloadNZB(sab.client(), "http://x/file.nzb", "Bad Game", "PC", "", true)
+	jobID, err := m.DownloadNZB(sab.client(), sab.nzbURL("/file.nzb"), "Bad Game", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -152,7 +170,7 @@ func TestDownloadNZBCompletedFlow(t *testing.T) {
 	}
 
 	m := New(cfg, jobs, nil)
-	jobID, err := m.DownloadNZB(sab.client(), "http://x/game.nzb", "Usenet Game", "SNES", "snes", false)
+	jobID, err := m.DownloadNZB(sab.client(), sab.nzbURL("/game.nzb"), "Usenet Game", "SNES", "snes", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,7 +200,7 @@ func TestDownloadNZBFailedFlow(t *testing.T) {
 	}
 
 	m := New(cfg, jobs, nil)
-	jobID, err := m.DownloadNZB(sab.client(), "http://x/game.nzb", "Doomed", "PC", "", true)
+	jobID, err := m.DownloadNZB(sab.client(), sab.nzbURL("/game.nzb"), "Doomed", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
