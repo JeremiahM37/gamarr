@@ -75,15 +75,18 @@ func (c *Client) AddNZBByURL(nzbURL, title, category string) (string, error) {
 func (c *Client) fetchNZB(nzbURL string) ([]byte, error) {
 	resp, err := c.fetchClient.Get(nzbURL)
 	if err != nil {
-		return nil, fmt.Errorf("fetch NZB: %w", err)
+		slog.Error("fetch NZB failed", "host", redactFetchHost(nzbURL), "error", err)
+		return nil, fmt.Errorf("fetch NZB failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("fetch NZB failed", "host", redactFetchHost(nzbURL), "status", resp.StatusCode)
 		return nil, fmt.Errorf("fetch NZB: HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxNZBBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read NZB: %w", err)
+		slog.Error("read NZB failed", "host", redactFetchHost(nzbURL), "error", err)
+		return nil, fmt.Errorf("read NZB failed")
 	}
 	if len(body) > maxNZBBytes {
 		return nil, fmt.Errorf("NZB exceeded %d MiB", maxNZBBytes>>20)
@@ -93,9 +96,13 @@ func (c *Client) fetchNZB(nzbURL string) ([]byte, error) {
 	}
 	trimmed := bytes.TrimSpace(body)
 	if !bytes.HasPrefix(trimmed, []byte("<?xml")) && !bytes.HasPrefix(trimmed, []byte("<nzb")) {
-		snippet := string(trimmed)
-		if len(snippet) > 120 {
-			snippet = snippet[:120] + "..."
+		n := len(trimmed)
+		if n > 120 {
+			n = 120
+		}
+		snippet := string(trimmed[:n])
+		if len(trimmed) > 120 {
+			snippet += "..."
 		}
 		return nil, fmt.Errorf("fetch NZB: response is not an NZB (%q)", snippet)
 	}
@@ -108,16 +115,35 @@ func (c *Client) addNZBFile(nzbData []byte, filename, category string) (string, 
 	}
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	_ = w.WriteField("mode", "addfile")
-	_ = w.WriteField("apikey", c.apiKey)
-	_ = w.WriteField("output", "json")
-	_ = w.WriteField("priority", "0")
+	writeField := func(key, val string) error {
+		if err := w.WriteField(key, val); err != nil {
+			return fmt.Errorf("write form field %q: %w", key, err)
+		}
+		return nil
+	}
+	for _, f := range [][2]string{
+		{"mode", "addfile"},
+		{"apikey", c.apiKey},
+		{"output", "json"},
+		{"priority", "0"},
+	} {
+		if err := writeField(f[0], f[1]); err != nil {
+			return "", err
+		}
+	}
 	if category != "" {
-		_ = w.WriteField("cat", category)
+		if err := writeField("cat", category); err != nil {
+			return "", err
+		}
 	}
 	// nzbname is the display name in SABnzbd; the file field is the payload.
-	name := strings.TrimSuffix(filename, ".nzb")
-	_ = w.WriteField("nzbname", name)
+	name := filename
+	if ext := path.Ext(filename); strings.EqualFold(ext, ".nzb") {
+		name = strings.TrimSuffix(filename, ext)
+	}
+	if err := writeField("nzbname", name); err != nil {
+		return "", err
+	}
 	part, err := w.CreateFormFile("name", filename)
 	if err != nil {
 		return "", fmt.Errorf("create NZB form file: %w", err)
@@ -157,6 +183,14 @@ func (c *Client) addNZBFile(nzbData []byte, filename, category string) (string, 
 		return result.NZOIDs[0], nil
 	}
 	return "", nil
+}
+
+func redactFetchHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<redacted>"
+	}
+	return u.Host
 }
 
 func nzbFilename(title, nzbURL string) string {

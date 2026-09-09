@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -25,7 +26,6 @@ func TestNew_TrailingSlash(t *testing.T) {
 		t.Errorf("expected trailing slash stripped, got %q", c.baseURL)
 	}
 }
-
 
 func TestAddNZBByURL_Success(t *testing.T) {
 	nzbBody := []byte(`<?xml version="1.0"?><nzb></nzb>`)
@@ -92,10 +92,14 @@ func TestAddNZBByURL_FetchError(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	secretURL := srv.URL + "/missing.nzb?apikey=supersecret"
 	c := New(srv.URL, "testkey")
-	_, err := c.AddNZBByURL(srv.URL+"/missing.nzb", "Bad", "games")
+	_, err := c.AddNZBByURL(secretURL, "Bad", "games")
 	if err == nil {
 		t.Fatal("expected fetch error")
+	}
+	if strings.Contains(err.Error(), "supersecret") {
+		t.Fatalf("fetch error leaked URL secret: %v", err)
 	}
 }
 
