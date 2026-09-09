@@ -254,6 +254,20 @@ func TestFilterGameResults(t *testing.T) {
 			t.Errorf("expected nil/empty, got %d results", len(filtered))
 		}
 	})
+
+	t.Run("keeps Minerva archive torrents without seeders", func(t *testing.T) {
+		results := []*models.SearchResult{
+			{Title: "Chrono Trigger (USA)", Seeders: 0, Size: 2_900_000, Indexer: "Minerva", SourceType: "torrent"},
+			{Title: "Chrono Trigger (USA)", Seeders: 40, Size: 5_000_000_000, Indexer: "SomeTracker", SourceType: "torrent"},
+		}
+		filtered := FilterGameResults(results, "chrono trigger")
+		if len(filtered) != 1 {
+			t.Fatalf("expected Minerva to replace the tracker dup, got %d", len(filtered))
+		}
+		if filtered[0].Indexer != "Minerva" {
+			t.Errorf("kept %q, want Minerva", filtered[0].Indexer)
+		}
+	})
 }
 
 func TestNormalizeTitle(t *testing.T) {

@@ -14,6 +14,7 @@ func TestSourceNameFor(t *testing.T) {
 	}{
 		{"nil", nil, ""},
 		{"vimm", &models.SearchResult{SourceType: "ddl", VimmID: "1654", Indexer: "Vimm's Lair"}, "vimm"},
+		{"minerva", &models.SearchResult{SourceType: "torrent", Indexer: "Minerva"}, "minerva"},
 		{"myrient", &models.SearchResult{SourceType: "ddl", Indexer: "Myrient"}, "myrient"},
 		{"torrent", &models.SearchResult{SourceType: "torrent", Indexer: "SomeTracker"}, "prowlarr"},
 		{"usenet", &models.SearchResult{SourceType: "torrent", DownloadProtocol: "nzb"}, "prowlarr"},

@@ -9,7 +9,7 @@ import (
 )
 
 // searchForTorznab is the SearchFunc passed to the Torznab handler. It runs
-// the same 3-source fan-out as /api/search but skips the user-facing
+// the same 4-source fan-out as /api/search but skips the user-facing
 // post-processing (blocklist filter, library-dedup, quality-profile rank,
 // release-profile scoring) that downstream *arr consumers do themselves —
 // they only want raw indexer-style results.
@@ -23,7 +23,7 @@ func (s *Server) searchForTorznab(ctx context.Context, query, platformSlug strin
 		slug = ""
 	}
 
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		results := search.SearchProwlarr(s.cfg, query, slug)
@@ -41,6 +41,13 @@ func (s *Server) searchForTorznab(ctx context.Context, query, platformSlug strin
 	go func() {
 		defer wg.Done()
 		results := search.SearchVimm(s.cfg.Sources, query, slug)
+		mu.Lock()
+		allResults = append(allResults, results...)
+		mu.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		results := search.SearchMinerva(s.cfg.Sources, query, slug)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()

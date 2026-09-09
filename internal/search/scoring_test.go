@@ -109,6 +109,31 @@ func TestScoreResults_PCPlatformMatch(t *testing.T) {
 	}
 }
 
+func TestScoreResults_MinervaSeederScore(t *testing.T) {
+	results := []*models.SearchResult{
+		{Title: "Game", Seeders: 0, Size: 1_000_000_000, SourceType: "torrent", Indexer: "Minerva"},
+	}
+	scored := ScoreResults(results, "Game", "")
+	if scored[0].ScoreBreakdown.SeederScore != 10 {
+		t.Errorf("Minerva SeederScore=%d, want 10", scored[0].ScoreBreakdown.SeederScore)
+	}
+}
+
+func TestSortByScore_MinervaBeforeProwlarr(t *testing.T) {
+	results := []*models.SearchResult{
+		{Title: "Game", Score: 90, Indexer: "SomeTracker"},
+		{Title: "Game (USA).zip", Score: 70, Indexer: "Minerva"},
+		{Title: "Game Deluxe", Score: 80, Indexer: "Myrient"},
+	}
+	SortByScore(results)
+	if results[0].Indexer != "Minerva" {
+		t.Fatalf("first = %q, want Minerva", results[0].Indexer)
+	}
+	if results[1].Indexer != "SomeTracker" || results[2].Indexer != "Myrient" {
+		t.Errorf("rest = %q %q, want SomeTracker then Myrient", results[1].Indexer, results[2].Indexer)
+	}
+}
+
 func TestScoreResults_DDLSeederScore(t *testing.T) {
 	results := []*models.SearchResult{
 		{Title: "Game", Seeders: 0, Size: 1_000_000_000, SourceType: "ddl"},

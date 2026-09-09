@@ -86,8 +86,8 @@ print("\n=== 3. SOURCES ===")
 
 def t_sources():
     d = get("/api/sources")
-    assert {s["name"] for s in d["sources"]} == {"prowlarr", "myrient", "vimm"}
-test("3 sources (prowlarr, myrient, vimm)", t_sources)
+    assert {s["name"] for s in d["sources"]} == {"prowlarr", "myrient", "vimm", "minerva"}
+test("4 sources (prowlarr, myrient, vimm, minerva)", t_sources)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 print("\n=== 4. SEARCH ===")

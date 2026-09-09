@@ -166,6 +166,12 @@ func FilterGameResults(results []*models.SearchResult, query string) []*models.S
 		if IsNonEnglish(r.Title) {
 			continue
 		}
+		// Archive magnets have no live swarm stats. Don't apply tracker
+		// seeder/size cuts — those would drop every Minerva hit.
+		if r.Indexer == "Minerva" {
+			keepResult(r, &filtered, seen)
+			continue
+		}
 		if r.DownloadProtocol != "nzb" && r.Seeders < 1 {
 			continue
 		}
@@ -183,19 +189,15 @@ func FilterGameResults(results []*models.SearchResult, query string) []*models.S
 			continue
 		}
 
-		// Dedup by normalized title
+		// Dedup by normalized title. Minerva wins a tie: it's the
+		// preferred torrent source over a tracker hit with the same name.
 		norm := normalizeTitle(r.Title)
 		if existing, ok := seen[norm]; ok {
+			if existing.Indexer == "Minerva" {
+				continue
+			}
 			if r.Seeders > existing.Seeders {
-				// Remove old, add new
-				for i, f := range filtered {
-					if f == existing {
-						filtered = append(filtered[:i], filtered[i+1:]...)
-						break
-					}
-				}
-				seen[norm] = r
-				filtered = append(filtered, r)
+				replaceResult(existing, r, &filtered, seen)
 			}
 			continue
 		}
@@ -203,6 +205,30 @@ func FilterGameResults(results []*models.SearchResult, query string) []*models.S
 		filtered = append(filtered, r)
 	}
 	return filtered
+}
+
+func keepResult(r *models.SearchResult, filtered *[]*models.SearchResult, seen map[string]*models.SearchResult) {
+	norm := normalizeTitle(r.Title)
+	if existing, ok := seen[norm]; ok {
+		if existing.Indexer == "Minerva" {
+			return
+		}
+		replaceResult(existing, r, filtered, seen)
+		return
+	}
+	seen[norm] = r
+	*filtered = append(*filtered, r)
+}
+
+func replaceResult(old, next *models.SearchResult, filtered *[]*models.SearchResult, seen map[string]*models.SearchResult) {
+	for i, f := range *filtered {
+		if f == old {
+			*filtered = append((*filtered)[:i], (*filtered)[i+1:]...)
+			break
+		}
+	}
+	seen[normalizeTitle(next.Title)] = next
+	*filtered = append(*filtered, next)
 }
 
 func normalizeTitle(title string) string {
