@@ -181,9 +181,15 @@ func getMinervaListing(reg *sources.Registry, slug string) []minervaHit {
 		RecordSearchFail("minerva", fmt.Sprintf("HTTP %d", resp.StatusCode))
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	const maxListingSize = 32 << 20 // 32 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListingSize+1))
 	if err != nil {
 		RecordSearchFail("minerva", err.Error())
+		return nil
+	}
+	if len(body) > maxListingSize {
+		slog.Warn("Minerva listing exceeded size cap", "slug", slug, "cap_mib", maxListingSize>>20)
+		RecordSearchFail("minerva", fmt.Sprintf("listing exceeded %d MiB", maxListingSize>>20))
 		return nil
 	}
 

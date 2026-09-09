@@ -102,7 +102,6 @@ func newSabMock(t *testing.T) *sabMock {
 	return s
 }
 
-
 func nzbSourceURL(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
