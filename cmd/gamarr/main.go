@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -244,7 +243,7 @@ func main() {
 		if url == "" && result.InfoHash != "" {
 			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", result.InfoHash)
 		}
-		selectFiles := result.Indexer == "Minerva" || strings.Contains(result.MagnetURL, "Minerva_Myrient")
+		selectFiles := search.IsMinervaArchiveDownload(result.Indexer, result.MagnetURL, url)
 		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC, selectFiles)
 	}
 

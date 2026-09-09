@@ -270,3 +270,33 @@ func TestMinervaGUID(t *testing.T) {
 func TestClearMinervaCache(t *testing.T) {
 	ClearMinervaCache()
 }
+
+func TestIsMinervaArchiveDownload(t *testing.T) {
+	archiveMagnet := "magnet:?xt=urn:btih:abc&dn=Minerva_Myrient"
+
+	// The case that regressed: /api/download rebuilds a magnet from the
+	// infohash alone when the client sent no magnet_url, so the display name
+	// is gone and only the indexer label is left to go on. Missing it adds the
+	// shared archive unpaused with every file enabled — the whole console set
+	// instead of one ROM.
+	if !IsMinervaArchiveDownload("Minerva", "", "magnet:?xt=urn:btih:abc") {
+		t.Error("indexer label alone should identify a Minerva archive download")
+	}
+	if !IsMinervaArchiveDownload("minerva", "", "") {
+		t.Error("indexer match should be case-insensitive")
+	}
+	// Fallback for callers holding only a URI.
+	if !IsMinervaArchiveDownload("", archiveMagnet, "") {
+		t.Error("magnet display name should still identify an archive download")
+	}
+	if !IsMinervaArchiveDownload("", "", archiveMagnet) {
+		t.Error("resolved URL should be checked too")
+	}
+	// Ordinary tracker results must not take the file-selection path.
+	if IsMinervaArchiveDownload("Prowlarr", "magnet:?xt=urn:btih:def&dn=Some+Game", "") {
+		t.Error("a Prowlarr magnet must not be treated as a Minerva archive")
+	}
+	if IsMinervaArchiveDownload("", "", "") {
+		t.Error("empty input must not be treated as a Minerva archive")
+	}
+}

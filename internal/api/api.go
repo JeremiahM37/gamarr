@@ -650,7 +650,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		url = fmt.Sprintf("magnet:?xt=urn:btih:%s", req.InfoHash)
 	}
 
-	selectFiles := strings.Contains(req.MagnetURL, "Minerva_Myrient") || strings.Contains(url, "Minerva_Myrient")
+	selectFiles := search.IsMinervaArchiveDownload(req.Indexer, req.MagnetURL, url)
 	jobID, err := s.mgr.DownloadTorrent(url, req.InfoHash, req.Title, req.Platform, req.PlatformSlug, req.IsPC, selectFiles)
 	if err != nil {
 		writeError(w, 400, err.Error())

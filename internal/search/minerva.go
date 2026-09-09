@@ -336,3 +336,27 @@ func minervaPlatformInfo(slug, consoleFallback string) (string, bool) {
 	}
 	return "Unknown", false
 }
+
+// MinervaIndexerName is the indexer label Minerva results carry.
+const MinervaIndexerName = "Minerva"
+
+// minervaArchiveMagnetName is the display name Minerva's shared archive
+// magnets use, which is what makes them recognisable when a caller has only
+// the magnet URI.
+const minervaArchiveMagnetName = "Minerva_Myrient"
+
+// IsMinervaArchiveDownload reports whether a download refers to a Minerva
+// shared archive magnet, and therefore needs the paused-add + file-selection
+// path rather than a plain add.
+//
+// The indexer label is the reliable signal and is checked first: a magnet
+// rebuilt from an infohash alone carries no display name at all, and getting
+// this wrong means downloading an entire console archive instead of one ROM.
+// The name match stays as a fallback for callers that only have a URI.
+func IsMinervaArchiveDownload(indexer, magnetURL, resolvedURL string) bool {
+	if strings.EqualFold(strings.TrimSpace(indexer), MinervaIndexerName) {
+		return true
+	}
+	return strings.Contains(magnetURL, minervaArchiveMagnetName) ||
+		strings.Contains(resolvedURL, minervaArchiveMagnetName)
+}
