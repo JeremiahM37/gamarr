@@ -389,6 +389,52 @@ func TestJobStore_InterruptedOnLoad(t *testing.T) {
 	}
 }
 
+func TestJobStore_LoadNormalizationPreservesUpdatedAt(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	store1, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store1.Set("stale", map[string]interface{}{
+		"status": "completed",
+		"error":  "Interrupted by restart",
+		"title":  "Old Game",
+	})
+	if _, err := store1.db.Exec("UPDATE jobs SET updated_at = 0 WHERE job_id = 'stale'"); err != nil {
+		t.Fatal(err)
+	}
+	store1.Close()
+
+	store2, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store2.Close()
+
+	got, ok := store2.Get("stale")
+	if !ok {
+		t.Fatal("expected stale job to load")
+	}
+	if got["error"] != nil {
+		t.Errorf("error = %#v after load normalization, want nil", got["error"])
+	}
+
+	var updatedAt float64
+	if err := store2.db.QueryRow("SELECT updated_at FROM jobs WHERE job_id = 'stale'").Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAt != 0 {
+		t.Errorf("updated_at = %v after load normalization, want 0 (unchanged)", updatedAt)
+	}
+
+	deleted := store2.Cleanup(1)
+	if deleted != 1 {
+		t.Errorf("Cleanup deleted %d rows, want 1", deleted)
+	}
+}
+
 func TestJobStore_Cleanup(t *testing.T) {
 	store := newTestStore(t)
 	// Add some old completed jobs
