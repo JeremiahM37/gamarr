@@ -348,8 +348,9 @@ func (s *Server) handleDownloadForRequest(w http.ResponseWriter, r *http.Request
 			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", body.InfoHash)
 		}
 		var dlErr error
+		selectFiles := strings.Contains(body.MagnetURL, "Minerva_Myrient") || strings.Contains(url, "Minerva_Myrient")
 		jobID, dlErr = s.mgr.DownloadTorrent(url, body.InfoHash, body.Title,
-			body.Platform, body.PlatformSlug, body.IsPC)
+			body.Platform, body.PlatformSlug, body.IsPC, selectFiles)
 		if dlErr != nil {
 			writeError(w, http.StatusBadRequest, dlErr.Error())
 			return

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -243,7 +244,8 @@ func main() {
 		if url == "" && result.InfoHash != "" {
 			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", result.InfoHash)
 		}
-		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
+		selectFiles := result.Indexer == "Minerva" || strings.Contains(result.MagnetURL, "Minerva_Myrient")
+		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC, selectFiles)
 	}
 
 	webhookFn := func() []webhook.WebhookConfig {
@@ -269,6 +271,7 @@ func main() {
 	// Recover orphaned torrents and scan library in background
 	if cfg.HasQBittorrent() {
 		go mgr.RecoverOrphanedTorrents()
+		go mgr.RecoverActiveTorrentJobs()
 	}
 	go mgr.RecoverOrphanedNZBDownloads()
 	go mgr.ScanLibraryDirs()
