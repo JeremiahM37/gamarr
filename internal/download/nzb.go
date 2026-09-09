@@ -48,7 +48,10 @@ func (m *Manager) downloadSABnzbd(sab *sabnzbd.Client, nzbURL, title, platf, pla
 		})
 		return jobID, nil
 	}
-	m.jobs.Update(jobID, "detail", "Downloading via Usenet...")
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{
+		"detail": "Downloading via Usenet...",
+		"nzo_id": nzoID,
+	})
 
 	go m.watchSABnzbdDownload(sab, jobID, nzoID, title, platf, platSlug, isPC)
 	return jobID, nil
@@ -95,7 +98,9 @@ func (m *Manager) RecoverOrphanedNZBDownloads() {
 	for _, item := range m.jobs.Items() {
 		status, _ := item.Data["status"].(string)
 		client, _ := item.Data["source_client"].(string)
-		if client != "nzbget" || (status != "downloading" && status != "organizing") {
+		// interrupted is included because older boots stamped every in-flight
+		// row, including NZBGet jobs the client was still downloading.
+		if client != "nzbget" || (status != "downloading" && status != "organizing" && status != "interrupted") {
 			continue
 		}
 
@@ -112,7 +117,11 @@ func (m *Manager) RecoverOrphanedNZBDownloads() {
 		platf, _ := item.Data["platform"].(string)
 		platSlug, _ := item.Data["platform_slug"].(string)
 		isPC, _ := item.Data["is_pc"].(bool)
-		m.jobs.Update(item.ID, "detail", "Recovered NZBGet download; reconnecting watcher...")
+		m.jobs.UpdateMulti(item.ID, map[string]interface{}{
+			"status": "downloading",
+			"error":  nil,
+			"detail": "Recovered NZBGet download; reconnecting watcher...",
+		})
 		go m.watchNZBGetDownload(m.nzbget, item.ID, nzbID, title, platf, platSlug, isPC)
 	}
 }
