@@ -5,7 +5,6 @@ package scheduler
 import (
 	"log/slog"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -179,10 +178,7 @@ func (s *Scheduler) run() {
 			continue
 		}
 
-		// Sort by score descending
-		sort.SliceStable(results, func(i, j int) bool {
-			return results[i].Score > results[j].Score
-		})
+		search.SortByScore(results)
 
 		totalResults += len(results)
 

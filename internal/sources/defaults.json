@@ -24,6 +24,33 @@
       "xbox360": "Redump/Microsoft - Xbox 360/"
     }
   },
+  "minerva": {
+    "base_url": "https://minerva-archive.org/",
+    "platform_paths": {
+      "gba":       "No-Intro/Nintendo - Game Boy Advance/",
+      "gb":        "No-Intro/Nintendo - Game Boy/",
+      "gbc":       "No-Intro/Nintendo - Game Boy Color/",
+      "nes":       "No-Intro/Nintendo - Nintendo Entertainment System (Headered)/",
+      "snes":      "No-Intro/Nintendo - Super Nintendo Entertainment System/",
+      "n64":       "No-Intro/Nintendo - Nintendo 64 (BigEndian)/",
+      "nds":       "No-Intro/Nintendo - Nintendo DS (Decrypted)/",
+      "3ds":       "No-Intro/Nintendo - Nintendo 3DS (Decrypted)/",
+      "psx":       "Redump/Sony - PlayStation/",
+      "ps2":       "Redump/Sony - PlayStation 2/",
+      "ps3":       "Redump/Sony - PlayStation 3/",
+      "psp":       "Redump/Sony - PlayStation Portable/",
+      "psvita":    "No-Intro/Sony - PlayStation Vita (PSN) (Content)/",
+      "dc":        "Redump/Sega - Dreamcast/",
+      "saturn":    "Redump/Sega - Saturn/",
+      "genesis":   "No-Intro/Sega - Mega Drive - Genesis/",
+      "ngc":       "Redump/Nintendo - GameCube - NKit RVZ [zstd-19-128k]/",
+      "wii":       "Redump/Nintendo - Wii - NKit RVZ [zstd-19-128k]/",
+      "wiiu":      "Redump/Nintendo - Wii U - WUX/",
+      "xbox":      "Redump/Microsoft - Xbox/",
+      "xbox360":   "Redump/Microsoft - Xbox 360/",
+      "atari2600": "No-Intro/Atari - Atari 2600/"
+    }
+  },
   "vimm": {
     "base_url": "https://vimm.net/vault/",
     "platform_systems": {

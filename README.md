@@ -6,7 +6,7 @@
 
 **The missing *arr for games.** Self-hosted game and ROM search, download, and library manager.
 
-Gamarr searches across all configured indexers (Torznab proxies, direct-download archive listings, web-scrape sources) in parallel for 24 platforms. Results are scored for safety and quality, downloads are managed through your choice of torrent or Usenet client, and files are automatically organized into your game vault and ROM library.
+Gamarr searches across all configured indexers (Torznab proxies, direct-download archive listings, web-scrape sources, and Minerva Archive browse listings) in parallel for 24 platforms. Results are scored for safety and quality, downloads are managed through your choice of torrent or Usenet client, and files are automatically organized into your game vault and ROM library.
 
 Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real homelab[^1], typically 10-30× lower than other self-hosted game library / ROM tools. Comfortable on a Pi or any thermally-constrained mini-PC.
 
@@ -18,7 +18,8 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 
 ### Search and Discovery
 
-- **Pluggable indexer registry** -- driver kinds (Torznab proxy, DDL archive listing, web-scrape) loaded at runtime from an embedded JSON registry; optionally overrideable via `GAMARR_SOURCES_URL` / `GAMARR_SOURCES_PATH`
+- **Pluggable indexer registry** -- driver kinds (Torznab proxy, DDL archive listing, web-scrape, Minerva browse listing) loaded at runtime from an embedded JSON registry; optionally overrideable via `GAMARR_SOURCES_URL` / `GAMARR_SOURCES_PATH`
+- **Minerva Archive** -- loads the per-system browse page (every title on that console), caches it for an hour, and matches locally. Hits are torrent/magnet, ranked above Prowlarr.
 - **24 gaming platforms** -- PC, Switch, PS1-PS5, PSP, PS Vita, Xbox, Xbox 360, Wii, Wii U, NES, SNES, N64, GameCube, Game Boy, GBA, DS, 3DS, Genesis, Saturn, Dreamcast, Atari 2600
 - **Search scoring** -- composite 0-100 score based on title match, platform relevance, seeder count, file size, and safety analysis
 - **Safety scoring** -- analyzes file names, sizes, and scene group trust to detect malware, crack-only uploads, and suspicious downloads
@@ -86,32 +87,32 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 
 ## Supported Platforms
 
-| Platform | Slug | DDL archive | Torznab |
-|----------|------|-------------|---------|
-| PC | `pc` | -- | Yes |
-| Nintendo Switch | `switch` | -- | Yes |
-| PS1 | `psx` | Yes | Yes |
-| PS2 | `ps2` | Yes | Yes |
-| PS3 | `ps3` | Yes | Yes |
-| PS4 | `ps4` | -- | Yes |
-| PSP | `psp` | Yes | Yes |
-| PS Vita | `psvita` | Yes | Yes |
-| Xbox | `xbox` | Yes | Yes |
-| Xbox 360 | `xbox360` | Yes | Yes |
-| Wii | `wii` | Yes | Yes |
-| Wii U | `wiiu` | Yes | Yes |
-| NES | `nes` | Yes | Yes |
-| SNES | `snes` | Yes | Yes |
-| Nintendo 64 | `n64` | Yes | Yes |
-| Nintendo DS | `nds` | Yes | Yes |
-| Nintendo 3DS | `3ds` | Yes | Yes |
-| Game Boy | `gb` | Yes | Yes |
-| Game Boy Advance | `gba` | Yes | Yes |
-| Sega Genesis | `genesis` | Yes | Yes |
-| Sega Saturn | `saturn` | Yes | Yes |
-| Dreamcast | `dreamcast` | Yes | Yes |
-| GameCube | `gamecube` | Yes | Yes |
-| Atari 2600 | `atari2600` | Yes | Yes |
+| Platform | Slug | DDL archive | Minerva | Torznab |
+|----------|------|-------------|---------|---------|
+| PC | `pc` | -- | -- | Yes |
+| Nintendo Switch | `switch` | -- | -- | Yes |
+| PS1 | `psx` | Yes | Yes | Yes |
+| PS2 | `ps2` | Yes | Yes | Yes |
+| PS3 | `ps3` | Yes | Yes | Yes |
+| PS4 | `ps4` | -- | -- | Yes |
+| PSP | `psp` | Yes | Yes | Yes |
+| PS Vita | `psvita` | Yes | Yes | Yes |
+| Xbox | `xbox` | Yes | Yes | Yes |
+| Xbox 360 | `xbox360` | Yes | Yes | Yes |
+| Wii | `wii` | Yes | Yes | Yes |
+| Wii U | `wiiu` | Yes | Yes | Yes |
+| NES | `nes` | Yes | Yes | Yes |
+| SNES | `snes` | Yes | Yes | Yes |
+| Nintendo 64 | `n64` | Yes | Yes | Yes |
+| Nintendo DS | `nds` | Yes | Yes | Yes |
+| Nintendo 3DS | `3ds` | Yes | Yes | Yes |
+| Game Boy | `gb` | Yes | Yes | Yes |
+| Game Boy Advance | `gba` | Yes | Yes | Yes |
+| Sega Genesis | `genesis` | Yes | Yes | Yes |
+| Sega Saturn | `saturn` | Yes | Yes | Yes |
+| Dreamcast | `dreamcast` | Yes | Yes | Yes |
+| GameCube | `gamecube` | Yes | Yes | Yes |
+| Atari 2600 | `atari2600` | Yes | Yes | Yes |
 
 ## Quick Start
 
@@ -239,6 +240,7 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `VIMM_MIN_INTERVAL_SEC` | `5` | Minimum gap between outbound Vimm requests. Searches and download-page fetches share one gate, so a wishlist run cannot stampede the vault. `0` disables spacing |
 | `VIMM_RATE_LIMIT_DEFAULT_SEC` | `60` | Backoff applied when Vimm answers `429` without a usable `Retry-After` header. A `Retry-After` that is present is honoured instead, capped at 15 minutes |
 | `SCHEDULER_ITEM_INTERVAL_SEC` | `5` | Gap between wishlist items in a scheduled run |
+| `MINERVA_URL` | | Override base URL of the Minerva Archive search source |
 
 ### Search Sources
 
@@ -461,7 +463,7 @@ internal/
   db/                            SQLite persistence + migrations
   models/                        Core types (games, downloads, requests, notifications)
   api/                           HTTP handlers + chi router + auth + rate limiting
-  search/                        Source drivers (Torznab, DDL archive, web-scrape)
+  search/                        Source drivers (Torznab, DDL archive, web-scrape, Minerva)
   sources/                       Runtime sources registry (embedded defaults + loader)
   download/                      Download manager (qBit, Transmission, Deluge, Usenet, DDL)
   sabnzbd/                       SABnzbd client

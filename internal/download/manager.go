@@ -1121,7 +1121,10 @@ func (m *Manager) runDDLDownloadWorker(jobID, dlURL, vimmID, title, platf, platS
 
 // ddlSourceName maps a DDL job back to the health bucket of the source that
 // produced it: Vimm jobs carry a vault ID, Myrient jobs a URL under its base.
-// An unrecognised host records nothing rather than inventing a source.
+// Minerva search results download from the Myrient tree, so a job whose
+// caller already recorded indexer=Minerva is not visible here — URL host is
+// what we have. An unrecognised host records nothing rather than inventing
+// a source.
 func (m *Manager) ddlSourceName(dlURL, vimmID string) string {
 	if vimmID != "" {
 		return "vimm"
@@ -1133,9 +1136,17 @@ func (m *Manager) ddlSourceName(dlURL, vimmID string) string {
 		if base := m.cfg.Sources.Myrient.BaseURL; base != "" && strings.HasPrefix(dlURL, base) {
 			return "myrient"
 		}
+		if base := m.cfg.Sources.Minerva.BaseURL; base != "" && strings.HasPrefix(dlURL, base) {
+			return "minerva"
+		}
 	}
-	if u, err := url.Parse(dlURL); err == nil && strings.Contains(u.Host, "myrient") {
-		return "myrient"
+	if u, err := url.Parse(dlURL); err == nil {
+		if strings.Contains(u.Host, "minerva-archive") {
+			return "minerva"
+		}
+		if strings.Contains(u.Host, "myrient") {
+			return "myrient"
+		}
 	}
 	return ""
 }

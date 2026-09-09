@@ -343,6 +343,7 @@ function renderResults() {
     const safetyLabel = score >= 70 ? 'Safe' : score >= 40 ? 'Caution' : 'Risky';
     const isDDL = r.source_type === 'ddl';
     const isNZB = r.download_protocol === 'nzb';
+    const isMinerva = r.indexer === 'Minerva';
     const srcBadge = isDDL ? '<span class="px-1.5 py-0.5 text-xs rounded bg-purple-500/20 text-purple-400">DDL</span>' : isNZB ? '<span class="px-1.5 py-0.5 text-xs rounded bg-orange-500/20 text-orange-400">NZB</span>' : '<span class="px-1.5 py-0.5 text-xs rounded bg-blue-500/20 text-blue-400">Torrent</span>';
     const platColor = r.is_pc ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400';
     const warnings = (r.safety_warnings||[]).map(esc).join(' &middot; ');
@@ -357,7 +358,7 @@ function renderResults() {
           <div class="text-sm font-medium text-white break-words leading-snug">${esc(r.title)}</div>
           <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs text-slate-400">
             <span>${esc(r.indexer)}</span>
-            ${!isDDL ? `<span class="text-emerald-400">${r.seeders} seeds</span><span>${r.leechers} leech</span>` : '<span class="text-purple-400">Direct</span>'}
+            ${isDDL ? '<span class="text-purple-400">Direct</span>' : isMinerva ? '' : `<span class="text-emerald-400">${r.seeders} seeds</span><span>${r.leechers} leech</span>`}
             <span>${r.size_human||'?'}</span>
           </div>
           ${warnings ? `<div class="text-xs text-red-400/70 mt-1">${warnings}</div>` : ''}
