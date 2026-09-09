@@ -89,6 +89,7 @@ type DownloadRequest struct {
 	PlatformSlug     string `json:"platform_slug"`
 	IsPC             bool   `json:"is_pc"`
 	SourceType       string `json:"source_type"`
+	Indexer          string `json:"indexer"`
 	VimmID           string `json:"vimm_id"`
 	DownloadProtocol string `json:"download_protocol"` // "torrent" or "nzb"
 }
