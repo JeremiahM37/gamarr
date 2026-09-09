@@ -808,7 +808,7 @@ func (m *Manager) RecoverActiveTorrentJobs() {
 		}
 		if seen[hash] {
 			if detail, _ := item.Data["detail"].(string); detail == "Selecting files in archive torrent..." {
-				m.jobs.Update(item.ID, "detail", "Downloading from shared archive...")
+				m.jobs.Update(item.ID, "detail", "Downloading (shared torrent)...")
 			}
 			continue
 		}
@@ -839,7 +839,7 @@ func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug strin
 		claim = "title:" + strings.ToLower(title)
 	}
 	if _, busy := m.watching.LoadOrStore(claim, struct{}{}); busy {
-		m.jobs.Update(jobID, "detail", "Downloading from shared archive...")
+		m.jobs.Update(jobID, "detail", "Downloading (shared torrent)...")
 		slog.Info("a watcher is already running for this torrent", "title", title)
 		return
 	}
