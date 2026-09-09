@@ -244,6 +244,59 @@ func TestJobStore_ConcurrentReadersAndWriters(t *testing.T) {
 	}
 }
 
+func TestJobStore_ClearsStaleErrorOnRecovery(t *testing.T) {
+	store := newTestStore(t)
+	store.Set("job", map[string]interface{}{
+		"status": "error",
+		"error":  "Cannot read the downloaded files",
+		"title":  "Some Game",
+	})
+
+	store.UpdateMulti("job", map[string]interface{}{
+		"status": "organizing",
+		"detail": "Retry #1",
+	})
+	got, _ := store.Get("job")
+	if got["error"] != nil {
+		t.Errorf("error = %#v after organizing, want nil", got["error"])
+	}
+
+	store.UpdateMulti("job", map[string]interface{}{
+		"status": "error",
+		"error":  "new failure",
+	})
+	store.Update("job", "status", "downloading")
+	got, _ = store.Get("job")
+	if got["error"] != nil {
+		t.Errorf("error = %#v after back to downloading, want nil", got["error"])
+	}
+
+	// Set with a stale error on a completed row is normalized too.
+	store.Set("stale", map[string]interface{}{
+		"status": "completed",
+		"error":  "Interrupted by restart",
+		"detail": "Moved to RomM",
+	})
+	got, _ = store.Get("stale")
+	if got["error"] != nil {
+		t.Errorf("Set completed with stale error: error = %#v, want nil", got["error"])
+	}
+}
+
+func TestJobStore_ClearsErrorOnOrganizingViaSingleUpdate(t *testing.T) {
+	store := newTestStore(t)
+	store.Set("job", map[string]interface{}{
+		"status": "error",
+		"error":  "Cannot read the downloaded files",
+		"title":  "Some Game",
+	})
+	store.Update("job", "status", "organizing")
+	got, _ := store.Get("job")
+	if got["error"] != nil {
+		t.Errorf("error = %#v after organizing via Update, want nil without explicit error field", got["error"])
+	}
+}
+
 func TestJobStore_Persistence(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -279,28 +332,106 @@ func TestJobStore_InterruptedOnLoad(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	// Create with downloading status
 	store1, _ := New(dbPath)
-	store1.Set("job1", map[string]interface{}{"status": "downloading"})
-	store1.Set("job2", map[string]interface{}{"status": "scanning"})
-	store1.Set("job3", map[string]interface{}{"status": "completed"})
+	store1.Set("ddl", map[string]interface{}{"status": "downloading", "source_type": "ddl", "title": "DDL Game"})
+	store1.Set("scan", map[string]interface{}{"status": "scanning", "info_hash": "abc"})
+	store1.Set("done", map[string]interface{}{"status": "completed"})
+	store1.Set("torrent", map[string]interface{}{"status": "downloading", "info_hash": "def", "title": "Torrent Game"})
+	store1.Set("nzb", map[string]interface{}{"status": "downloading", "source_client": "nzbget", "nzb_id": float64(12)})
+	store1.Set("sab", map[string]interface{}{"status": "downloading", "source_client": "sabnzbd", "nzo_id": "SABnzbd_nzo_1"})
 	store1.Close()
 
-	// Reopen - downloading/scanning should become interrupted
 	store2, _ := New(dbPath)
+
+	gotDDL, _ := store2.Get("ddl")
+	if gotDDL["status"] != "interrupted" {
+		t.Errorf("in-process download should be interrupted, got %v", gotDDL["status"])
+	}
+	if gotDDL["error"] != "Interrupted by restart" {
+		t.Errorf("error=%v, want Interrupted by restart", gotDDL["error"])
+	}
+	gotScan, _ := store2.Get("scan")
+	if gotScan["status"] != "interrupted" {
+		t.Errorf("scanning job should be interrupted, got %v", gotScan["status"])
+	}
+	gotDone, _ := store2.Get("done")
+	if gotDone["status"] != "completed" {
+		t.Errorf("completed job should stay completed, got %v", gotDone["status"])
+	}
+	gotTorrent, _ := store2.Get("torrent")
+	if gotTorrent["status"] != "downloading" {
+		t.Errorf("client-owned torrent should stay downloading, got %v", gotTorrent["status"])
+	}
+	gotNZB, _ := store2.Get("nzb")
+	if gotNZB["status"] != "downloading" {
+		t.Errorf("NZBGet job should stay downloading, got %v", gotNZB["status"])
+	}
+	gotSAB, _ := store2.Get("sab")
+	if gotSAB["status"] != "downloading" {
+		t.Errorf("SABnzbd job should stay downloading, got %v", gotSAB["status"])
+	}
+
+	// The rewrite has to hit SQLite, or the next boot re-reads "downloading"
+	// and the UI keeps restamping the same in-process rows.
+	store2.Close()
+	store3, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store3.Close()
+	gotDDL, _ = store3.Get("ddl")
+	if gotDDL["status"] != "interrupted" {
+		t.Errorf("interrupted rewrite was not persisted, got %v", gotDDL["status"])
+	}
+	gotTorrent, _ = store3.Get("torrent")
+	if gotTorrent["status"] != "downloading" {
+		t.Errorf("client-owned torrent changed on second boot, got %v", gotTorrent["status"])
+	}
+}
+
+func TestJobStore_LoadNormalizationPreservesUpdatedAt(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	store1, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store1.Set("stale", map[string]interface{}{
+		"status": "completed",
+		"error":  "Interrupted by restart",
+		"title":  "Old Game",
+	})
+	if _, err := store1.db.Exec("UPDATE jobs SET updated_at = 0 WHERE job_id = 'stale'"); err != nil {
+		t.Fatal(err)
+	}
+	store1.Close()
+
+	store2, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer store2.Close()
 
-	got1, _ := store2.Get("job1")
-	if got1["status"] != "interrupted" {
-		t.Errorf("downloading job should be interrupted, got %v", got1["status"])
+	got, ok := store2.Get("stale")
+	if !ok {
+		t.Fatal("expected stale job to load")
 	}
-	got2, _ := store2.Get("job2")
-	if got2["status"] != "interrupted" {
-		t.Errorf("scanning job should be interrupted, got %v", got2["status"])
+	if got["error"] != nil {
+		t.Errorf("error = %#v after load normalization, want nil", got["error"])
 	}
-	got3, _ := store2.Get("job3")
-	if got3["status"] != "completed" {
-		t.Errorf("completed job should stay completed, got %v", got3["status"])
+
+	var updatedAt float64
+	if err := store2.db.QueryRow("SELECT updated_at FROM jobs WHERE job_id = 'stale'").Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAt != 0 {
+		t.Errorf("updated_at = %v after load normalization, want 0 (unchanged)", updatedAt)
+	}
+
+	deleted := store2.Cleanup(1)
+	if deleted != 1 {
+		t.Errorf("Cleanup deleted %d rows, want 1", deleted)
 	}
 }
 
