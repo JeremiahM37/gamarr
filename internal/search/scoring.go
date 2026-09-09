@@ -1,6 +1,7 @@
 package search
 
 import (
+	"sort"
 	"strings"
 
 	"gamarr/internal/models"
@@ -50,6 +51,18 @@ func ScoreResults(results []*models.SearchResult, query string, platformFilter s
 	return results
 }
 
+// SortByScore puts Minerva hits first, then the rest by score descending.
+// Minerva is a known-good archive torrent; it outranks Prowlarr even when a
+// tracker row has more seeders.
+func SortByScore(results []*models.SearchResult) {
+	sort.SliceStable(results, func(i, j int) bool {
+		if mi, mj := results[i].Indexer == "Minerva", results[j].Indexer == "Minerva"; mi != mj {
+			return mi
+		}
+		return results[i].Score > results[j].Score
+	})
+}
+
 type scoreBreakdown struct {
 	TitleMatch    int
 	PlatformMatch int
@@ -65,7 +78,12 @@ func scoreResult(r *models.SearchResult, query, platformFilter string) scoreBrea
 
 	sb.TitleMatch = scoreTitleMatch(r.Title, query)
 	sb.PlatformMatch = scorePlatformMatch(r.PlatformSlug, platformFilter)
-	sb.SeederScore = scoreSeederCount(r.Seeders, r.SourceType, r.DownloadProtocol)
+	if r.Indexer == "Minerva" {
+		// No live swarm stats on archive magnets; don't score them as dead.
+		sb.SeederScore = 10
+	} else {
+		sb.SeederScore = scoreSeederCount(r.Seeders, r.SourceType, r.DownloadProtocol)
+	}
 	sb.SizeScore = scoreSizeRange(r.Size, r.PlatformSlug)
 	sb.SafetyScore = scoreSafety(r.SafetyScore)
 
