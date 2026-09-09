@@ -163,6 +163,16 @@ func is2xx(code int) bool {
 	return code >= 200 && code < 300
 }
 
+const maxLogBody = 256
+
+func logBody(body []byte) string {
+	s := strings.TrimSpace(string(body))
+	if len(s) <= maxLogBody {
+		return s
+	}
+	return s[:maxLogBody] + "…"
+}
+
 // addAccepted reports whether a torrents/add response indicates the torrent
 // was accepted. qBittorrent <= 5.1 replies 200 with a plain "Ok." body
 // ("Fails." on error); qBittorrent >= 5.2 replies with a JSON body like
@@ -236,14 +246,14 @@ func (c *Client) AddTorrentOpts(torrentURL, title, savePath, category string, pa
 		body, _ := io.ReadAll(resp2.Body)
 		ok := addAccepted(resp2.StatusCode, body)
 		if !ok {
-			slog.Warn("qBittorrent add rejected", "status", resp2.StatusCode, "body", strings.TrimSpace(string(body)))
+			slog.Warn("qBittorrent add rejected", "status", resp2.StatusCode, "body", logBody(body))
 		}
 		return ok
 	}
 	body, _ := io.ReadAll(resp.Body)
 	ok := addAccepted(resp.StatusCode, body)
 	if !ok {
-		slog.Warn("qBittorrent add rejected", "status", resp.StatusCode, "body", strings.TrimSpace(string(body)))
+		slog.Warn("qBittorrent add rejected", "status", resp.StatusCode, "body", logBody(body))
 	}
 	return ok
 }
@@ -251,7 +261,10 @@ func (c *Client) AddTorrentOpts(torrentURL, title, savePath, category string, pa
 // SetFilePriority sets the download priority for the given file indexes.
 // Priority 0 skips the file; 1 is normal.
 func (c *Client) SetFilePriority(hash string, indexes []int, priority int) bool {
-	if hash == "" || len(indexes) == 0 {
+	if hash == "" {
+		return false
+	}
+	if len(indexes) == 0 {
 		return true
 	}
 	c.mu.Lock()
@@ -278,7 +291,7 @@ func (c *Client) SetFilePriority(hash string, indexes []int, priority int) bool 
 // RenameTorrent sets the display name of a torrent in qBittorrent.
 func (c *Client) RenameTorrent(hash, name string) bool {
 	if hash == "" || strings.TrimSpace(name) == "" {
-		return true
+		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
