@@ -87,10 +87,11 @@ func (m *Manager) downloadNZBGet(client *nzbget.Client, nzbURL, title, platf, pl
 	return jobID, nil
 }
 
-// RecoverOrphanedNZBDownloads restarts watchers for persisted NZBGet jobs after
-// a Gamarr restart. NZBGet owns the transfer, so reconnecting the watcher is
-// enough to resume progress tracking and final organization.
+// RecoverOrphanedNZBDownloads restarts watchers for persisted Usenet jobs after
+// a Gamarr restart. The Usenet client owns the transfer, so reconnecting the
+// watcher is enough to resume progress tracking and final organization.
 func (m *Manager) RecoverOrphanedNZBDownloads() {
+	m.recoverOrphanedSABnzbdDownloads()
 	if m.nzbget == nil {
 		return
 	}
@@ -123,6 +124,45 @@ func (m *Manager) RecoverOrphanedNZBDownloads() {
 			"detail": "Recovered NZBGet download; reconnecting watcher...",
 		})
 		go m.watchNZBGetDownload(m.nzbget, item.ID, nzbID, title, platf, platSlug, isPC)
+	}
+}
+
+// recoverOrphanedSABnzbdDownloads is the SABnzbd twin of the NZBGet recovery
+// above. Without it a SABnzbd transfer that spanned a restart is stranded:
+// the job store deliberately keeps client-owned downloads as "downloading"
+// rather than "interrupted", so nothing marks the row failed, and the only
+// watcher was the goroutine that died with the process.
+func (m *Manager) recoverOrphanedSABnzbdDownloads() {
+	if m.sab == nil {
+		return
+	}
+	for _, item := range m.jobs.Items() {
+		status, _ := item.Data["status"].(string)
+		client, _ := item.Data["source_client"].(string)
+		if client != "sabnzbd" || (status != "downloading" && status != "organizing" && status != "interrupted") {
+			continue
+		}
+
+		nzoID, _ := item.Data["nzo_id"].(string)
+		nzoID = strings.TrimSpace(nzoID)
+		if nzoID == "" {
+			m.jobs.UpdateMulti(item.ID, map[string]interface{}{
+				"status": "error",
+				"error":  "Cannot recover SABnzbd download: missing NZO ID",
+			})
+			continue
+		}
+
+		title, _ := item.Data["title"].(string)
+		platf, _ := item.Data["platform"].(string)
+		platSlug, _ := item.Data["platform_slug"].(string)
+		isPC, _ := item.Data["is_pc"].(bool)
+		m.jobs.UpdateMulti(item.ID, map[string]interface{}{
+			"status": "downloading",
+			"error":  nil,
+			"detail": "Recovered SABnzbd download; reconnecting watcher...",
+		})
+		go m.watchSABnzbdDownload(m.sab, item.ID, nzoID, title, platf, platSlug, isPC)
 	}
 }
 

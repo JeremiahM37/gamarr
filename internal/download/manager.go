@@ -30,6 +30,7 @@ import (
 	"gamarr/internal/nzbget"
 	"gamarr/internal/platform"
 	"gamarr/internal/qbit"
+	"gamarr/internal/sabnzbd"
 	"gamarr/internal/safety"
 	"gamarr/internal/search"
 )
@@ -46,6 +47,7 @@ type Manager struct {
 	transmission *TransmissionClient
 	deluge       *DelugeClient
 	nzbget       *nzbget.Client
+	sab          *sabnzbd.Client
 	NotifyFunc   NotifyCallback
 
 	// importing holds the download hashes an import is running for. Two imports
@@ -91,6 +93,10 @@ func New(cfg *config.Config, jobs *db.JobStore, qb *qbit.Client) *Manager {
 	if cfg.HasNZBGet() {
 		mgr.nzbget = nzbget.New(cfg.NZBGetURL, cfg.NZBGetUser, cfg.NZBGetPass)
 		slog.Info("NZBGet client initialized", "url", cfg.NZBGetURL)
+	}
+	if cfg.HasSABnzbd() {
+		mgr.sab = sabnzbd.New(cfg.SABnzbdURL, cfg.SABnzbdAPIKey)
+		slog.Info("SABnzbd client initialized", "url", cfg.SABnzbdURL)
 	}
 
 	return mgr
