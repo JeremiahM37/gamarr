@@ -72,7 +72,7 @@ func (s *JobStore) loadAll() {
 	}
 	defer rows.Close()
 
-	var stale int
+	var staleIDs, normalizedIDs []string
 	for rows.Next() {
 		var jobID, dataStr string
 		if err := rows.Scan(&jobID, &dataStr); err != nil {
@@ -82,17 +82,66 @@ func (s *JobStore) loadAll() {
 		if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
 			continue
 		}
-		status, _ := data["status"].(string)
-		if status == "downloading" || status == "scanning" || status == "organizing" {
+		if jobLostToRestart(data) {
 			data["status"] = "interrupted"
 			data["error"] = "Interrupted by restart"
-			stale++
+			staleIDs = append(staleIDs, jobID)
+		} else if normalizeJobInvariants(data) {
+			normalizedIDs = append(normalizedIDs, jobID)
 		}
 		s.cache[jobID] = data
 	}
-	if len(s.cache) > 0 {
-		slog.Info("restored jobs", "count", len(s.cache), "interrupted", stale)
+	// Persist so cleanup, Clear, and the next boot see the same status the UI does.
+	for _, id := range append(staleIDs, normalizedIDs...) {
+		s.persist(id, copyJob(s.cache[id]))
 	}
+	if len(s.cache) > 0 {
+		slog.Info("restored jobs", "count", len(s.cache), "interrupted", len(staleIDs), "normalized", len(normalizedIDs))
+	}
+}
+
+// jobLostToRestart reports whether this row's work died with the process.
+// A torrent or Usenet client still owns the transfer, so those stay
+// "downloading" and startup recovery reconnects the watcher. Only in-process
+// work (DDL, virus scan, organize) is actually lost.
+func jobLostToRestart(data map[string]interface{}) bool {
+	status, _ := data["status"].(string)
+	switch status {
+	case "scanning", "organizing":
+		return true
+	case "downloading":
+		return !jobClientOwned(data)
+	default:
+		return false
+	}
+}
+
+func jobClientOwned(data map[string]interface{}) bool {
+	if h, _ := data["info_hash"].(string); strings.TrimSpace(h) != "" {
+		return true
+	}
+	if id, _ := data["nzo_id"].(string); strings.TrimSpace(id) != "" {
+		return true
+	}
+	switch n := data["nzb_id"].(type) {
+	case float64:
+		if n > 0 {
+			return true
+		}
+	case int64:
+		if n > 0 {
+			return true
+		}
+	case int:
+		if n > 0 {
+			return true
+		}
+	}
+	switch c, _ := data["source_client"].(string); strings.ToLower(strings.TrimSpace(c)) {
+	case "nzbget", "sabnzbd", "qbittorrent", "transmission", "deluge":
+		return true
+	}
+	return false
 }
 
 // copyJob returns a copy of a job map. Job values are scalars (strings,
@@ -105,12 +154,38 @@ func copyJob(data map[string]interface{}) map[string]interface{} {
 	return cp
 }
 
+func jobStatusErrorLike(status string) bool {
+	switch status {
+	case "error", "interrupted", "dead_letter":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeJobInvariants enforces row shape the UI assumes. Any status that is
+// not an error state must not retain a stale error string from an earlier
+// failure — callers should not have to remember to clear it on recovery.
+// The bool reports whether error was cleared.
+func normalizeJobInvariants(data map[string]interface{}) bool {
+	status, _ := data["status"].(string)
+	if jobStatusErrorLike(status) {
+		return false
+	}
+	if data["error"] != nil {
+		data["error"] = nil
+		return true
+	}
+	return false
+}
+
 // Set stores or updates a job. The input map is copied, so later caller
 // mutations do not affect the store.
 func (s *JobStore) Set(jobID string, data map[string]interface{}) {
 	s.mu.Lock()
-	s.cache[jobID] = copyJob(data)
 	snap := copyJob(data)
+	normalizeJobInvariants(snap)
+	s.cache[jobID] = copyJob(snap)
 	s.mu.Unlock()
 	s.persist(jobID, snap)
 }
@@ -137,6 +212,8 @@ func (s *JobStore) Update(jobID, key string, value interface{}) {
 	}
 	job[key] = value
 	snap := copyJob(job)
+	normalizeJobInvariants(snap)
+	s.cache[jobID] = copyJob(snap)
 	s.mu.Unlock()
 	s.persist(jobID, snap)
 }
@@ -153,6 +230,8 @@ func (s *JobStore) UpdateMulti(jobID string, fields map[string]interface{}) {
 		job[k] = v
 	}
 	snap := copyJob(job)
+	normalizeJobInvariants(snap)
+	s.cache[jobID] = copyJob(snap)
 	s.mu.Unlock()
 	s.persist(jobID, snap)
 }
