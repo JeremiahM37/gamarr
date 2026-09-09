@@ -985,18 +985,11 @@ func buildArchiveEntryFromJobs(hashJobs []struct {
 				CanRetry: j.CanRetry,
 			}
 		}
-		// All hash-grouped jobs were shell entries — return one so the UI can act on it.
-		j := jobToDownloadFile(hashJobs[0])
 		return models.DownloadEntry{
 			Type:     "job",
-			Title:    j.Title,
-			Platform: j.Platform,
-			Status:   j.Status,
-			JobID:    j.JobID,
-			Error:    j.Error,
-			Detail:   j.Detail,
+			Title:    "Archive download",
+			Status:   "downloading",
 			InfoHash: infoHash,
-			CanRetry: j.CanRetry,
 		}
 	}
 	return models.DownloadEntry{
