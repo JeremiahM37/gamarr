@@ -1,7 +1,9 @@
 package sabnzbd
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,42 +26,94 @@ func TestNew_TrailingSlash(t *testing.T) {
 	}
 }
 
+
 func TestAddNZBByURL_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("mode") != "addurl" {
-			t.Errorf("expected mode=addurl, got %q", r.URL.Query().Get("mode"))
+	nzbBody := []byte(`<?xml version="1.0"?><nzb></nzb>`)
+	var sawAddfile bool
+	var gotFilename string
+	mux := http.NewServeMux()
+	// NZB source (Prowlarr/indexer)
+	mux.HandleFunc("/grab", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(nzbBody)
+	})
+	// SABnzbd API
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST addfile, got %s", r.Method)
 		}
-		if r.URL.Query().Get("apikey") != "testkey" {
-			t.Errorf("expected apikey=testkey")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart: %v", err)
 		}
+		if r.FormValue("mode") != "addfile" {
+			t.Errorf("mode=%q, want addfile", r.FormValue("mode"))
+		}
+		if r.FormValue("apikey") != "testkey" {
+			t.Errorf("apikey=%q", r.FormValue("apikey"))
+		}
+		file, hdr, err := r.FormFile("name")
+		if err != nil {
+			t.Fatalf("form file: %v", err)
+		}
+		defer file.Close()
+		gotFilename = hdr.Filename
+		data, _ := io.ReadAll(file)
+		if !bytes.Equal(data, nzbBody) {
+			t.Errorf("nzb payload mismatch")
+		}
+		sawAddfile = true
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":  true,
 			"nzo_ids": []string{"SABnzbd_nzo_abc123"},
 		})
-	}))
+	})
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey")
-	nzoID, err := c.AddNZBByURL("http://example.com/nzb", "Test Game", "games")
+	nzoID, err := c.AddNZBByURL(srv.URL+"/grab", "Test Game", "games")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !sawAddfile {
+		t.Fatal("expected addfile upload to SABnzbd")
 	}
 	if nzoID != "SABnzbd_nzo_abc123" {
 		t.Errorf("nzoID=%q", nzoID)
 	}
+	if gotFilename != "Test Game.nzb" {
+		t.Errorf("filename=%q", gotFilename)
+	}
 }
 
-func TestAddNZBByURL_Error(t *testing.T) {
+func TestAddNZBByURL_FetchError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": false,
-			"error":  "Invalid NZB",
-		})
+		w.WriteHeader(404)
+		w.Write([]byte("missing"))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey")
-	_, err := c.AddNZBByURL("http://bad.com/nzb", "Bad", "games")
+	_, err := c.AddNZBByURL(srv.URL+"/missing.nzb", "Bad", "games")
+	if err == nil {
+		t.Fatal("expected fetch error")
+	}
+}
+
+func TestAddNZBByURL_Error(t *testing.T) {
+	nzbBody := []byte(`<?xml version="1.0"?><nzb></nzb>`)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/grab", func(w http.ResponseWriter, r *http.Request) { w.Write(nzbBody) })
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": false,
+			"error":  "Invalid NZB",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey")
+	_, err := c.AddNZBByURL(srv.URL+"/grab", "Bad", "games")
 	if err == nil {
 		t.Error("expected error for failed status")
 	}
