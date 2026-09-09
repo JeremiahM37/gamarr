@@ -281,10 +281,7 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 	dest, ok := m.nzbDestPath(storagePath, platSlug, isPC)
 	if !ok {
 		slog.Warn("no platform detected, left in staging", "title", sanitizeLog(title), "path", sanitizeLog(storagePath))
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed",
-			"detail": "Downloaded (unknown platform, left in staging)",
-		})
+		m.jobs.UpdateMulti(jobID, jobCompleted("Downloaded (unknown platform, left in staging)"))
 		return
 	}
 	if isPC {
@@ -389,10 +386,7 @@ func (m *Manager) completeNZBOrganize(jobID, dest, title, platf, platSlug string
 	if !isPC {
 		label = fmt.Sprintf("RomM (%s)", platf)
 	}
-	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status": "completed",
-		"detail": importDetail(mode, label),
-	})
+	m.jobs.UpdateMulti(jobID, jobCompleted(importDetail(mode, label)))
 	writeMetadataSidecar(dest, title, platf, platSlug, isPC, "nzb")
 	m.TrackInLibrary(title, platf, platSlug, isPC, dest, 0, "nzb", sourceClient, "nzb:"+dest)
 	m.jobs.LogActivity("download_completed", title, fmt.Sprintf("NZB to %s", label), jobID, nil)
@@ -433,7 +427,7 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 	if !found {
 		return false, "The download client no longer holds this torrent"
 	}
-	if torrent.Progress < 1.0 {
+	if !m.jobFileReady(job, torrent) {
 		return false, "That download has not finished yet"
 	}
 

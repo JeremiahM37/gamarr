@@ -408,7 +408,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 
 	// Search all sources concurrently
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		slug := platformFilter
@@ -438,6 +438,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			slug = ""
 		}
 		results := search.SearchVimm(s.cfg.Sources, query, slug)
+		mu.Lock()
+		allResults = append(allResults, results...)
+		mu.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		slug := platformFilter
+		if slug == "all" {
+			slug = ""
+		}
+		results := search.SearchMinerva(s.cfg.Sources, query, slug)
 		mu.Lock()
 		allResults = append(allResults, results...)
 		mu.Unlock()
@@ -497,10 +508,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		r.Score += boost
 	}
 
-	// Sort by score descending
-	sort.SliceStable(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
+	search.SortByScore(results)
 
 	// Cross-reference with library for duplicate detection
 	libraryMap := s.mgr.Jobs().GetAllLibraryTitles()
@@ -526,6 +534,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		{"name": "prowlarr", "label": "Prowlarr", "color": "#f97316", "source_type": "torrent", "enabled": s.cfg.HasProwlarr(), "indexers": prowlarrIndexers},
 		{"name": "myrient", "label": "Myrient", "color": "#10b981", "source_type": "ddl", "enabled": true},
 		{"name": "vimm", "label": "Vimm's Lair", "color": "#6366f1", "source_type": "ddl", "enabled": true},
+		{"name": "minerva", "label": "Minerva", "color": "#14b8a6", "source_type": "torrent", "enabled": true},
 	}
 
 	writeJSON(w, 200, map[string]interface{}{
@@ -573,6 +582,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		{"name": "prowlarr", "label": "Prowlarr", "color": "#f97316", "source_type": "torrent", "enabled": s.cfg.HasProwlarr()},
 		{"name": "myrient", "label": "Myrient", "color": "#10b981", "source_type": "ddl", "enabled": true},
 		{"name": "vimm", "label": "Vimm's Lair", "color": "#6366f1", "source_type": "ddl", "enabled": true},
+		{"name": "minerva", "label": "Minerva", "color": "#14b8a6", "source_type": "torrent", "enabled": true},
 	}
 	// Attach health data to each source
 	for _, src := range sourceMeta {
@@ -681,90 +691,101 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 	}
 	jobs := s.mgr.Jobs()
 
-	for _, t := range torrents {
-		progress := float64(int(t.Progress*1000)) / 10.0
-		speed := search.HumanSize(t.DLSpeed) + "/s"
+	for _, tor := range torrents {
+		progress := float64(int(tor.Progress*1000)) / 10.0
+		speed := search.HumanSize(tor.DLSpeed) + "/s"
 
-		// Try to match to a job
-		var matchedJob struct {
+		// Prefer every job that recorded this infohash (Minerva archive magnets
+		// share one hash across many titles). Fall back to a single title match
+		// only when no hash-bound job claims the torrent.
+		var hashJobs []struct {
 			ID   string
 			Data map[string]interface{}
 		}
-		// Use the same matcher the watcher does. This used to compare titles by
-		// substring only, which never matches a repack - the job carries the
-		// release title and the torrent its own name - so the torrent and its job
-		// were both emitted and the UI drew two cards for one download.
-		found := false
+		var titleJob *struct {
+			ID   string
+			Data map[string]interface{}
+		}
 		for _, item := range jobs.Items() {
-			// One job belongs to one torrent. A job with no infohash falls back to
-			// a substring match on the title, which two torrents in the category
-			// can both satisfy, and merging it twice draws the same job as two
-			// cards - the duplicate this endpoint is meant to stop.
 			if matchedJobIDs[item.ID] {
 				continue
 			}
 			jobTitle, _ := item.Data["title"].(string)
 			jobHash, _ := item.Data["info_hash"].(string)
-			if download.JobMatchesTorrent(jobHash, jobTitle, t.Hash, t.Name) {
-				matchedJob = item
-				found = true
-				break
+			if jobHash != "" {
+				if strings.EqualFold(jobHash, tor.Hash) {
+					hashJobs = append(hashJobs, item)
+				}
+				continue
+			}
+			if titleJob == nil && download.JobMatchesTorrent(jobHash, jobTitle, tor.Hash, tor.Name) {
+				j := item
+				titleJob = &j
 			}
 		}
 
-		if found {
-			matchedJobIDs[matchedJob.ID] = true
-			jStatus, _ := matchedJob.Data["status"].(string)
-			displayStatus := jStatus
-			if jStatus == "downloading" {
-				if mapped, ok := statusMap[t.State]; ok {
-					displayStatus = mapped
-				}
+		switch {
+		case len(hashJobs) > 1:
+			for _, j := range hashJobs {
+				matchedJobIDs[j.ID] = true
 			}
-			platf, _ := matchedJob.Data["platform"].(string)
-			errMsg, _ := matchedJob.Data["error"].(string)
-			detail, _ := matchedJob.Data["detail"].(string)
-			infoHash, _ := matchedJob.Data["info_hash"].(string)
-
-			downloads = append(downloads, models.DownloadEntry{
-				Type:     "job",
-				Title:    jTitle(matchedJob.Data),
-				Platform: platf,
-				Status:   displayStatus,
-				JobID:    matchedJob.ID,
-				Error:    errMsg,
-				Detail:   detail,
-				Progress: progress,
-				Size:     search.HumanSize(t.TotalSize),
-				Speed:    speed,
-				ETA:      t.ETA,
-				Hash:     t.Hash,
-				InfoHash: infoHash,
-				CanRetry: jobCanRetry(matchedJob.Data),
-			})
-		} else {
-			status := t.State
-			if mapped, ok := statusMap[t.State]; ok {
+			downloads = append(downloads, buildArchiveEntry(s, tor, hashJobs, statusMap, progress, speed))
+		case len(hashJobs) == 1:
+			matchedJobIDs[hashJobs[0].ID] = true
+			downloads = append(downloads, buildMergedJobEntry(s, hashJobs[0], tor, statusMap, progress, speed))
+		case titleJob != nil:
+			matchedJobIDs[titleJob.ID] = true
+			downloads = append(downloads, buildMergedJobEntry(s, *titleJob, tor, statusMap, progress, speed))
+		default:
+			status := tor.State
+			if mapped, ok := statusMap[tor.State]; ok {
 				status = mapped
 			}
 			downloads = append(downloads, models.DownloadEntry{
 				Type:     "torrent",
-				Title:    t.Name,
+				Title:    tor.Name,
 				Progress: progress,
 				Status:   status,
-				Size:     search.HumanSize(t.TotalSize),
+				Size:     search.HumanSize(tor.TotalSize),
 				Speed:    speed,
-				ETA:      t.ETA,
-				Hash:     t.Hash,
+				ETA:      tor.ETA,
+				Hash:     tor.Hash,
 			})
 		}
 	}
 
-	// Unmatched jobs
+	// Unmatched jobs — group leftovers that share an infohash into one card.
+	byHash := map[string][]struct {
+		ID   string
+		Data map[string]interface{}
+	}{}
+	var orphans []struct {
+		ID   string
+		Data map[string]interface{}
+	}
 	for _, item := range jobs.Items() {
 		if matchedJobIDs[item.ID] {
 			continue
 		}
+		infoHash, _ := item.Data["info_hash"].(string)
+		if infoHash != "" {
+			key := strings.ToLower(infoHash)
+			byHash[key] = append(byHash[key], item)
+			continue
+		}
+		orphans = append(orphans, item)
+	}
+	for _, group := range byHash {
+		if len(group) > 1 {
+			for _, j := range group {
+				matchedJobIDs[j.ID] = true
+			}
+			downloads = append(downloads, buildArchiveEntryFromJobs(group))
+			continue
+		}
+		orphans = append(orphans, group...)
+	}
+	for _, item := range orphans {
 		platf, _ := item.Data["platform"].(string)
 		status, _ := item.Data["status"].(string)
 		errMsg, _ := item.Data["error"].(string)
@@ -785,6 +806,294 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, map[string]interface{}{"downloads": downloads})
+}
+
+func buildMergedJobEntry(s *Server, matchedJob struct {
+	ID   string
+	Data map[string]interface{}
+}, tor qbit.Torrent, statusMap map[string]string, progress float64, speed string) models.DownloadEntry {
+	jStatus, _ := matchedJob.Data["status"].(string)
+	displayStatus := jStatus
+	if jStatus == "downloading" {
+		if mapped, ok := statusMap[tor.State]; ok {
+			displayStatus = mapped
+		}
+	}
+	platf, _ := matchedJob.Data["platform"].(string)
+	errMsg, _ := matchedJob.Data["error"].(string)
+	detail, _ := matchedJob.Data["detail"].(string)
+	infoHash, _ := matchedJob.Data["info_hash"].(string)
+	return models.DownloadEntry{
+		Type:     "job",
+		Title:    jTitle(matchedJob.Data),
+		Platform: platf,
+		Status:   displayStatus,
+		JobID:    matchedJob.ID,
+		Error:    errMsg,
+		Detail:   detail,
+		Progress: mergedJobProgress(s, matchedJob, tor, progress),
+		Size:     search.HumanSize(tor.TotalSize),
+		Speed:    speed,
+		ETA:      tor.ETA,
+		Hash:     tor.Hash,
+		InfoHash: infoHash,
+		CanRetry: jobCanRetry(matchedJob.Data),
+	}
+}
+
+func mergedJobProgress(s *Server, matchedJob struct {
+	ID   string
+	Data map[string]interface{}
+}, tor qbit.Torrent, torrentProgress float64) float64 {
+	title := jTitle(matchedJob.Data)
+	if title == "" || strings.EqualFold(title, tor.Name) || isArchiveShellTitle(title, tor.Name) {
+		return torrentProgress
+	}
+	if !isArchiveROMTitle(title) {
+		return torrentProgress
+	}
+	status, _ := matchedJob.Data["status"].(string)
+	if status == "completed" || status == "completed_unorganized" {
+		return 100
+	}
+	if !s.cfg.HasQBittorrent() {
+		return 0
+	}
+	if f, ok := download.TorrentFileForTitle(s.mgr.QB().GetTorrentFiles(tor.Hash), title); ok {
+		return float64(int(f.Progress*1000)) / 10.0
+	}
+	return 0
+}
+
+func isArchiveROMTitle(title string) bool {
+	lower := strings.ToLower(title)
+	for _, ext := range []string{".zip", ".7z", ".rar", ".nsp", ".xci", ".iso"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildArchiveEntry(s *Server, tor qbit.Torrent, hashJobs []struct {
+	ID   string
+	Data map[string]interface{}
+}, statusMap map[string]string, progress float64, speed string) models.DownloadEntry {
+	infoHash, _ := hashJobs[0].Data["info_hash"].(string)
+	var filesList []qbit.TorrentFile
+	if s.cfg.HasQBittorrent() {
+		filesList = s.mgr.QB().GetTorrentFiles(tor.Hash)
+	}
+	files := make([]models.DownloadFile, 0, len(hashJobs))
+	var wantedBytes int64
+	for _, j := range hashJobs {
+		df := jobToDownloadFile(j)
+		if isArchiveShellTitle(df.Title, tor.Name) {
+			continue
+		}
+		if f, ok := download.TorrentFileForTitle(filesList, df.Title); ok {
+			df.Progress = float64(int(f.Progress*1000)) / 10.0
+			df.Size = search.HumanSize(f.Size)
+			wantedBytes += f.Size
+		} else if df.Status == "completed" || df.Status == "completed_unorganized" {
+			df.Progress = 100
+		}
+		files = append(files, df)
+	}
+	progress = archiveEntryProgress(files, progress)
+	if len(files) == 0 {
+		status := tor.State
+		if mapped, ok := statusMap[tor.State]; ok {
+			status = mapped
+		}
+		return models.DownloadEntry{
+			Type:     "torrent",
+			Title:    tor.Name,
+			Progress: progress,
+			Status:   status,
+			Size:     search.HumanSize(tor.TotalSize),
+			Speed:    speed,
+			ETA:      tor.ETA,
+			Hash:     tor.Hash,
+			InfoHash: infoHash,
+		}
+	}
+	if len(files) == 1 {
+		j := files[0]
+		return models.DownloadEntry{
+			Type:     "job",
+			Title:    j.Title,
+			Platform: j.Platform,
+			Status:   j.Status,
+			JobID:    j.JobID,
+			Error:    j.Error,
+			Detail:   j.Detail,
+			Progress: j.Progress,
+			Size:     firstNonEmpty(j.Size, search.HumanSize(tor.TotalSize)),
+			Speed:    speed,
+			ETA:      tor.ETA,
+			Hash:     tor.Hash,
+			InfoHash: infoHash,
+			CanRetry: j.CanRetry,
+		}
+	}
+	status := archiveStatus(files, tor.State, statusMap)
+	size := search.HumanSize(tor.TotalSize)
+	if wantedBytes > 0 {
+		size = search.HumanSize(wantedBytes)
+	}
+	return models.DownloadEntry{
+		Type:     "archive",
+		Title:    tor.Name,
+		Status:   status,
+		Detail:   fmt.Sprintf("%d titles", len(files)),
+		Progress: progress,
+		Size:     size,
+		Speed:    speed,
+		ETA:      tor.ETA,
+		Hash:     tor.Hash,
+		InfoHash: infoHash,
+		Files:    files,
+	}
+}
+
+func buildArchiveEntryFromJobs(hashJobs []struct {
+	ID   string
+	Data map[string]interface{}
+}) models.DownloadEntry {
+	files := make([]models.DownloadFile, 0, len(hashJobs))
+	for _, j := range hashJobs {
+		df := jobToDownloadFile(j)
+		if isArchiveShellTitle(df.Title, "") {
+			continue
+		}
+		files = append(files, df)
+	}
+	infoHash, _ := hashJobs[0].Data["info_hash"].(string)
+	if len(files) <= 1 {
+		if len(files) == 1 {
+			j := files[0]
+			return models.DownloadEntry{
+				Type:     "job",
+				Title:    j.Title,
+				Platform: j.Platform,
+				Status:   j.Status,
+				JobID:    j.JobID,
+				Error:    j.Error,
+				Detail:   j.Detail,
+				InfoHash: infoHash,
+				CanRetry: j.CanRetry,
+			}
+		}
+		// All hash-grouped jobs were shell entries — return one so the UI can act on it.
+		j := jobToDownloadFile(hashJobs[0])
+		return models.DownloadEntry{
+			Type:     "job",
+			Title:    j.Title,
+			Platform: j.Platform,
+			Status:   j.Status,
+			JobID:    j.JobID,
+			Error:    j.Error,
+			Detail:   j.Detail,
+			InfoHash: infoHash,
+			CanRetry: j.CanRetry,
+		}
+	}
+	return models.DownloadEntry{
+		Type:     "archive",
+		Title:    "Archive download",
+		Status:   archiveStatus(files, "", nil),
+		Detail:   fmt.Sprintf("%d titles", len(files)),
+		InfoHash: infoHash,
+		Files:    files,
+	}
+}
+
+func archiveEntryProgress(files []models.DownloadFile, fallback float64) float64 {
+	if len(files) == 0 {
+		return fallback
+	}
+	var sum float64
+	for _, f := range files {
+		sum += f.Progress
+	}
+	return float64(int(sum/float64(len(files))*10)) / 10.0
+}
+
+func isArchiveShellTitle(jobTitle, torrentName string) bool {
+	title := strings.TrimSpace(jobTitle)
+	if title == "" {
+		return true
+	}
+	if torrentName != "" && strings.EqualFold(title, torrentName) {
+		return true
+	}
+	// Known Minerva archive display names.
+	switch strings.ToLower(title) {
+	case "minerva_myrient", "minerva myrient", "archive download":
+		return true
+	}
+	return false
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func jobToDownloadFile(j struct {
+	ID   string
+	Data map[string]interface{}
+}) models.DownloadFile {
+	platf, _ := j.Data["platform"].(string)
+	status, _ := j.Data["status"].(string)
+	errMsg, _ := j.Data["error"].(string)
+	detail, _ := j.Data["detail"].(string)
+	return models.DownloadFile{
+		Title:    jTitle(j.Data),
+		Platform: platf,
+		Status:   status,
+		JobID:    j.ID,
+		Error:    errMsg,
+		Detail:   detail,
+		CanRetry: jobCanRetry(j.Data),
+	}
+}
+
+func archiveStatus(files []models.DownloadFile, torState string, statusMap map[string]string) string {
+	active, errored, done := 0, 0, 0
+	for _, f := range files {
+		switch f.Status {
+		case "error", "interrupted", "dead_letter":
+			errored++
+		case "completed", "completed_unorganized":
+			done++
+		default:
+			active++
+		}
+	}
+	if active > 0 {
+		if statusMap != nil {
+			if mapped, ok := statusMap[torState]; ok {
+				return mapped
+			}
+		}
+		return "downloading"
+	}
+	if errored > 0 && done == 0 {
+		return "error"
+	}
+	if done > 0 && errored > 0 {
+		return "downloading"
+	}
+	if done > 0 {
+		return "completed"
+	}
+	return "downloading"
 }
 
 func jobCanRetry(data map[string]interface{}) bool {
@@ -822,7 +1131,7 @@ func (s *Server) handleClearFinished(w http.ResponseWriter, r *http.Request) {
 	cleared := 0
 	for _, item := range s.mgr.Jobs().Items() {
 		status, _ := item.Data["status"].(string)
-		if status == "completed" || status == "error" {
+		if status == "completed" || status == "error" || status == "interrupted" {
 			s.mgr.Jobs().Delete(item.ID)
 			cleared++
 		}

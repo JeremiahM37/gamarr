@@ -19,7 +19,7 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 ### Search and Discovery
 
 - **Pluggable indexer registry** -- driver kinds (Torznab proxy, DDL archive listing, web-scrape, Minerva browse listing) loaded at runtime from an embedded JSON registry; optionally overrideable via `GAMARR_SOURCES_URL` / `GAMARR_SOURCES_PATH`
-- **Minerva Archive** -- loads the per-system browse page (every title on that console), caches it for an hour, and matches locally. Hits are torrent/magnet, ranked above Prowlarr.
+- **Minerva Archive** -- loads the per-system browse page (every title on that console), caches it for an hour, and matches locally. Hits use the shared console archive magnet; Gamarr selects the matching ROM via qBittorrent file priorities. Ranked above Prowlarr.
 - **24 gaming platforms** -- PC, Switch, PS1-PS5, PSP, PS Vita, Xbox, Xbox 360, Wii, Wii U, NES, SNES, N64, GameCube, Game Boy, GBA, DS, 3DS, Genesis, Saturn, Dreamcast, Atari 2600
 - **Search scoring** -- composite 0-100 score based on title match, platform relevance, seeder count, file size, and safety analysis
 - **Safety scoring** -- analyzes file names, sizes, and scene group trust to detect malware, crack-only uploads, and suspicious downloads

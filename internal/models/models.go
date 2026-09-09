@@ -55,9 +55,22 @@ type Job struct {
 	CompletedAt  string `json:"completed_at,omitempty"`
 }
 
+// DownloadFile is one selected ROM/job inside a multi-file archive torrent card.
+type DownloadFile struct {
+	Title    string  `json:"title"`
+	Platform string  `json:"platform,omitempty"`
+	Status   string  `json:"status"`
+	JobID    string  `json:"job_id,omitempty"`
+	Error    string  `json:"error,omitempty"`
+	Detail   string  `json:"detail,omitempty"`
+	Progress float64 `json:"progress,omitempty"` // 0–100
+	Size     string  `json:"size,omitempty"`
+	CanRetry bool    `json:"can_retry,omitempty"`
+}
+
 // DownloadEntry represents an entry in the downloads list (merged job + torrent info).
 type DownloadEntry struct {
-	Type     string  `json:"type"` // "job" or "torrent"
+	Type     string  `json:"type"` // "job", "torrent", or "archive"
 	Title    string  `json:"title"`
 	Platform string  `json:"platform,omitempty"`
 	Status   string  `json:"status"`
@@ -77,6 +90,8 @@ type DownloadEntry struct {
 	// need not receive a Vimm vault ID or direct URL merely to decide whether to
 	// show the action.
 	CanRetry bool `json:"can_retry,omitempty"`
+	// Files lists per-ROM jobs when several share one archive torrent.
+	Files []DownloadFile `json:"files,omitempty"`
 }
 
 // DownloadRequest is the POST body for /api/download.
@@ -89,6 +104,7 @@ type DownloadRequest struct {
 	PlatformSlug     string `json:"platform_slug"`
 	IsPC             bool   `json:"is_pc"`
 	SourceType       string `json:"source_type"`
+	Indexer          string `json:"indexer"`
 	VimmID           string `json:"vimm_id"`
 	DownloadProtocol string `json:"download_protocol"` // "torrent" or "nzb"
 }

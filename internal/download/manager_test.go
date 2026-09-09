@@ -855,6 +855,87 @@ func TestRecoverOrphanedTorrentsLeavesImportedGamesAlone(t *testing.T) {
 	}
 }
 
+func TestDownloadTorrentDedupsActiveArchiveJob(t *testing.T) {
+	const (
+		hash  = "minerva-hash"
+		title = "Trip World (Europe).zip"
+	)
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	qm.setTorrents([]qbit.Torrent{{Name: "Game Boy", Hash: hash, Progress: 0.2}})
+	m := New(cfg, jobs, qm.client())
+
+	first, err := m.DownloadTorrent("magnet:x", hash, title, "Game Boy", "gb", false, true)
+	if err != nil {
+		t.Fatalf("first DownloadTorrent: %v", err)
+	}
+	second, err := m.DownloadTorrent("magnet:x", hash, title, "Game Boy", "gb", false, true)
+	if err != nil {
+		t.Fatalf("second DownloadTorrent: %v", err)
+	}
+	if first != second {
+		t.Errorf("job IDs = %q and %q, want the same active archive job", first, second)
+	}
+	if n := len(jobs.Items()); n != 1 {
+		t.Fatalf("%d job rows, want 1", n)
+	}
+}
+
+func TestRecoverOrphanedTorrentsStartsWatcherForArchiveROMJob(t *testing.T) {
+	const hash = "gb-recover"
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	qm.setTorrents([]qbit.Torrent{{Name: "Game Boy", Hash: hash, Progress: 0.4}})
+	m := New(cfg, jobs, qm.client())
+	jobs.Set("rom-job", map[string]interface{}{
+		"status": "downloading", "title": "Trip World (Europe).zip",
+		"info_hash": hash, "platform": "Game Boy", "platform_slug": "gb",
+	})
+
+	m.RecoverOrphanedTorrents()
+
+	waitFor(t, minPollTimeout, "watcher claim for archive ROM job", func() bool {
+		_, held := m.watching.Load(hash)
+		return held
+	})
+}
+
+func TestImportFinishedTorrentGiveUpSetsErrorField(t *testing.T) {
+	setImportRetries(t, 2, time.Millisecond)
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	m := New(cfg, jobs, qm.client())
+
+	hash := "give-up-hash"
+	content := filepath.Join(cfg.QBSavePath, "Never Lands")
+	qm.setTorrents([]qbit.Torrent{{
+		Name: "Never Lands", Hash: hash, Progress: 1.0, ContentPath: content,
+	}})
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading", "title": "Never Lands", "info_hash": hash})
+
+	m.importFinishedTorrent("job watch", jobID, qbit.Torrent{
+		Name: "Never Lands", Hash: hash, Progress: 1.0, ContentPath: content,
+	}, "PC", "", true)
+
+	job, _ := jobs.Get(jobID)
+	if status, _ := job["status"].(string); status != "error" {
+		t.Fatalf("status = %q, want error", status)
+	}
+	errMsg, _ := job["error"].(string)
+	if !strings.Contains(errMsg, "Gave up after 2 attempts") {
+		t.Errorf("error = %q, want give-up message in error field", errMsg)
+	}
+}
+
 func TestWatchGameTorrentRunsOneWatcherPerTorrent(t *testing.T) {
 	cfg := newTestConfig(t)
 	jobs := newTestJobs(t)
