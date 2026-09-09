@@ -48,7 +48,10 @@ func (m *Manager) downloadSABnzbd(sab *sabnzbd.Client, nzbURL, title, platf, pla
 		})
 		return jobID, nil
 	}
-	m.jobs.Update(jobID, "detail", "Downloading via Usenet...")
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{
+		"detail": "Downloading via Usenet...",
+		"nzo_id": nzoID,
+	})
 
 	go m.watchSABnzbdDownload(sab, jobID, nzoID, title, platf, platSlug, isPC)
 	return jobID, nil
@@ -84,10 +87,11 @@ func (m *Manager) downloadNZBGet(client *nzbget.Client, nzbURL, title, platf, pl
 	return jobID, nil
 }
 
-// RecoverOrphanedNZBDownloads restarts watchers for persisted NZBGet jobs after
-// a Gamarr restart. NZBGet owns the transfer, so reconnecting the watcher is
-// enough to resume progress tracking and final organization.
+// RecoverOrphanedNZBDownloads restarts watchers for persisted Usenet jobs after
+// a Gamarr restart. The Usenet client owns the transfer, so reconnecting the
+// watcher is enough to resume progress tracking and final organization.
 func (m *Manager) RecoverOrphanedNZBDownloads() {
+	m.recoverOrphanedSABnzbdDownloads()
 	if m.nzbget == nil {
 		return
 	}
@@ -95,7 +99,9 @@ func (m *Manager) RecoverOrphanedNZBDownloads() {
 	for _, item := range m.jobs.Items() {
 		status, _ := item.Data["status"].(string)
 		client, _ := item.Data["source_client"].(string)
-		if client != "nzbget" || (status != "downloading" && status != "organizing") {
+		// interrupted is included because older boots stamped every in-flight
+		// row, including NZBGet jobs the client was still downloading.
+		if client != "nzbget" || (status != "downloading" && status != "organizing" && status != "interrupted") {
 			continue
 		}
 
@@ -112,8 +118,51 @@ func (m *Manager) RecoverOrphanedNZBDownloads() {
 		platf, _ := item.Data["platform"].(string)
 		platSlug, _ := item.Data["platform_slug"].(string)
 		isPC, _ := item.Data["is_pc"].(bool)
-		m.jobs.Update(item.ID, "detail", "Recovered NZBGet download; reconnecting watcher...")
+		m.jobs.UpdateMulti(item.ID, map[string]interface{}{
+			"status": "downloading",
+			"error":  nil,
+			"detail": "Recovered NZBGet download; reconnecting watcher...",
+		})
 		go m.watchNZBGetDownload(m.nzbget, item.ID, nzbID, title, platf, platSlug, isPC)
+	}
+}
+
+// recoverOrphanedSABnzbdDownloads is the SABnzbd twin of the NZBGet recovery
+// above. Without it a SABnzbd transfer that spanned a restart is stranded:
+// the job store deliberately keeps client-owned downloads as "downloading"
+// rather than "interrupted", so nothing marks the row failed, and the only
+// watcher was the goroutine that died with the process.
+func (m *Manager) recoverOrphanedSABnzbdDownloads() {
+	if m.sab == nil {
+		return
+	}
+	for _, item := range m.jobs.Items() {
+		status, _ := item.Data["status"].(string)
+		client, _ := item.Data["source_client"].(string)
+		if client != "sabnzbd" || (status != "downloading" && status != "organizing" && status != "interrupted") {
+			continue
+		}
+
+		nzoID, _ := item.Data["nzo_id"].(string)
+		nzoID = strings.TrimSpace(nzoID)
+		if nzoID == "" {
+			m.jobs.UpdateMulti(item.ID, map[string]interface{}{
+				"status": "error",
+				"error":  "Cannot recover SABnzbd download: missing NZO ID",
+			})
+			continue
+		}
+
+		title, _ := item.Data["title"].(string)
+		platf, _ := item.Data["platform"].(string)
+		platSlug, _ := item.Data["platform_slug"].(string)
+		isPC, _ := item.Data["is_pc"].(bool)
+		m.jobs.UpdateMulti(item.ID, map[string]interface{}{
+			"status": "downloading",
+			"error":  nil,
+			"detail": "Recovered SABnzbd download; reconnecting watcher...",
+		})
+		go m.watchSABnzbdDownload(m.sab, item.ID, nzoID, title, platf, platSlug, isPC)
 	}
 }
 
@@ -272,10 +321,7 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 	dest, ok := m.nzbDestPath(storagePath, platSlug, isPC)
 	if !ok {
 		slog.Warn("no platform detected, left in staging", "title", sanitizeLog(title), "path", sanitizeLog(storagePath))
-		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "completed",
-			"detail": "Downloaded (unknown platform, left in staging)",
-		})
+		m.jobs.UpdateMulti(jobID, jobCompleted("Downloaded (unknown platform, left in staging)"))
 		return
 	}
 	if isPC {
@@ -380,10 +426,7 @@ func (m *Manager) completeNZBOrganize(jobID, dest, title, platf, platSlug string
 	if !isPC {
 		label = fmt.Sprintf("RomM (%s)", platf)
 	}
-	m.jobs.UpdateMulti(jobID, map[string]interface{}{
-		"status": "completed",
-		"detail": importDetail(mode, label),
-	})
+	m.jobs.UpdateMulti(jobID, jobCompleted(importDetail(mode, label)))
 	writeMetadataSidecar(dest, title, platf, platSlug, isPC, "nzb")
 	m.TrackInLibrary(title, platf, platSlug, isPC, dest, 0, "nzb", sourceClient, "nzb:"+dest)
 	m.jobs.LogActivity("download_completed", title, fmt.Sprintf("NZB to %s", label), jobID, nil)
@@ -424,7 +467,7 @@ func (m *Manager) RetryJob(jobID string) (bool, string) {
 	if !found {
 		return false, "The download client no longer holds this torrent"
 	}
-	if torrent.Progress < 1.0 {
+	if !m.jobFileReady(job, torrent) {
 		return false, "That download has not finished yet"
 	}
 

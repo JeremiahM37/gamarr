@@ -18,7 +18,7 @@ type LibraryItem struct {
 	FilePath     string `json:"file_path"`
 	FileSize     int64  `json:"file_size"`
 	Source       string `json:"source"`      // "torrent", "ddl", "scan"
-	SourceType   string `json:"source_type"` // "prowlarr", "myrient", "vimm", "manual"
+	SourceType   string `json:"source_type"` // "prowlarr", "myrient", "vimm", "minerva", "manual"
 	SourceID     string `json:"source_id"`   // dedup key (hash, url, etc.)
 	Metadata     string `json:"metadata"`    // JSON blob
 	AddedAt      string `json:"added_at"`

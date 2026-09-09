@@ -189,6 +189,9 @@ func TestDownloadNZBCompletedFlow(t *testing.T) {
 	if !pathExists(filepath.Join(dest, ".gamarr.json")) {
 		t.Error("sidecar not written")
 	}
+	if nzoID, _ := job["nzo_id"].(string); nzoID != sab.nzoID {
+		t.Errorf("nzo_id = %q, want %q so a restart can reconnect the watcher", nzoID, sab.nzoID)
+	}
 }
 
 func TestDownloadNZBFailedFlow(t *testing.T) {
@@ -325,6 +328,41 @@ func TestRecoverOrphanedNZBDownloads(t *testing.T) {
 	if !pathExists(filepath.Join(dest, "rom.gba")) {
 		t.Fatal("recovered NZBGet content was not organized")
 	}
+}
+
+func TestRecoverOrphanedNZBDownloadsResumesInterrupted(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	storage := filepath.Join(t.TempDir(), "Interrupted NZB")
+	writeFileT(t, filepath.Join(storage, "rom.gba"), []byte("rom"))
+
+	mock := newNZBGetMock(t)
+	mock.history = []map[string]interface{}{
+		{"NZBID": mock.addID, "Status": "SUCCESS/UNPACK", "DestDir": storage},
+	}
+	cfg.NZBGetURL = mock.srv.URL
+	cfg.NZBGetCategory = "games"
+
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{
+		"status":        "interrupted",
+		"error":         "Interrupted by restart",
+		"title":         "Interrupted NZB",
+		"platform":      "Game Boy Advance",
+		"platform_slug": "gba",
+		"is_pc":         false,
+		"source_type":   "nzb",
+		"source_client": "nzbget",
+		"nzb_id":        float64(mock.addID),
+	})
+
+	m := New(cfg, jobs, nil)
+	m.RecoverOrphanedNZBDownloads()
+
+	waitFor(t, 5*time.Second, "interrupted NZBGet watcher", func() bool {
+		job, ok := jobs.Get(jobID)
+		return ok && job["status"] == "completed"
+	})
 }
 
 func TestOrganizeNZBDownload(t *testing.T) {
@@ -855,5 +893,75 @@ func TestRefusedImportLeavesAnActionableRow(t *testing.T) {
 	// hash, which renders nothing and refuses if reached any other way.
 	if got, _ := job["info_hash"].(string); got != torrent.Hash {
 		t.Errorf("info_hash = %q, want %q so the row keeps a usable Retry", got, torrent.Hash)
+	}
+}
+
+// A SABnzbd transfer that spanned a restart must be picked back up. The job
+// store keeps client-owned downloads as "downloading" rather than stamping
+// them "interrupted", so without a recovery pass the row is stranded forever:
+// no watcher, no import, and no error for the user to act on.
+func TestRecoverOrphanedSABnzbdDownloads(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	storage := filepath.Join(t.TempDir(), "Recovered SAB")
+	writeFileT(t, filepath.Join(storage, "rom.gba"), []byte("rom"))
+
+	sab := newSabMock(t)
+	sab.histSlots = []map[string]interface{}{
+		{"nzo_id": sab.nzoID, "status": "Completed", "storage": storage},
+	}
+	cfg.SABnzbdURL = sab.srv.URL
+	cfg.SABnzbdAPIKey = "apikey"
+
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{
+		"status":        "downloading",
+		"title":         "Recovered SAB",
+		"platform":      "Game Boy Advance",
+		"platform_slug": "gba",
+		"is_pc":         false,
+		"source_type":   "nzb",
+		"source_client": "sabnzbd",
+		"nzo_id":        sab.nzoID,
+	})
+
+	m := New(cfg, jobs, nil)
+	m.RecoverOrphanedNZBDownloads()
+
+	waitFor(t, 5*time.Second, "recovered SABnzbd watcher", func() bool {
+		job, ok := jobs.Get(jobID)
+		return ok && job["status"] == "completed"
+	})
+	if !pathExists(filepath.Join(cfg.GamesRomsPath, "gba", "Recovered SAB", "rom.gba")) {
+		t.Fatal("recovered SABnzbd content was not organized")
+	}
+}
+
+// A row with no NZO id cannot be reconnected, so it must surface as an error
+// rather than sitting at "downloading" for good.
+func TestRecoverOrphanedSABnzbdDownloadsMissingNZOID(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	sab := newSabMock(t)
+	cfg.SABnzbdURL = sab.srv.URL
+	cfg.SABnzbdAPIKey = "apikey"
+
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{
+		"status":        "downloading",
+		"title":         "No NZO",
+		"source_type":   "nzb",
+		"source_client": "sabnzbd",
+	})
+
+	m := New(cfg, jobs, nil)
+	m.RecoverOrphanedNZBDownloads()
+
+	job, ok := jobs.Get(jobID)
+	if !ok {
+		t.Fatal("job disappeared")
+	}
+	if job["status"] != "error" {
+		t.Errorf("status = %v, want error", job["status"])
 	}
 }

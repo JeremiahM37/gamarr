@@ -348,8 +348,9 @@ func (s *Server) handleDownloadForRequest(w http.ResponseWriter, r *http.Request
 			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", body.InfoHash)
 		}
 		var dlErr error
+		selectFiles := search.IsMinervaArchiveDownload(body.Indexer, body.MagnetURL, url)
 		jobID, dlErr = s.mgr.DownloadTorrent(url, body.InfoHash, body.Title,
-			body.Platform, body.PlatformSlug, body.IsPC)
+			body.Platform, body.PlatformSlug, body.IsPC, selectFiles)
 		if dlErr != nil {
 			writeError(w, http.StatusBadRequest, dlErr.Error())
 			return

@@ -243,7 +243,8 @@ func main() {
 		if url == "" && result.InfoHash != "" {
 			url = fmt.Sprintf("magnet:?xt=urn:btih:%s", result.InfoHash)
 		}
-		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC)
+		selectFiles := search.IsMinervaArchiveDownload(result.Indexer, result.MagnetURL, url)
+		return mgr.DownloadTorrent(url, result.InfoHash, result.Title, result.Platform, result.PlatformSlug, result.IsPC, selectFiles)
 	}
 
 	webhookFn := func() []webhook.WebhookConfig {

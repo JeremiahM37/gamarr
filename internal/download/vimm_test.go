@@ -642,6 +642,7 @@ func TestDDLSourceName(t *testing.T) {
 		{"", "1654", "vimm"},
 		{"http://127.0.0.1:9/files/gb/Tetris.zip", "", "myrient"},
 		{"https://myrient.erista.me/files/No-Intro/x.zip", "", "myrient"},
+		{"https://minerva-archive.org/rom?id=1", "", "minerva"},
 		{"http://127.0.0.1:9/elsewhere/x.zip", "", ""},
 		{"", "", ""},
 	}
