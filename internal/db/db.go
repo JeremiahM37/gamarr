@@ -92,8 +92,13 @@ func (s *JobStore) loadAll() {
 		s.cache[jobID] = data
 	}
 	// Persist so cleanup, Clear, and the next boot see the same status the UI does.
-	for _, id := range append(staleIDs, normalizedIDs...) {
-		s.persist(id, copyJob(s.cache[id]))
+	for _, id := range staleIDs {
+		s.persist(id, copyJob(s.cache[id]), true)
+	}
+	for _, id := range normalizedIDs {
+		// Invariant-only fixes must not refresh updated_at or time-based Cleanup
+		// would never evict old finished rows after repeated restarts.
+		s.persist(id, copyJob(s.cache[id]), false)
 	}
 	if len(s.cache) > 0 {
 		slog.Info("restored jobs", "count", len(s.cache), "interrupted", len(staleIDs), "normalized", len(normalizedIDs))
@@ -187,7 +192,7 @@ func (s *JobStore) Set(jobID string, data map[string]interface{}) {
 	normalizeJobInvariants(snap)
 	s.cache[jobID] = copyJob(snap)
 	s.mu.Unlock()
-	s.persist(jobID, snap)
+	s.persist(jobID, snap, true)
 }
 
 // Get returns a copy of a job by ID. Callers may read or mutate the result
@@ -215,7 +220,7 @@ func (s *JobStore) Update(jobID, key string, value interface{}) {
 	normalizeJobInvariants(snap)
 	s.cache[jobID] = copyJob(snap)
 	s.mu.Unlock()
-	s.persist(jobID, snap)
+	s.persist(jobID, snap, true)
 }
 
 // UpdateMulti updates multiple fields on a job.
@@ -233,7 +238,7 @@ func (s *JobStore) UpdateMulti(jobID string, fields map[string]interface{}) {
 	normalizeJobInvariants(snap)
 	s.cache[jobID] = copyJob(snap)
 	s.mu.Unlock()
-	s.persist(jobID, snap)
+	s.persist(jobID, snap, true)
 }
 
 // Delete removes a job.
@@ -355,18 +360,23 @@ func (s *JobStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *JobStore) persist(jobID string, data map[string]interface{}) {
+func (s *JobStore) persist(jobID string, data map[string]interface{}, touchUpdatedAt bool) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		slog.Error("failed to marshal job", "error", err)
 		return
 	}
+	query := "UPDATE jobs SET data = ? WHERE job_id = ?"
+	if touchUpdatedAt {
+		query = "INSERT OR REPLACE INTO jobs (job_id, data, updated_at) VALUES (?, ?, strftime('%s','now'))"
+	}
 	// Retry on SQLITE_BUSY (lock contention)
 	for attempt := 0; attempt < 5; attempt++ {
-		_, err = s.db.Exec(
-			"INSERT OR REPLACE INTO jobs (job_id, data, updated_at) VALUES (?, ?, strftime('%s','now'))",
-			jobID, string(jsonData),
-		)
+		if touchUpdatedAt {
+			_, err = s.db.Exec(query, jobID, string(jsonData))
+		} else {
+			_, err = s.db.Exec(query, string(jsonData), jobID)
+		}
 		if err == nil {
 			return
 		}
