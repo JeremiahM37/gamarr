@@ -250,7 +250,6 @@ func minervaListingURL(base, platformPath string) string {
 	return strings.TrimRight(base, "/") + "/browse/./" + strings.Join(parts, "/") + "/"
 }
 
-
 func minervaGUID(base string, id int64) string {
 	if id <= 0 {
 		return ""
@@ -265,7 +264,6 @@ func minervaInfoHash(magnet string) string {
 	}
 	return strings.ToLower(m[1])
 }
-
 
 func parseMinervaSize(s string) int64 {
 	m := minervaSizeNum.FindStringSubmatch(s)
