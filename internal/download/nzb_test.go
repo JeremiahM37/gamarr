@@ -74,8 +74,13 @@ func newSabMock(t *testing.T) *sabMock {
 	t.Helper()
 	s := &sabMock{addStatus: true, nzoID: "SABnzbd_nzo_test1"}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Query().Get("mode") {
-		case "addurl":
+		mode := r.URL.Query().Get("mode")
+		if mode == "" && r.Method == http.MethodPost {
+			_ = r.ParseMultipartForm(1 << 20)
+			mode = r.FormValue("mode")
+		}
+		switch mode {
+		case "addurl", "addfile":
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":  s.addStatus,
 				"nzo_ids": []string{s.nzoID},
@@ -95,6 +100,16 @@ func newSabMock(t *testing.T) *sabMock {
 	}))
 	t.Cleanup(s.srv.Close)
 	return s
+}
+
+
+func nzbSourceURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<?xml version="1.0"?><nzb></nzb>`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/game.nzb"
 }
 
 func (s *sabMock) client() *sabnzbd.Client {
@@ -117,7 +132,7 @@ func TestDownloadNZBAddError(t *testing.T) {
 	sab.addError = "invalid api key"
 
 	m := New(cfg, jobs, nil)
-	jobID, err := m.DownloadNZB(sab.client(), "http://x/file.nzb", "Bad Game", "PC", "", true)
+	jobID, err := m.DownloadNZB(sab.client(), nzbSourceURL(t), "Bad Game", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -152,7 +167,7 @@ func TestDownloadNZBCompletedFlow(t *testing.T) {
 	}
 
 	m := New(cfg, jobs, nil)
-	jobID, err := m.DownloadNZB(sab.client(), "http://x/game.nzb", "Usenet Game", "SNES", "snes", false)
+	jobID, err := m.DownloadNZB(sab.client(), nzbSourceURL(t), "Usenet Game", "SNES", "snes", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,6 +186,9 @@ func TestDownloadNZBCompletedFlow(t *testing.T) {
 	if !pathExists(filepath.Join(dest, ".gamarr.json")) {
 		t.Error("sidecar not written")
 	}
+	if nzoID, _ := job["nzo_id"].(string); nzoID != sab.nzoID {
+		t.Errorf("nzo_id = %q, want %q so a restart can reconnect the watcher", nzoID, sab.nzoID)
+	}
 }
 
 func TestDownloadNZBFailedFlow(t *testing.T) {
@@ -182,7 +200,7 @@ func TestDownloadNZBFailedFlow(t *testing.T) {
 	}
 
 	m := New(cfg, jobs, nil)
-	jobID, err := m.DownloadNZB(sab.client(), "http://x/game.nzb", "Doomed", "PC", "", true)
+	jobID, err := m.DownloadNZB(sab.client(), nzbSourceURL(t), "Doomed", "PC", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,6 +325,41 @@ func TestRecoverOrphanedNZBDownloads(t *testing.T) {
 	if !pathExists(filepath.Join(dest, "rom.gba")) {
 		t.Fatal("recovered NZBGet content was not organized")
 	}
+}
+
+func TestRecoverOrphanedNZBDownloadsResumesInterrupted(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	storage := filepath.Join(t.TempDir(), "Interrupted NZB")
+	writeFileT(t, filepath.Join(storage, "rom.gba"), []byte("rom"))
+
+	mock := newNZBGetMock(t)
+	mock.history = []map[string]interface{}{
+		{"NZBID": mock.addID, "Status": "SUCCESS/UNPACK", "DestDir": storage},
+	}
+	cfg.NZBGetURL = mock.srv.URL
+	cfg.NZBGetCategory = "games"
+
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{
+		"status":        "interrupted",
+		"error":         "Interrupted by restart",
+		"title":         "Interrupted NZB",
+		"platform":      "Game Boy Advance",
+		"platform_slug": "gba",
+		"is_pc":         false,
+		"source_type":   "nzb",
+		"source_client": "nzbget",
+		"nzb_id":        float64(mock.addID),
+	})
+
+	m := New(cfg, jobs, nil)
+	m.RecoverOrphanedNZBDownloads()
+
+	waitFor(t, 5*time.Second, "interrupted NZBGet watcher", func() bool {
+		job, ok := jobs.Get(jobID)
+		return ok && job["status"] == "completed"
+	})
 }
 
 func TestOrganizeNZBDownload(t *testing.T) {

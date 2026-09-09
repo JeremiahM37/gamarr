@@ -20,7 +20,8 @@ func deadRegistry(t *testing.T) *sources.Registry {
 	path := filepath.Join(t.TempDir(), "sources.json")
 	body := `{"version":1,
 	  "myrient":{"base_url":"http://127.0.0.1:1/","platform_paths":{}},
-	  "vimm":{"base_url":"http://127.0.0.1:1/","platform_systems":{}}}`
+	  "vimm":{"base_url":"http://127.0.0.1:1/","platform_systems":{}},
+	  "minerva":{"base_url":"http://127.0.0.1:1/","platform_paths":{}}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write registry: %v", err)
 	}

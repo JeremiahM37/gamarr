@@ -133,6 +133,7 @@
     "/api/search": {
       "get": {
         "summary": "Search all configured sources for a game/ROM",
+        "description": "Fans out to Prowlarr, Myrient, Vimm's Lair, and Minerva Archive in parallel. Minerva matches the query against a cached per-system browse listing.",
         "parameters": [
           {"name": "q",        "in": "query", "required": true, "schema": {"type": "string"}, "description": "Search query."},
           {"name": "platform", "in": "query", "required": false, "schema": {"type": "string"}, "description": "Platform slug filter, e.g. 'nes'. Omit or 'all' for cross-platform."}

@@ -343,6 +343,7 @@ function renderResults() {
     const safetyLabel = score >= 70 ? 'Safe' : score >= 40 ? 'Caution' : 'Risky';
     const isDDL = r.source_type === 'ddl';
     const isNZB = r.download_protocol === 'nzb';
+    const isMinerva = r.indexer === 'Minerva';
     const srcBadge = isDDL ? '<span class="px-1.5 py-0.5 text-xs rounded bg-purple-500/20 text-purple-400">DDL</span>' : isNZB ? '<span class="px-1.5 py-0.5 text-xs rounded bg-orange-500/20 text-orange-400">NZB</span>' : '<span class="px-1.5 py-0.5 text-xs rounded bg-blue-500/20 text-blue-400">Torrent</span>';
     const platColor = r.is_pc ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400';
     const warnings = (r.safety_warnings||[]).map(esc).join(' &middot; ');
@@ -357,7 +358,7 @@ function renderResults() {
           <div class="text-sm font-medium text-white break-words leading-snug">${esc(r.title)}</div>
           <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs text-slate-400">
             <span>${esc(r.indexer)}</span>
-            ${!isDDL ? `<span class="text-emerald-400">${r.seeders} seeds</span><span>${r.leechers} leech</span>` : '<span class="text-purple-400">Direct</span>'}
+            ${isDDL ? '<span class="text-purple-400">Direct</span>' : isMinerva ? '' : `<span class="text-emerald-400">${r.seeders} seeds</span><span>${r.leechers} leech</span>`}
             <span>${r.size_human||'?'}</span>
           </div>
           ${warnings ? `<div class="text-xs text-red-400/70 mt-1">${warnings}</div>` : ''}
@@ -420,8 +421,17 @@ async function loadLibrary(page) {
   } catch(e) {}
 }
 
+let lastDownloadsJSON = '';
+const archiveDetailsOpen = {}; // hash -> bool; remember user collapse across polls
 async function pollDownloads() {
-  try { const d = await (await api('/api/downloads')).json(); renderDownloads(d.downloads || []); } catch(e) {}
+  try {
+    const d = await (await api('/api/downloads')).json();
+    const list = d.downloads || [];
+    const payload = JSON.stringify(list);
+    if (payload === lastDownloadsJSON) return;
+    lastDownloadsJSON = payload;
+    renderDownloads(list);
+  } catch(e) {}
 }
 async function updateBadge() {
   try {
@@ -431,33 +441,83 @@ async function updateBadge() {
     if (active > 0) { badge.classList.remove('hidden'); badge.textContent = active; } else badge.classList.add('hidden');
   } catch(e) {}
 }
+function statusChipClass(status) {
+  return {downloading:'bg-blue-500/20 text-blue-400',completed:'bg-emerald-500/20 text-emerald-400',error:'bg-red-500/20 text-red-400',organizing:'bg-yellow-500/20 text-yellow-400',scanning:'bg-purple-500/20 text-purple-400',dead_letter:'bg-red-500/20 text-red-300',interrupted:'bg-orange-500/20 text-orange-400',queued:'bg-slate-700 text-slate-300',metadata:'bg-slate-700 text-slate-300',stalled:'bg-yellow-500/20 text-yellow-400',paused:'bg-slate-700 text-slate-400'}[status] || 'bg-slate-700 text-slate-400';
+}
+function formatEta(eta) {
+  return eta > 0 && eta < 864000 ? (eta > 3600 ? `${Math.floor(eta/3600)}h ${Math.floor((eta%3600)/60)}m` : `${Math.floor(eta/60)}m`) : '';
+}
+function renderDownloadFileRow(f) {
+  const sc = statusChipClass(f.status);
+  const jobId = esc(f.job_id || '');
+  let actions = '';
+  if (['error','interrupted','dead_letter'].includes(f.status) && f.job_id && f.can_retry) actions += `<button data-action="retryJob" data-job-id="${jobId}" class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded hover:bg-yellow-600/30">Retry</button>`;
+  if (f.job_id) actions += `<button data-action="removeJob" data-job-id="${jobId}" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Dismiss</button>`;
+  const hasProg = f.progress != null && f.progress > 0;
+  return `<div class="border-t border-slate-800/80 py-2 first:border-t-0">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0 flex-1">
+        <div class="text-sm text-slate-200 break-words">${esc(f.title)}</div>
+        <div class="flex flex-wrap gap-2 text-xs mt-1">
+          <span class="px-1.5 py-0.5 rounded font-semibold ${sc}">${esc(f.status || '')}</span>
+          ${f.platform ? `<span class="text-slate-500">${esc(f.platform)}</span>` : ''}
+          ${f.size ? `<span class="text-slate-500">${esc(f.size)}</span>` : ''}
+          ${hasProg ? `<span class="text-slate-400">${f.progress}%</span>` : ''}
+        </div>
+        ${hasProg ? `<div class="bg-slate-800 rounded-full h-1 mt-1.5 overflow-hidden"><div class="progress-bar bg-indigo-500 h-full rounded-full" style="width:${f.progress}%"></div></div>` : ''}
+        ${f.detail ? `<div class="text-xs text-slate-500 mt-1">${esc(f.detail)}</div>` : ''}
+        ${f.error ? `<div class="text-xs text-red-400 mt-1">${esc(f.error)}</div>` : ''}
+      </div>
+      <div class="flex gap-1 flex-shrink-0">${actions}</div>
+    </div>
+  </div>`;
+}
 function renderDownloads(downloads) {
   const c = document.getElementById('downloads');
+  // Remember which archive file lists the user collapsed before we wipe the DOM.
+  c.querySelectorAll('details[data-archive-hash]').forEach(el => {
+    archiveDetailsOpen[el.dataset.archiveHash] = el.open;
+  });
   if (!downloads.length) { c.innerHTML = '<div class="text-center py-16 text-slate-500"><div class="text-4xl mb-3">&#128229;</div>No active downloads</div>'; return; }
   c.innerHTML = downloads.map(d => {
-    const sc = {downloading:'bg-blue-500/20 text-blue-400',completed:'bg-emerald-500/20 text-emerald-400',error:'bg-red-500/20 text-red-400',organizing:'bg-yellow-500/20 text-yellow-400',scanning:'bg-purple-500/20 text-purple-400',dead_letter:'bg-red-500/20 text-red-300',interrupted:'bg-orange-500/20 text-orange-400'}[d.status] || 'bg-slate-700 text-slate-400';
+    const files = Array.isArray(d.files) ? d.files : [];
+    const isArchive = d.type === 'archive' || files.length > 1;
+    const sc = statusChipClass(d.status);
     const hasProg = d.progress != null;
     const pctClass = d.progress >= 100 ? 'bg-emerald-500' : d.status === 'error' ? 'bg-red-500' : 'bg-indigo-500';
-    const eta = d.eta > 0 && d.eta < 864000 ? (d.eta > 3600 ? `${Math.floor(d.eta/3600)}h ${Math.floor((d.eta%3600)/60)}m` : `${Math.floor(d.eta/60)}m`) : '';
+    const eta = formatEta(d.eta);
     const hash = esc(d.hash || ''), jobId = esc(d.job_id || '');
     let actions = '';
-    if (d.status === 'completed_unorganized' && d.hash) actions = `<button data-action="organizeTorrent" data-hash="${hash}" data-job-id="${jobId}" class="text-xs bg-indigo-600/20 text-indigo-400 px-2 py-1 rounded hover:bg-indigo-600/30">Organize</button>`;
-    if (['error','interrupted','dead_letter'].includes(d.status) && d.job_id && d.can_retry) actions += `<button data-action="retryJob" data-job-id="${jobId}" class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded hover:bg-yellow-600/30">Retry</button>`;
-    if (d.hash) actions += `<button data-action="removeDownload" data-hash="${hash}" data-job-id="${jobId}" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Remove</button>`;
+    if (!isArchive) {
+      if (d.status === 'completed_unorganized' && d.hash) actions = `<button data-action="organizeTorrent" data-hash="${hash}" data-job-id="${jobId}" class="text-xs bg-indigo-600/20 text-indigo-400 px-2 py-1 rounded hover:bg-indigo-600/30">Organize</button>`;
+      if (['error','interrupted','dead_letter'].includes(d.status) && d.job_id && d.can_retry) actions += `<button data-action="retryJob" data-job-id="${jobId}" class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded hover:bg-yellow-600/30">Retry</button>`;
+    }
+    const jobIds = isArchive ? files.map(f => f.job_id).filter(Boolean).join(',') : jobId;
+    if (d.hash) actions += `<button data-action="removeDownload" data-hash="${hash}" data-job-id="${esc(jobIds)}" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Remove</button>`;
     else if (d.job_id) actions += `<button data-action="removeJob" data-job-id="${jobId}" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10">Dismiss</button>`;
+    const title = isArchive ? (d.title || 'Archive download') : d.title;
+    const fileSummary = isArchive ? `<span class="text-slate-500">${files.length} title${files.length === 1 ? '' : 's'}</span>` : '';
+    const detailsKey = d.hash || d.info_hash || d.title || '';
+    const detailsOpen = archiveDetailsOpen[detailsKey] !== false; // default open
+    const fileList = isArchive ? `<details class="mt-3" data-archive-hash="${esc(detailsKey)}"${detailsOpen ? ' open' : ''}>
+      <summary class="text-xs text-slate-400 cursor-pointer select-none hover:text-slate-300">${files.length} files in this torrent</summary>
+      <div class="mt-2 pl-1">${files.map(renderDownloadFileRow).join('')}</div>
+    </details>` : '';
     return `<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-      <div class="flex items-center justify-between gap-3 mb-2"><span class="text-sm font-medium text-white break-words flex-1">${esc(d.title)}</span><div class="flex gap-1.5 flex-shrink-0">${actions}</div></div>
+      <div class="flex items-center justify-between gap-3 mb-2"><span class="text-sm font-medium text-white break-words flex-1">${esc(title)}</span><div class="flex gap-1.5 flex-shrink-0">${actions}</div></div>
       <div class="flex flex-wrap gap-2 text-xs mb-2">
         <span class="px-2 py-0.5 rounded font-semibold ${sc}">${d.status}</span>
-        ${d.platform ? `<span class="text-slate-500">${esc(d.platform)}</span>` : ''}
+        ${!isArchive && d.platform ? `<span class="text-slate-500">${esc(d.platform)}</span>` : ''}
+        ${fileSummary}
         ${d.size && d.size !== '?' ? `<span class="text-slate-500">${d.size}</span>` : ''}
         ${d.speed && !d.speed.startsWith('0') ? `<span class="text-slate-500">${d.speed}</span>` : ''}
         ${eta ? `<span class="text-slate-500">ETA: ${eta}</span>` : ''}
         ${hasProg ? `<span class="text-slate-400">${d.progress}%</span>` : ''}
       </div>
       ${hasProg ? `<div class="bg-slate-800 rounded-full h-1.5 overflow-hidden"><div class="progress-bar ${pctClass} h-full rounded-full" style="width:${d.progress}%"></div></div>` : ''}
-      ${d.detail ? `<div class="text-xs text-slate-500 mt-1.5">${esc(d.detail)}</div>` : ''}
-      ${d.error ? `<div class="text-xs text-red-400 mt-1">${esc(d.error)}</div>` : ''}
+      ${!isArchive && d.detail ? `<div class="text-xs text-slate-500 mt-1.5">${esc(d.detail)}</div>` : ''}
+      ${!isArchive && d.error ? `<div class="text-xs text-red-400 mt-1">${esc(d.error)}</div>` : ''}
+      ${fileList}
     </div>`;
   }).join('');
 }
@@ -690,7 +750,10 @@ const CLICK_ACTIONS = {
   organizeTorrent: el => organizeTorrent(el.dataset.hash, el.dataset.jobId || ''),
   retryJob: el => retryJob(el.dataset.jobId),
   removeJob: el => removeJob(el.dataset.jobId),
-  removeDownload: el => { removeTorrent(el.dataset.hash); if (el.dataset.jobId) removeJob(el.dataset.jobId); },
+  removeDownload: el => {
+    removeTorrent(el.dataset.hash);
+    (el.dataset.jobId || '').split(',').map(s => s.trim()).filter(Boolean).forEach(id => removeJob(id));
+  },
   wishSearch: el => wishSearch(el.dataset.title),
   deleteWishlist: el => deleteWishlist(+el.dataset.id),
 };

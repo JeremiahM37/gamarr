@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -640,5 +641,117 @@ func TestCookieAuthStillRetriesOnce(t *testing.T) {
 	}
 	if logins < 2 {
 		t.Errorf("logins = %d, want the 403 to trigger a re-login", logins)
+	}
+}
+
+func TestSetFilePriority(t *testing.T) {
+	var gotHash, gotID, gotPrio string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.Write([]byte("Ok."))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/filePrio" {
+			r.ParseForm()
+			gotHash = r.Form.Get("hash")
+			gotID = r.Form.Get("id")
+			gotPrio = r.Form.Get("priority")
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if !c.SetFilePriority("abc", []int{1, 4}, 0) {
+		t.Fatal("SetFilePriority failed")
+	}
+	if gotHash != "abc" || gotID != "1|4" || gotPrio != "0" {
+		t.Fatalf("got hash=%q id=%q prio=%q", gotHash, gotID, gotPrio)
+	}
+}
+
+func TestRenameTorrent(t *testing.T) {
+	var gotHash, gotName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.Write([]byte("Ok."))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/rename" {
+			r.ParseForm()
+			gotHash = r.Form.Get("hash")
+			gotName = r.Form.Get("name")
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if !c.RenameTorrent("abc", "Super Nintendo") {
+		t.Fatal("RenameTorrent failed")
+	}
+	if gotHash != "abc" || gotName != "Super Nintendo" {
+		t.Fatalf("got hash=%q name=%q", gotHash, gotName)
+	}
+}
+
+func TestStartTorrent_FallsBackToResume(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.Write([]byte("Ok."))
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api/v2/torrents/start" {
+			w.WriteHeader(404)
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/resume" {
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if !c.StartTorrent("deadbeef") {
+		t.Fatal("StartTorrent failed")
+	}
+	joined := strings.Join(paths, ",")
+	if !strings.Contains(joined, "/api/v2/torrents/start") || !strings.Contains(joined, "/api/v2/torrents/resume") {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
+func TestAddTorrentOpts_Paused(t *testing.T) {
+	var paused, stopped string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			w.Write([]byte("Ok."))
+			return
+		}
+		if r.URL.Path == "/api/v2/torrents/add" {
+			r.ParseForm()
+			paused = r.Form.Get("paused")
+			stopped = r.Form.Get("stopped")
+			w.Write([]byte("Ok."))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "admin", "pass")
+	if !c.AddTorrentOpts("magnet:?xt=urn:btih:abc", "T", "/dl", "console", true) {
+		t.Fatal("AddTorrentOpts failed")
+	}
+	if paused != "true" || stopped != "true" {
+		t.Fatalf("paused=%q stopped=%q", paused, stopped)
 	}
 }
