@@ -28,6 +28,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, _ *http.Request) {
 		{"name": "prowlarr", "label": "Prowlarr", "status": sourceStatus(s.cfg.HasProwlarr())},
 		{"name": "myrient", "label": "Myrient", "status": "ok"},
 		{"name": "vimm", "label": "Vimm's Lair", "status": "ok"},
+		{"name": "minerva", "label": "Minerva", "status": "ok"},
 	}
 
 	// Total users.

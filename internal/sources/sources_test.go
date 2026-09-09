@@ -18,6 +18,8 @@ func TestDefault_EmbeddedRegistryIsComplete(t *testing.T) {
 		"Myrient.PlatformPaths": len(r.Myrient.PlatformPaths) == 0,
 		"Vimm.BaseURL":          r.Vimm.BaseURL == "",
 		"Vimm.PlatformSystems":  len(r.Vimm.PlatformSystems) == 0,
+		"Minerva.BaseURL":       r.Minerva.BaseURL == "",
+		"Minerva.PlatformPaths": len(r.Minerva.PlatformPaths) == 0,
 	}
 	for field, empty := range checks {
 		if empty {
@@ -31,11 +33,14 @@ func TestDefault_EmbeddedRegistryIsComplete(t *testing.T) {
 	if r.Vimm.PlatformSystems["psx"] != "PS1" {
 		t.Errorf("Vimm.PlatformSystems[psx] missing or wrong: %q", r.Vimm.PlatformSystems["psx"])
 	}
+	if r.Minerva.PlatformPaths["snes"] != "No-Intro/Nintendo - Super Nintendo Entertainment System/" {
+		t.Errorf("Minerva.PlatformPaths[snes] missing or wrong: %q", r.Minerva.PlatformPaths["snes"])
+	}
 }
 
 func TestLoad(t *testing.T) {
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"version":3,"myrient":{"base_url":"https://url-example.test/","platform_paths":{"foo":"bar/"}},"vimm":{"base_url":"https://url-vimm.test/","platform_systems":{"foo":"FOO"}}}`))
+		_, _ = w.Write([]byte(`{"version":3,"myrient":{"base_url":"https://url-example.test/","platform_paths":{"foo":"bar/"}},"vimm":{"base_url":"https://url-vimm.test/","platform_systems":{"foo":"FOO"}},"minerva":{"base_url":"https://url-minerva.test/","platform_paths":{"foo":"bar/"}}}`))
 	}))
 	defer good.Close()
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
@@ -43,7 +48,7 @@ func TestLoad(t *testing.T) {
 
 	dir := t.TempDir()
 	goodFile := filepath.Join(dir, "good.json")
-	_ = os.WriteFile(goodFile, []byte(`{"version":2,"myrient":{"base_url":"https://file-example.test/","platform_paths":{"abc":"def/"}},"vimm":{"base_url":"https://file-vimm.test/","platform_systems":{"abc":"ABC"}}}`), 0o644)
+	_ = os.WriteFile(goodFile, []byte(`{"version":2,"myrient":{"base_url":"https://file-example.test/","platform_paths":{"abc":"def/"}},"vimm":{"base_url":"https://file-vimm.test/","platform_systems":{"abc":"ABC"}},"minerva":{"base_url":"https://file-minerva.test/","platform_paths":{"abc":"def/"}}}`), 0o644)
 	brokenFile := filepath.Join(dir, "broken.json")
 	_ = os.WriteFile(brokenFile, []byte(`{not json`), 0o644)
 
@@ -89,29 +94,37 @@ func TestApplyEnvOverrides(t *testing.T) {
 		envs        map[string]string
 		wantMyrient string // "" => embedded default
 		wantVimm    string
+		wantMinerva string
 	}{
-		{"unset leaves values", nil, "", ""},
-		{"MYRIENT_URL overrides", map[string]string{"MYRIENT_URL": "https://my-override.test/"}, "https://my-override.test/", ""},
-		{"VIMM_URL overrides", map[string]string{"VIMM_URL": "https://vimm-override.test/"}, "", "https://vimm-override.test/"},
-		{"both overridden", map[string]string{"MYRIENT_URL": "https://m.test/", "VIMM_URL": "https://v.test/"}, "https://m.test/", "https://v.test/"},
+		{"unset leaves values", nil, "", "", ""},
+		{"MYRIENT_URL overrides", map[string]string{"MYRIENT_URL": "https://my-override.test/"}, "https://my-override.test/", "", ""},
+		{"VIMM_URL overrides", map[string]string{"VIMM_URL": "https://vimm-override.test/"}, "", "https://vimm-override.test/", ""},
+		{"MINERVA_URL overrides", map[string]string{"MINERVA_URL": "https://minerva-override.test/"}, "", "", "https://minerva-override.test/"},
+		{"all overridden", map[string]string{"MYRIENT_URL": "https://m.test/", "VIMM_URL": "https://v.test/", "MINERVA_URL": "https://n.test/"}, "https://m.test/", "https://v.test/", "https://n.test/"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := Default()
-			origM, origV := r.Myrient.BaseURL, r.Vimm.BaseURL
+			origM, origV, origN := r.Myrient.BaseURL, r.Vimm.BaseURL, r.Minerva.BaseURL
 			r.ApplyEnvOverrides(func(k string) string { return tc.envs[k] })
-			wantM, wantV := tc.wantMyrient, tc.wantVimm
+			wantM, wantV, wantN := tc.wantMyrient, tc.wantVimm, tc.wantMinerva
 			if wantM == "" {
 				wantM = origM
 			}
 			if wantV == "" {
 				wantV = origV
 			}
+			if wantN == "" {
+				wantN = origN
+			}
 			if r.Myrient.BaseURL != wantM {
 				t.Errorf("Myrient.BaseURL = %q, want %q", r.Myrient.BaseURL, wantM)
 			}
 			if r.Vimm.BaseURL != wantV {
 				t.Errorf("Vimm.BaseURL = %q, want %q", r.Vimm.BaseURL, wantV)
+			}
+			if r.Minerva.BaseURL != wantN {
+				t.Errorf("Minerva.BaseURL = %q, want %q", r.Minerva.BaseURL, wantN)
 			}
 		})
 	}
