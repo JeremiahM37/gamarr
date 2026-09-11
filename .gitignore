@@ -22,3 +22,8 @@ gamarr
 e2e/.venv/
 __pycache__/
 .pytest_cache/
+
+# Local verification output and dependency caches
+.verify-artifacts/
+node_modules/
+.venv

@@ -1,6 +1,15 @@
 # Pin the builder to the BUILD platform and cross-compile from it. Go does this
 # natively, so a multi-platform build emulates only the small runtime stage
 # below rather than running the whole compile under QEMU.
+FROM --platform=$BUILDPLATFORM node:20.19-alpine AS frontend-builder
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+COPY web/index.html ../web/index.html
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 # Empty by default, and the -X below is applied only when it is set, so an
@@ -20,6 +29,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+COPY --from=frontend-builder /build/web/static/gamarr-react.js ./web/static/gamarr-react.js
+COPY --from=frontend-builder /build/web/static/gamarr-react.css ./web/static/gamarr-react.css
+COPY --from=frontend-builder /build/web/index.html ./web/index.html
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w ${VERSION:+-X main.Version=$VERSION}" \
     -o /gamarr ./cmd/gamarr/

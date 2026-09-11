@@ -1,0 +1,24 @@
+# Hermetic verification: the Playwright suite starts its own isolated Gamarr
+# process and stubbed download clients, so it never contacts the live service.
+backend: generic
+
+steps:
+  - name: strict React typecheck and production bundle
+    actions:
+      - shell: cd frontend && npm ci && npm run typecheck && npm run build
+    expect:
+      no_log_contains: "error TS"
+
+  - name: Go test suite and candidate build
+    actions:
+      - shell: go test ./... -count=1 && go build ./cmd/gamarr
+    expect:
+      no_log_contains: "FAIL"
+
+  - name: browser journeys against an isolated candidate
+    actions:
+      - shell:
+          cmd: e2e/.venv/bin/pytest -q e2e
+          timeout: 600
+    expect:
+      no_log_contains: "failed"

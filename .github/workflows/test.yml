@@ -11,6 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build the TypeScript frontend
+        run: npm ci --prefix frontend && npm run build --prefix frontend
       - uses: actions/setup-go@v5
         with: {go-version: '1.25.x', cache: false, check-latest: true}
       - name: gofmt
@@ -151,6 +158,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build the TypeScript frontend
+        run: npm ci --prefix frontend && npm run build --prefix frontend
       - uses: actions/setup-go@v5
         with: {go-version: '1.25.x', cache: false, check-latest: true}
       - name: build binary
