@@ -94,10 +94,10 @@ func TestGetCategoriesForPlatform(t *testing.T) {
 		contains []int
 	}{
 		{
-			name:     "PC returns its three categories",
+			name:     "PC includes console-tagged releases",
 			slug:     "pc",
-			wantLen:  3,
-			contains: []int{4000, 100010, 4050},
+			wantLen:  4,
+			contains: []int{4000, 100010, 4050, 1000},
 		},
 		{
 			name:     "Switch still requests 4050 for Nyaa",

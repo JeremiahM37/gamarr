@@ -92,7 +92,7 @@ func DetectPlatform(categories []interface{}) PlatformInfo {
 func GetCategoriesForPlatform(slug string) []int {
 	switch slug {
 	case "pc":
-		return []int{4000, 100010, 4050}
+		return []int{4000, 100010, 4050, 1000}
 	case "switch":
 		// Nyaa has no console categories, so Switch releases there come back as
 		// PC/Games; keep requesting it and let file and title hints classify.
