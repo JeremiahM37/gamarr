@@ -1,0 +1,76 @@
+.spinner {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.tab-content {
+  display: none;
+}
+.tab-content.active {
+  display: block;
+}
+.nav-tab.active {
+  color: #e2e8f0;
+  border-color: #6366f1;
+}
+.input,
+.select {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  color: #f8fafc;
+}
+.input:focus,
+.select:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px #6366f1;
+}
+.primary {
+  background: #4f46e5;
+  color: white;
+  border-radius: 0.5rem;
+  padding: 0.625rem 1rem;
+  font-weight: 600;
+}
+.primary:hover {
+  background: #6366f1;
+}
+.secondary {
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+.secondary:hover {
+  background: #334155;
+}
+@media (max-width: 639px) {
+  .mobile-nav {
+    display: none;
+  }
+  .mobile-nav.open {
+    display: flex;
+    position: absolute;
+    z-index: 40;
+    left: 0;
+    right: 0;
+    top: 100%;
+    flex-direction: column;
+    padding: 0.5rem 1rem;
+    background: #0f172a;
+    border-bottom: 1px solid #1e293b;
+  }
+  .nav-overlay.open {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgb(0 0 0 / 0.45);
+  }
+}

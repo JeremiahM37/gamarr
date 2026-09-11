@@ -15,7 +15,11 @@ SLOW_MS = 15_000  # generous single-action timeout; suite stays fast when green
 
 def _goto_tab(page, tab: str):
     page.locator(f'#main-nav button[data-tab="{tab}"]').click()
-    expect(page.locator(f"#tab-{tab}")).to_be_visible(timeout=SLOW_MS)
+    expected = {
+        "search": "#search-input", "library": "#lib-search", "downloads": "#downloads",
+        "wishlist": "#wish-title", "settings": "#setting-extract",
+    }[tab]
+    expect(page.locator(expected)).to_be_visible(timeout=SLOW_MS)
 
 
 # ── boot & shell ──────────────────────────────────────────────────────────────
@@ -72,7 +76,7 @@ def test_search_no_results_is_clean(ui):
     page.locator("#search-btn").click()
     # Whatever empty-state copy is used, no result rows and no JS errors.
     page.wait_for_timeout(1500)
-    assert page.locator("#results").locator("[id^=dl-btn-]").count() == 0
+    assert page.locator("#results").get_by_role("button", name="DL").count() == 0
 
 
 # ── the flagship journey: DDL download -> organize -> library ─────────────────
@@ -87,7 +91,7 @@ def test_ddl_download_pipeline_to_library(ui, app):
         "Tetris (World) (Rev 1)", timeout=SLOW_MS)
 
     # Download the first result.
-    page.locator("[id^=dl-btn-]").first.click()
+    page.get_by_role("button", name="DL").first.click()
 
     # The job must reach the downloads view and complete. The downloads tab
     # self-refreshes every 5s; expect() retries until the status lands.
@@ -98,7 +102,7 @@ def test_ddl_download_pipeline_to_library(ui, app):
     # worker has even organized the file (seen in CI: the file landed 20 ms
     # after the assertion below had already failed).
     _goto_tab(page, "downloads")
-    card = page.locator("#downloads > div", has_text="Tetris")
+    card = page.locator("#downloads > article", has_text="Tetris")
     expect(card).to_contain_text("completed", timeout=60_000)
 
     # The ROM physically landed in the roms dir.
@@ -117,7 +121,7 @@ def test_wishlist_add_and_delete(ui):
     _goto_tab(page, "wishlist")
     page.locator("#wish-title").fill("Chrono Quest E2E")
     page.locator("#wish-platform").select_option(index=0)
-    page.locator("#tab-wishlist button", has_text=re.compile("add", re.I)).click()
+    page.get_by_role("button", name=re.compile("^add$", re.I)).click()
     expect(page.locator("#wishlist")).to_contain_text("Chrono Quest E2E", timeout=SLOW_MS)
 
     # Delete it again (the item's delete/remove control).
@@ -133,17 +137,17 @@ def test_settings_connection_tests(ui):
     page = ui["page"]
     _goto_tab(page, "settings")
 
-    page.locator("#test-qbittorrent-status").locator("xpath=ancestor-or-self::button").click()
-    expect(page.locator("#test-qbittorrent-status")).to_have_text(
-        re.compile("connected", re.I), timeout=SLOW_MS)
+    page.get_by_role("button", name=re.compile("test qbittorrent", re.I)).click()
+    expect(page.locator("[aria-live=polite]")).to_contain_text(
+        re.compile("qbittorrent connected", re.I), timeout=SLOW_MS)
 
-    page.locator("#test-prowlarr-status").locator("xpath=ancestor-or-self::button").click()
-    expect(page.locator("#test-prowlarr-status")).to_have_text(
-        re.compile("connected", re.I), timeout=SLOW_MS)
+    page.get_by_role("button", name=re.compile("test prowlarr", re.I)).click()
+    expect(page.locator("[aria-live=polite]")).to_contain_text(
+        re.compile("prowlarr connected", re.I), timeout=SLOW_MS)
 
     # SABnzbd is deliberately unconfigured in the harness.
-    page.locator("#test-sabnzbd-status").locator("xpath=ancestor-or-self::button").click()
-    expect(page.locator("#test-sabnzbd-status")).to_have_text(
+    page.get_by_role("button", name=re.compile("test sabnzbd", re.I)).click()
+    expect(page.locator("[aria-live=polite]")).to_contain_text(
         re.compile("fail|not configured", re.I), timeout=SLOW_MS)
 
 

@@ -375,13 +375,10 @@ print("\n=== 16. UI ===")
 def t_ui():
     s, body = raw_get("/")
     assert s == 200 and len(body) > 2000
-    for tab in ["tab-search", "tab-library", "tab-downloads", "tab-wishlist", "tab-settings"]:
-        assert tab in body, f"Missing {tab}"
-    # Frontend is externalized (librarr-style): vendored Tailwind + split JS,
-    # no CDN. Assert the static assets are wired in and actually served.
-    assert "Gamarr" in body and "/static/js/app.js" in body
+    # React is built ahead of time and served by Go alongside local styling.
+    assert "Gamarr" in body and "/static/gamarr-react.js" in body
     assert "cdn.tailwindcss.com" not in body, "UI must not depend on a CDN"
-    for asset in ["/static/js/app.js", "/static/js/vendor/tailwind.js", "/static/css/app.css"]:
+    for asset in ["/static/gamarr-react.js", "/static/gamarr-react.css", "/static/js/vendor/tailwind.js", "/static/css/app.css"]:
         sa, _ = raw_get(asset)
         assert sa == 200, f"{asset} not served"
 test("UI with 5 tabs, static assets, no CDN", t_ui)

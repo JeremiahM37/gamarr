@@ -23,7 +23,7 @@ SLOW_MS = 15_000
 def _open_settings(page, base: str):
     page.goto(base, wait_until="networkidle")
     page.locator('#main-nav button[data-tab="settings"]').click()
-    expect(page.locator("#tab-settings")).to_be_visible(timeout=SLOW_MS)
+    expect(page.locator("#setting-import-mode")).to_be_visible(timeout=SLOW_MS)
 
 
 def _select_mode(page, mode: str):

@@ -18,7 +18,7 @@ SLOW_MS = 15_000
 
 def _search(page, query: str, platform: str = "all"):
     page.locator('#main-nav button[data-tab="search"]').click()
-    expect(page.locator("#tab-search")).to_be_visible(timeout=SLOW_MS)
+    expect(page.locator("#search-input")).to_be_visible(timeout=SLOW_MS)
     page.locator("#search-input").fill(query)
     page.locator("#platform-filter").select_option(platform)
     page.locator("#search-btn").click()

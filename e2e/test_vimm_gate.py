@@ -51,7 +51,7 @@ def test_vimm_download_names_the_gate(ui):
 
     page.locator('#main-nav button[data-tab="downloads"]').click()
     expect(page.locator("#tab-downloads")).to_be_visible(timeout=SLOW_MS)
-    card = page.locator("#downloads > div", has_text=title)
+    card = page.locator("#downloads > article", has_text=title)
     expect(card).to_contain_text("error", timeout=SLOW_MS)
     # The user reads the cause, not a selector complaint.
     expect(card).to_contain_text("Turnstile", timeout=SLOW_MS)
@@ -60,10 +60,10 @@ def test_vimm_download_names_the_gate(ui):
     retry = card.get_by_role("button", name="Retry")
     expect(retry).to_be_visible()
     retry.click()
-    expect(page.locator("#toast-container")).to_contain_text("Retrying (#1)")
+    expect(page.locator("[aria-live=polite]")).to_contain_text("Retrying (#1)")
     expect(card).to_contain_text("Turnstile", timeout=SLOW_MS)
     # A retry reuses the failed row instead of creating a duplicate card.
-    expect(page.locator("#downloads > div", has_text=title)).to_have_count(1)
+    expect(page.locator("#downloads > article", has_text=title)).to_have_count(1)
 
     health = _vimm_health(base)
     assert health.get("download_fail", 0) >= 2, health
@@ -81,7 +81,7 @@ def test_repeated_vimm_failures_degrade_the_source(ui):
     page.locator('#main-nav button[data-tab="downloads"]').click()
     expect(page.locator("#tab-downloads")).to_be_visible(timeout=SLOW_MS)
     for i in range(3):
-        expect(page.locator("#downloads > div", has_text=f"Gated Game {i}")).to_contain_text(
+        expect(page.locator("#downloads > article", has_text=f"Gated Game {i}")).to_contain_text(
             "Turnstile", timeout=SLOW_MS)
 
     health = _vimm_health(base)
@@ -118,7 +118,7 @@ def test_flaresolverr_env_restores_vimm_download(gamarr_factory, stub_server, pa
     title = "FlareSolverr Vimm Game"
     _start_vimm_download(app["base"], title)
     page.locator('#main-nav button[data-tab="downloads"]').click()
-    card = page.locator("#downloads > div", has_text=title)
+    card = page.locator("#downloads > article", has_text=title)
     expect(card).to_contain_text("completed", timeout=SLOW_MS)
     assert "Turnstile" not in card.inner_text()
 

@@ -18,7 +18,8 @@ IMPORT_MS = 60_000  # the watcher polls the client every 10s in the harness
 
 def _goto_tab(page, tab: str):
     page.locator(f'#main-nav button[data-tab="{tab}"]').click()
-    expect(page.locator(f"#tab-{tab}")).to_be_visible(timeout=SLOW_MS)
+    expected = {"search": "#search-input", "library": "#lib-search", "downloads": "#downloads", "settings": "#setting-import-mode"}[tab]
+    expect(page.locator(expected)).to_be_visible(timeout=SLOW_MS)
 
 
 def _set_import_mode(page, mode: str):

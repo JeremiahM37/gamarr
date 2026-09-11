@@ -135,7 +135,7 @@ def test_login_reveals_a_working_app(page, secured_app):
     # And a real journey works end to end.
     page.locator('#main-nav button[data-tab="wishlist"]').click()
     page.locator("#wish-title").fill("Authenticated Quest")
-    page.locator("#tab-wishlist button", has_text="Add").click()
+    page.get_by_role("button", name="Add").click()
     expect(page.locator("#wishlist")).to_contain_text("Authenticated Quest", timeout=SLOW_MS)
 
     assert ui["errors"] == [], ui["errors"]
@@ -243,3 +243,65 @@ def test_unconfigured_instance_never_gates(page, app):
     expect(page.locator("#platform-filter option")).not_to_have_count(0, timeout=SLOW_MS)
     assert ui["errors"] == [], ui["errors"]
     assert ui["unauthorized"] == [], ui["unauthorized"]
+
+
+def test_status_boot_failure_then_protected_401_shows_gate(page, secured_app):
+    """A status outage must not leave the shell inert when its next protected
+    request is rejected. This exercises the null-auth 401 recovery path."""
+    watched = watch_page(page)
+
+    def intercept(route):
+        if route.request.url.endswith("/api/auth/status"):
+            route.fulfill(status=500, content_type="application/json", body='{"error":"temporary"}')
+        else:
+            route.fulfill(status=401, content_type="application/json", body='{"error":"unauthorized"}')
+
+    page.route("**/api/**", intercept)
+    page.goto(secured_app["base"], wait_until="networkidle")
+    expect(page.locator("#auth-gate")).to_be_visible(timeout=SLOW_MS)
+    expect(page.locator("#auth-error")).to_contain_text("session expired")
+    expect(page.locator("#app-root")).to_be_hidden()
+    assert watched["errors"] == [], watched["errors"]
+
+
+def test_download_progress_and_actions_match_download_api(page, app):
+    """The React downloads tab consumes the Go `DownloadEntry` contract:
+    progress is already percent, retry uses job_id, and organizing an orphaned
+    torrent supplies the platform fields the organizer requires."""
+    requests = []
+    downloads = {
+        "downloads": [
+            {"type": "job", "title": "One Percent", "status": "downloading", "job_id": "job-progress", "progress": 1},
+            {"type": "job", "title": "Retry Me", "status": "dead_letter", "job_id": "job-retry", "can_retry": True},
+            {"type": "job", "title": "Cannot Retry", "status": "error", "job_id": "legacy-job", "can_retry": False},
+            {"type": "job", "title": "Organize Me", "status": "completed_unorganized", "job_id": "job-organize", "hash": "abc123"},
+        ]
+    }
+
+    def intercept(route):
+        request = route.request
+        path = request.url.split("/api", 1)[-1]
+        requests.append((request.method, path, request.post_data))
+        if path == "/auth/status":
+            route.fulfill(content_type="application/json", body='{"auth_required":false,"authenticated":false}')
+        elif path == "/downloads":
+            route.fulfill(content_type="application/json", body=json.dumps(downloads))
+        elif path == "/stats":
+            route.fulfill(content_type="application/json", body='{"library_total":0}')
+        else:
+            route.fulfill(content_type="application/json", body='{"success":true}')
+
+    page.route("**/api/**", intercept)
+    page.goto(app["base"], wait_until="networkidle")
+    page.locator('#main-nav button[data-tab="downloads"]').click()
+    assert page.locator('[data-download-progress="1"]').evaluate("element => element.style.width") == "1%"
+    assert page.locator("#downloads article", has_text="Cannot Retry").get_by_role("button", name="Retry").count() == 0
+    page.get_by_role("button", name="Retry").click()
+    page.wait_for_timeout(100)
+    assert any(method == "POST" and path == "/downloads/job-retry/retry" for method, path, _ in requests)
+    page.once("dialog", lambda dialog: dialog.accept("switch"))
+    page.get_by_role("button", name="Organize").click()
+    page.wait_for_timeout(100)
+    body = next(body for method, path, body in requests if method == "POST" and path == "/downloads/organize/abc123")
+    assert '"platform":"SWITCH"' in body
+    assert '"platform_slug":"switch"' in body and '"is_pc":false' in body
