@@ -30,6 +30,69 @@ func TestJobFileReadyArchiveMember(t *testing.T) {
 	}
 }
 
+// A Prowlarr release name is not the name of any file inside the torrent, so
+// matching it against the file list says nothing about whether the download
+// finished.
+func TestJobFileReadyTitleMatchingNoFile(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	m := New(cfg, jobs, qm.client())
+
+	hash := "repack-hash"
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "CONTROL Resonant [FitGirl Repack]/setup.exe", Priority: 1, Progress: 1.0, Index: 0},
+		{Name: "CONTROL Resonant [FitGirl Repack]/fg-01.bin", Priority: 1, Progress: 0.4, Index: 1},
+	})
+	job := map[string]interface{}{
+		"title": "CONTROL Resonant: Deluxe Edition, v0.563.737.9 + 6 DLCs (with PS5 DLC Unlocker) [FitGirl Repack]",
+	}
+	tor := qbit.Torrent{Name: "CONTROL Resonant [FitGirl Repack]", Hash: hash, Progress: 0.7}
+	if m.jobFileReady(job, tor) {
+		t.Fatal("an unfinished torrent should not report ready: a title matching no file leaves the progress test as the only evidence")
+	}
+
+	tor.Progress = 1.0
+	if !m.jobFileReady(job, tor) {
+		t.Fatal("a complete torrent should report ready even though the release-name title matches no file in it")
+	}
+}
+
+// The stall this guards against: a release-name title matches no file in the
+// torrent, so the job sat at "Downloading" while the client seeded a finished
+// download.
+func TestWatchGameTorrentImportsReleaseNameTitle(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	m := New(cfg, jobs, qm.client())
+
+	hash := "repack-watch-hash"
+	name := "CONTROL Resonant [FitGirl Repack]"
+	contentRoot := filepath.Join(t.TempDir(), name)
+	writeFileT(t, filepath.Join(contentRoot, "setup.exe"), []byte("exe"))
+	writeFileT(t, filepath.Join(contentRoot, "fg-01.bin"), []byte("bin"))
+
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: name + "/setup.exe", Priority: 1, Progress: 1.0, Index: 0},
+		{Name: name + "/fg-01.bin", Priority: 1, Progress: 1.0, Index: 1},
+	})
+	tor := qbit.Torrent{Name: name, Hash: hash, Progress: 1.0, ContentPath: contentRoot}
+	qm.setTorrents([]qbit.Torrent{tor})
+
+	release := "CONTROL Resonant: Deluxe Edition, v0.563.737.9 + 6 DLCs (with PS5 DLC Unlocker) [FitGirl Repack]"
+	jobs.Set("job-repack", map[string]interface{}{
+		"status": "downloading", "title": release,
+		"info_hash": hash, "platform": "PC", "platform_slug": "pc", "is_pc": true,
+	})
+
+	go m.watchGameTorrent("job-repack", hash, release, "PC", "pc", true)
+	waitJobStatus(t, jobs, "job-repack", "completed", minPollTimeout)
+}
+
 func TestJobCompletedFields(t *testing.T) {
 	fields := jobCompleted("Moved to RomM (Game Boy)")
 	if fields["status"] != "completed" || fields["detail"] != "Moved to RomM (Game Boy)" {

@@ -607,7 +607,9 @@ func (m *Manager) jobFileReady(job map[string]interface{}, torrent qbit.Torrent)
 	}
 	f, ok := TorrentFileForTitle(files, title)
 	if !ok {
-		return false
+		// A Prowlarr release name is not a filename, so a miss means the title is
+		// wrong, not the download unfinished.
+		return torrent.Progress >= 1.0 || torrent.State == "stoppedUP"
 	}
 	return f.Progress >= 1.0
 }
