@@ -936,6 +936,38 @@ func TestDownloadTorrentBackfillsWholeTorrentOnAReusedRow(t *testing.T) {
 	}
 }
 
+// A request that disagrees with a row already carrying whole_torrent must not
+// overwrite it: flipping an archive row to whole-torrent re-arms the widening the
+// guard exists to prevent, and the row is what the guard reads.
+func TestDownloadTorrentKeepsARecordedWholeTorrent(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	qm.setTorrents([]qbit.Torrent{{Name: "Game Boy", Hash: "h-arch", Progress: 1.0}})
+	m := New(cfg, jobs, qm.client())
+
+	jobs.Set("archive-row", map[string]interface{}{
+		"status": "downloading", "title": "Trip World (Europe).zip",
+		"info_hash": "h-arch", "platform": "Game Boy", "platform_slug": "gb",
+		"whole_torrent": false,
+	})
+
+	// Same row, from a request whose own selectFiles says otherwise.
+	jobID, err := m.DownloadTorrent("magnet:x", "h-arch", "Trip World (Europe).zip", "Game Boy", "gb", false, false)
+	if err != nil {
+		t.Fatalf("DownloadTorrent: %v", err)
+	}
+	if jobID != "archive-row" {
+		t.Fatalf("job = %q, want the existing row reused", jobID)
+	}
+	job, _ := jobs.Get(jobID)
+	if whole, _ := job["whole_torrent"].(bool); whole {
+		t.Error("a re-grab must not overwrite the field a row already recorded: an archive row flipped to whole-torrent imports the whole archive in place of one ROM")
+	}
+}
+
 func TestRecoverOrphanedTorrentsStartsWatcherForArchiveROMJob(t *testing.T) {
 	const hash = "gb-recover"
 	cfg := newTestConfig(t)

@@ -142,10 +142,13 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	}
 	if infoHash != "" && (selectFiles || m.hashInCategory(infoHash)) {
 		if existing := m.findActiveJobByHashTitle(infoHash, title); existing != "" {
-			// A row predating whole_torrent keeps the behavior it was written under,
-			// and this is the one place it can be corrected: the row matched on the
-			// same hash and title, so it is this download.
-			m.jobs.Update(existing, "whole_torrent", !selectFiles)
+			// Fill in only a row that predates whole_torrent: a row that already has
+			// it keeps it, since this request's own selectFiles may disagree.
+			if row, ok := m.jobs.Get(existing); ok {
+				if _, recorded := row["whole_torrent"]; !recorded {
+					m.jobs.Update(existing, "whole_torrent", !selectFiles)
+				}
+			}
 			return existing, nil
 		}
 	}
