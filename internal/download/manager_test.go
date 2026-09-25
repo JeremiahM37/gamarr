@@ -894,6 +894,39 @@ func TestDownloadTorrentDedupsActiveArchiveJob(t *testing.T) {
 	}
 }
 
+// A row written before whole_torrent existed keeps the old behavior, and the
+// dedup hands that same row back for the same hash and title, so a re-grab is
+// the only thing that can put the field on it.
+func TestDownloadTorrentBackfillsWholeTorrentOnAReusedRow(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	qm.setTorrents([]qbit.Torrent{{Name: "Repack Game", Hash: "h-prefix", Progress: 1.0}})
+	m := New(cfg, jobs, qm.client())
+
+	jobs.Set("pre-fix-row", map[string]interface{}{
+		"status": "downloading", "title": "Repack Game",
+		"info_hash": "h-prefix", "platform": "PC", "platform_slug": "pc", "is_pc": true,
+	})
+
+	jobID, err := m.DownloadTorrent("magnet:x", "h-prefix", "Repack Game", "PC", "pc", true, false)
+	if err != nil {
+		t.Fatalf("DownloadTorrent: %v", err)
+	}
+	if jobID != "pre-fix-row" {
+		t.Fatalf("job = %q, want the existing row reused", jobID)
+	}
+	job, ok := jobs.Get(jobID)
+	if !ok {
+		t.Fatalf("job %q missing", jobID)
+	}
+	if whole, _ := job["whole_torrent"].(bool); !whole {
+		t.Error("a re-grab must write whole_torrent onto the row it reuses, or a pre-fix row stays stuck with nothing saying why")
+	}
+}
+
 func TestRecoverOrphanedTorrentsStartsWatcherForArchiveROMJob(t *testing.T) {
 	const hash = "gb-recover"
 	cfg := newTestConfig(t)
