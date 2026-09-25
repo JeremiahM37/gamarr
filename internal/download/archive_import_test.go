@@ -19,7 +19,7 @@ func TestJobFileReadyArchiveMember(t *testing.T) {
 		{Name: "Minerva_Myrient/Redump/Wii/Animal Crossing.zip", Priority: 1, Progress: 1.0, Index: 0},
 		{Name: "Minerva_Myrient/Redump/Wii/Other.zip", Priority: 0, Progress: 0.5, Index: 1},
 	})
-	tor := qbit.Torrent{Name: "Wii", Hash: hash, Progress: 0.78}
+	tor := qbit.Torrent{Name: "Wii", Hash: hash, Progress: 1.0}
 	job := map[string]interface{}{"title": "Animal Crossing.zip"}
 	if !m.jobFileReady(job, tor) {
 		t.Fatal("selected archive file at 100% should be ready")
@@ -143,6 +143,47 @@ func TestJobFileReadyArchiveMemberAbsentFromTorrent(t *testing.T) {
 
 	if m.jobFileReady(job, tor) {
 		t.Fatal("a job naming a ROM the archive does not hold should not report ready: the whole tree would be imported in its place")
+	}
+
+	// A row written before the field existed has none, and the documented default
+	// is the same refusal rather than a silent widening.
+	older := map[string]interface{}{
+		"status": "downloading", "title": "Absent Game (Europe).zip",
+		"info_hash": hash, "platform": "Game Boy", "platform_slug": "gb",
+	}
+	if m.jobFileReady(older, tor) {
+		t.Fatal("a row without whole_torrent must keep the behavior it was written under, not widen")
+	}
+}
+
+// GetTorrentFiles returns nil on any read error, so an empty listing is a failed
+// read rather than a torrent with no files.
+func TestJobFileReadyWithNoFileList(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	m := New(cfg, jobs, qm.client())
+
+	qm.setFiles(nil)
+	tor := qbit.Torrent{Name: "Game Boy", Hash: "gb-unreadable", Progress: 1.0}
+
+	member := map[string]interface{}{
+		"status": "downloading", "title": "Absent Game (Europe).zip",
+		"info_hash": tor.Hash, "platform": "Game Boy", "platform_slug": "gb",
+		"whole_torrent": false,
+	}
+	if m.jobFileReady(member, tor) {
+		t.Fatal("a member job must not report ready from a listing it could not read: the whole archive would be imported in place of the ROM")
+	}
+
+	whole := map[string]interface{}{
+		"status": "downloading", "title": "Repack Game [FitGirl Repack]",
+		"info_hash": tor.Hash, "platform": "PC", "platform_slug": "pc", "is_pc": true,
+		"whole_torrent": true,
+	}
+	if !m.jobFileReady(whole, tor) {
+		t.Fatal("a download whose content is the torrent should still report ready: one unreadable listing is not a reason to strand it")
 	}
 }
 

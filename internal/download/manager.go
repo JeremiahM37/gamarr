@@ -609,6 +609,14 @@ func (m *Manager) jobFileReady(job map[string]interface{}, torrent qbit.Torrent)
 		return torrent.Progress >= 1.0 || torrent.State == "stoppedUP"
 	}
 	files := m.qb.GetTorrentFiles(torrent.Hash)
+	if len(files) == 0 {
+		// GetTorrentFiles returns nil on any read error, so an empty listing is a
+		// failed read, not a torrent without files. A member job cannot be judged
+		// from it.
+		if whole, _ := job["whole_torrent"].(bool); !whole {
+			return false
+		}
+	}
 	if len(files) <= 1 {
 		return torrent.Progress >= 1.0 || torrent.State == "stoppedUP"
 	}

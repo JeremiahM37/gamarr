@@ -889,6 +889,15 @@ func TestDownloadTorrentDedupsActiveArchiveJob(t *testing.T) {
 	if first != second {
 		t.Errorf("job IDs = %q and %q, want the same active archive job", first, second)
 	}
+	// The dedup writes the field onto the row it hands back, and true here is the
+	// direction that matters: a reused archive row would import the whole archive.
+	reused, ok := jobs.Get(second)
+	if !ok {
+		t.Fatalf("job %q missing", second)
+	}
+	if whole, _ := reused["whole_torrent"].(bool); whole {
+		t.Error("a reused archive row must not read as a whole-torrent download, or a pre-fix row imports the whole archive in place of one ROM")
+	}
 	if n := len(jobs.Items()); n != 1 {
 		t.Fatalf("%d job rows, want 1", n)
 	}
