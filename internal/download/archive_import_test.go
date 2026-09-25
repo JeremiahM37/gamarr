@@ -28,6 +28,17 @@ func TestJobFileReadyArchiveMember(t *testing.T) {
 	if m.jobFileReady(job, tor) {
 		t.Fatal("deselected/incomplete file should not be ready")
 	}
+
+	// Whole-torrent progress says nothing about the member this job names: a
+	// wanted file short of 100% is not ready however complete the torrent reads.
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Minerva_Myrient/Redump/Wii/Animal Crossing.zip", Priority: 1, Progress: 0.4, Index: 0},
+		{Name: "Minerva_Myrient/Redump/Wii/Other.zip", Priority: 1, Progress: 1.0, Index: 1},
+	})
+	tor = qbit.Torrent{Name: "Wii", Hash: hash, Progress: 1.0}
+	if m.jobFileReady(map[string]interface{}{"title": "Animal Crossing.zip"}, tor) {
+		t.Fatal("a matched wanted file at 40% should not report ready while the torrent reads 100%")
+	}
 }
 
 // A Prowlarr release name is not the name of any file inside the torrent, so
@@ -41,18 +52,25 @@ func TestJobFileReadyTitleMatchingNoFile(t *testing.T) {
 	m := New(cfg, jobs, qm.client())
 
 	hash := "repack-hash"
-	qm.setFiles([]qbit.TorrentFile{
-		{Name: "CONTROL Resonant [FitGirl Repack]/setup.exe", Priority: 1, Progress: 1.0, Index: 0},
-		{Name: "CONTROL Resonant [FitGirl Repack]/fg-01.bin", Priority: 1, Progress: 0.4, Index: 1},
-	})
+	name := "CONTROL Resonant [FitGirl Repack]"
 	job := map[string]interface{}{
-		"title": "CONTROL Resonant: Deluxe Edition, v0.563.737.9 + 6 DLCs (with PS5 DLC Unlocker) [FitGirl Repack]",
+		"title":         "CONTROL Resonant: Deluxe Edition, v0.563.737.9 + 6 DLCs (with PS5 DLC Unlocker) [FitGirl Repack]",
+		"whole_torrent": true,
 	}
-	tor := qbit.Torrent{Name: "CONTROL Resonant [FitGirl Repack]", Hash: hash, Progress: 0.7}
+
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: name + "/setup.exe", Priority: 1, Progress: 1.0, Index: 0},
+		{Name: name + "/fg-01.bin", Priority: 1, Progress: 0.4, Index: 1},
+	})
+	tor := qbit.Torrent{Name: name, Hash: hash, Progress: 0.7}
 	if m.jobFileReady(job, tor) {
 		t.Fatal("an unfinished torrent should not report ready: a title matching no file leaves the progress test as the only evidence")
 	}
 
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: name + "/setup.exe", Priority: 1, Progress: 1.0, Index: 0},
+		{Name: name + "/fg-01.bin", Priority: 1, Progress: 1.0, Index: 1},
+	})
 	tor.Progress = 1.0
 	if !m.jobFileReady(job, tor) {
 		t.Fatal("a complete torrent should report ready even though the release-name title matches no file in it")
@@ -87,10 +105,43 @@ func TestWatchGameTorrentImportsReleaseNameTitle(t *testing.T) {
 	jobs.Set("job-repack", map[string]interface{}{
 		"status": "downloading", "title": release,
 		"info_hash": hash, "platform": "PC", "platform_slug": "pc", "is_pc": true,
+		"whole_torrent": true,
 	})
 
 	go m.watchGameTorrent("job-repack", hash, release, "PC", "pc", true)
 	waitJobStatus(t, jobs, "job-repack", "completed", minPollTimeout)
+}
+
+// A miss on a shared archive magnet means the ROM is not in it: widening would
+// land the whole tree as one library entry and let the torrent be dropped with
+// its data.
+func TestJobFileReadyArchiveMemberAbsentFromTorrent(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	m := New(cfg, jobs, qm.client())
+
+	hash := "gb-shared"
+	contentRoot := filepath.Join(t.TempDir(), "Minerva_Myrient")
+	writeFileT(t, filepath.Join(contentRoot, "No-Intro", "Nintendo - Game Boy", "Trip World (Europe).zip"), []byte("rom"))
+
+	qm.setFiles([]qbit.TorrentFile{
+		{Name: "Minerva_Myrient/No-Intro/Nintendo - Game Boy/Trip World (Europe).zip", Priority: 1, Progress: 1.0, Index: 0},
+		{Name: "Minerva_Myrient/No-Intro/Nintendo - Game Boy/Other Game (Europe).zip", Priority: 1, Progress: 1.0, Index: 1},
+	})
+	tor := qbit.Torrent{Name: "Game Boy", Hash: hash, Progress: 1.0, ContentPath: contentRoot}
+
+	job := map[string]interface{}{
+		"status": "downloading", "title": "Absent Game (Europe).zip",
+		"info_hash": hash, "platform": "Game Boy", "platform_slug": "gb",
+		"whole_torrent": false,
+	}
+	jobs.Set("job-absent", job)
+
+	if m.jobFileReady(job, tor) {
+		t.Fatal("a job naming a ROM the archive does not hold should not report ready: the whole tree would be imported in its place")
+	}
 }
 
 func TestJobCompletedFields(t *testing.T) {

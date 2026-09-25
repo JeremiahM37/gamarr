@@ -153,6 +153,9 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 		"platform":      platf,
 		"platform_slug": platSlug,
 		"is_pc":         isPC,
+		// An archive magnet's job names one member of a shared torrent rather than
+		// the download itself.
+		"whole_torrent": !selectFiles,
 		"error":         nil,
 		"detail":        "Sending to download client...",
 	})
@@ -607,8 +610,12 @@ func (m *Manager) jobFileReady(job map[string]interface{}, torrent qbit.Torrent)
 	}
 	f, ok := TorrentFileForTitle(files, title)
 	if !ok {
-		// A Prowlarr release name is not a filename, so a miss means the title is
-		// wrong, not the download unfinished.
+		// An archive magnet's title names one member, so a miss there means that ROM
+		// is absent and the whole tree would be imported in its place. A row without
+		// the field predates it, so it keeps the behavior it was written under.
+		if whole, _ := job["whole_torrent"].(bool); !whole {
+			return false
+		}
 		return torrent.Progress >= 1.0 || torrent.State == "stoppedUP"
 	}
 	return f.Progress >= 1.0
