@@ -142,6 +142,13 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	}
 	if infoHash != "" && (selectFiles || m.hashInCategory(infoHash)) {
 		if existing := m.findActiveJobByHashTitle(infoHash, title); existing != "" {
+			// Fill in only a row that predates whole_torrent: a row that already has
+			// it keeps it, since this request's own selectFiles may disagree.
+			if row, ok := m.jobs.Get(existing); ok {
+				if _, recorded := row["whole_torrent"]; !recorded {
+					m.jobs.Update(existing, "whole_torrent", !selectFiles)
+				}
+			}
 			return existing, nil
 		}
 	}
@@ -153,6 +160,9 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 		"platform":      platf,
 		"platform_slug": platSlug,
 		"is_pc":         isPC,
+		// An archive magnet's job names one member of a shared torrent rather than
+		// the download itself.
+		"whole_torrent": !selectFiles,
 		"error":         nil,
 		"detail":        "Sending to download client...",
 	})
@@ -602,12 +612,26 @@ func (m *Manager) jobFileReady(job map[string]interface{}, torrent qbit.Torrent)
 		return torrent.Progress >= 1.0 || torrent.State == "stoppedUP"
 	}
 	files := m.qb.GetTorrentFiles(torrent.Hash)
+	if len(files) == 0 {
+		// GetTorrentFiles returns nil on any read error, so an empty listing is a
+		// failed read, not a torrent without files. A member job cannot be judged
+		// from it.
+		if whole, _ := job["whole_torrent"].(bool); !whole {
+			return false
+		}
+	}
 	if len(files) <= 1 {
 		return torrent.Progress >= 1.0 || torrent.State == "stoppedUP"
 	}
 	f, ok := TorrentFileForTitle(files, title)
 	if !ok {
-		return false
+		// An archive magnet's title names one member, so a miss there means that ROM
+		// is absent and the whole tree would be imported in its place. A row without
+		// the field predates it, so it keeps the behavior it was written under.
+		if whole, _ := job["whole_torrent"].(bool); !whole {
+			return false
+		}
+		return torrent.Progress >= 1.0 || torrent.State == "stoppedUP"
 	}
 	return f.Progress >= 1.0
 }

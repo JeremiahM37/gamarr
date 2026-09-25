@@ -100,6 +100,9 @@ func TestDownloadTorrentNoClientAvailable(t *testing.T) {
 	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "any download client") {
 		t.Errorf("error = %q, want failed-to-add message", errMsg)
 	}
+	if whole, _ := job["whole_torrent"].(bool); !whole {
+		t.Error("a download whose content is the torrent must read as a whole-torrent download, or a release-name title matching no file stays unimportable")
+	}
 }
 
 func TestDownloadTorrentQBitFullFlow(t *testing.T) {
@@ -872,6 +875,13 @@ func TestDownloadTorrentDedupsActiveArchiveJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first DownloadTorrent: %v", err)
 	}
+	archiveJob, ok := jobs.Get(first)
+	if !ok {
+		t.Fatalf("job %q missing", first)
+	}
+	if whole, _ := archiveJob["whole_torrent"].(bool); whole {
+		t.Error("an archive magnet's job must not read as a whole-torrent download: a title matching no file in it would import the whole archive")
+	}
 	second, err := m.DownloadTorrent("magnet:x", hash, title, "Game Boy", "gb", false, true)
 	if err != nil {
 		t.Fatalf("second DownloadTorrent: %v", err)
@@ -879,8 +889,82 @@ func TestDownloadTorrentDedupsActiveArchiveJob(t *testing.T) {
 	if first != second {
 		t.Errorf("job IDs = %q and %q, want the same active archive job", first, second)
 	}
+	// The dedup writes the field onto the row it hands back, and true here is the
+	// direction that matters: a reused archive row would import the whole archive.
+	reused, ok := jobs.Get(second)
+	if !ok {
+		t.Fatalf("job %q missing", second)
+	}
+	if whole, _ := reused["whole_torrent"].(bool); whole {
+		t.Error("a reused archive row must not read as a whole-torrent download, or a pre-fix row imports the whole archive in place of one ROM")
+	}
 	if n := len(jobs.Items()); n != 1 {
 		t.Fatalf("%d job rows, want 1", n)
+	}
+}
+
+// A row written before whole_torrent existed keeps the old behavior, and the
+// dedup hands that same row back for the same hash and title, so a re-grab is
+// the only thing that can put the field on it.
+func TestDownloadTorrentBackfillsWholeTorrentOnAReusedRow(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	qm.setTorrents([]qbit.Torrent{{Name: "Repack Game", Hash: "h-prefix", Progress: 1.0}})
+	m := New(cfg, jobs, qm.client())
+
+	jobs.Set("pre-fix-row", map[string]interface{}{
+		"status": "downloading", "title": "Repack Game",
+		"info_hash": "h-prefix", "platform": "PC", "platform_slug": "pc", "is_pc": true,
+	})
+
+	jobID, err := m.DownloadTorrent("magnet:x", "h-prefix", "Repack Game", "PC", "pc", true, false)
+	if err != nil {
+		t.Fatalf("DownloadTorrent: %v", err)
+	}
+	if jobID != "pre-fix-row" {
+		t.Fatalf("job = %q, want the existing row reused", jobID)
+	}
+	job, ok := jobs.Get(jobID)
+	if !ok {
+		t.Fatalf("job %q missing", jobID)
+	}
+	if whole, _ := job["whole_torrent"].(bool); !whole {
+		t.Error("a re-grab must write whole_torrent onto the row it reuses, or a pre-fix row stays stuck with nothing saying why")
+	}
+}
+
+// A request that disagrees with a row already carrying whole_torrent must not
+// overwrite it: flipping an archive row to whole-torrent re-arms the widening the
+// guard exists to prevent, and the row is what the guard reads.
+func TestDownloadTorrentKeepsARecordedWholeTorrent(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	qm := newQbitMock(t)
+	cfg.QBURL = qm.srv.URL
+	cfg.FileListScanEnabled = false
+	qm.setTorrents([]qbit.Torrent{{Name: "Game Boy", Hash: "h-arch", Progress: 1.0}})
+	m := New(cfg, jobs, qm.client())
+
+	jobs.Set("archive-row", map[string]interface{}{
+		"status": "downloading", "title": "Trip World (Europe).zip",
+		"info_hash": "h-arch", "platform": "Game Boy", "platform_slug": "gb",
+		"whole_torrent": false,
+	})
+
+	// Same row, from a request whose own selectFiles says otherwise.
+	jobID, err := m.DownloadTorrent("magnet:x", "h-arch", "Trip World (Europe).zip", "Game Boy", "gb", false, false)
+	if err != nil {
+		t.Fatalf("DownloadTorrent: %v", err)
+	}
+	if jobID != "archive-row" {
+		t.Fatalf("job = %q, want the existing row reused", jobID)
+	}
+	job, _ := jobs.Get(jobID)
+	if whole, _ := job["whole_torrent"].(bool); whole {
+		t.Error("a re-grab must not overwrite the field a row already recorded: an archive row flipped to whole-torrent imports the whole archive in place of one ROM")
 	}
 }
 
