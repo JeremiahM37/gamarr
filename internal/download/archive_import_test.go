@@ -29,15 +29,15 @@ func TestJobFileReadyArchiveMember(t *testing.T) {
 		t.Fatal("deselected/incomplete file should not be ready")
 	}
 
-	// Whole-torrent progress says nothing about the member this job names: a
-	// wanted file short of 100% is not ready however complete the torrent reads.
+	// Whole-torrent progress reads 100% once the wanted subset is done, so a
+	// matched file short of it is not ready on the strength of the torrent alone.
 	qm.setFiles([]qbit.TorrentFile{
-		{Name: "Minerva_Myrient/Redump/Wii/Animal Crossing.zip", Priority: 1, Progress: 0.4, Index: 0},
+		{Name: "Minerva_Myrient/Redump/Wii/Animal Crossing.zip", Priority: 0, Progress: 0.4, Index: 0},
 		{Name: "Minerva_Myrient/Redump/Wii/Other.zip", Priority: 1, Progress: 1.0, Index: 1},
 	})
 	tor = qbit.Torrent{Name: "Wii", Hash: hash, Progress: 1.0}
 	if m.jobFileReady(map[string]interface{}{"title": "Animal Crossing.zip"}, tor) {
-		t.Fatal("a matched wanted file at 40% should not report ready while the torrent reads 100%")
+		t.Fatal("a matched file at 40% should not report ready on the strength of the torrent reading 100%")
 	}
 }
 
@@ -135,6 +135,8 @@ func TestJobFileReadyArchiveMemberAbsentFromTorrent(t *testing.T) {
 	job := map[string]interface{}{
 		"status": "downloading", "title": "Absent Game (Europe).zip",
 		"info_hash": hash, "platform": "Game Boy", "platform_slug": "gb",
+		// Set rather than omitted: an archive magnet's job names a member, not the
+		// download, so this job is the shape the guard has to keep unready.
 		"whole_torrent": false,
 	}
 	jobs.Set("job-absent", job)

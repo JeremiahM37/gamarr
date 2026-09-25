@@ -100,6 +100,9 @@ func TestDownloadTorrentNoClientAvailable(t *testing.T) {
 	if errMsg, _ := job["error"].(string); !strings.Contains(errMsg, "any download client") {
 		t.Errorf("error = %q, want failed-to-add message", errMsg)
 	}
+	if whole, _ := job["whole_torrent"].(bool); !whole {
+		t.Error("a download whose content is the torrent must read as a whole-torrent download, or a release-name title matching no file stays unimportable")
+	}
 }
 
 func TestDownloadTorrentQBitFullFlow(t *testing.T) {
@@ -871,6 +874,13 @@ func TestDownloadTorrentDedupsActiveArchiveJob(t *testing.T) {
 	first, err := m.DownloadTorrent("magnet:x", hash, title, "Game Boy", "gb", false, true)
 	if err != nil {
 		t.Fatalf("first DownloadTorrent: %v", err)
+	}
+	archiveJob, ok := jobs.Get(first)
+	if !ok {
+		t.Fatalf("job %q missing", first)
+	}
+	if whole, _ := archiveJob["whole_torrent"].(bool); whole {
+		t.Error("an archive magnet's job must not read as a whole-torrent download: a title matching no file in it would import the whole archive")
 	}
 	second, err := m.DownloadTorrent("magnet:x", hash, title, "Game Boy", "gb", false, true)
 	if err != nil {
