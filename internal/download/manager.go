@@ -570,14 +570,15 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 
 	jobID := newJobID()
 	m.jobs.Set(jobID, map[string]interface{}{
-		"status":        "organizing",
-		"title":         torrent.Name,
-		"info_hash":     torrent.Hash,
-		"platform":      platf,
-		"platform_slug": platSlug,
-		"is_pc":         isPC,
-		"error":         nil,
-		"detail":        "Scanning and organizing...",
+		"status":          "organizing",
+		"title":           torrent.Name,
+		"info_hash":       torrent.Hash,
+		"platform":        platf,
+		"platform_slug":   platSlug,
+		"platform_source": platformSourceManual,
+		"is_pc":           isPC,
+		"error":           nil,
+		"detail":          "Scanning and organizing...",
 	})
 
 	// By value: the retry reassigns its torrent as the client republishes it, and
@@ -977,7 +978,35 @@ func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug str
 		}
 	}
 
+	// A console platform can arrive from search context alone: a result tagged
+	// only Console/Other in a SNES search is filed as SNES. When the payload
+	// has none of that platform's formats and its ROM extensions name another
+	// platform, the files win. A platform chosen by hand is left alone.
+	if !isPC && platSlug != "" && !m.platformChosenManually(jobID) {
+		if info, ok := platform.ContentConflict(platSlug, contentPath); ok {
+			slog.Warn("download content contradicts its platform, reclassifying",
+				"title", sanitizeLog(title), "was", platSlug, "now", info.Slug)
+			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
+			m.jobs.UpdateMulti(jobID, map[string]interface{}{
+				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			})
+		}
+	}
+
 	return platf, platSlug, isPC
+}
+
+// platformSourceManual marks a job whose platform the operator picked, which
+// the post-download sanity check must not second-guess.
+const platformSourceManual = "manual"
+
+func (m *Manager) platformChosenManually(jobID string) bool {
+	job, ok := m.jobs.Get(jobID)
+	if !ok {
+		return false
+	}
+	src, _ := job["platform_source"].(string)
+	return src == platformSourceManual
 }
 
 // organizeGame imports a finished torrent, reporting whether a failure is worth
