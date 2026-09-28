@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -544,34 +543,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handlePlatforms lists the platforms a search, wishlist or request can be
+// filtered to, straight from the platform registry and in its order.
 func (s *Server) handlePlatforms(w http.ResponseWriter, r *http.Request) {
 	platforms := []map[string]string{
 		{"id": "all", "name": "All Platforms"},
-		{"id": "pc", "name": "PC"},
 	}
-	seen := map[string]bool{"PC": true}
-
-	type sortEntry struct {
-		CatID int
-		Info  platform.PlatformInfo
-	}
-	var entries []sortEntry
-	for catID, info := range platform.PlatformMap {
-		entries = append(entries, sortEntry{catID, info})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].CatID < entries[j].CatID })
-
-	for _, e := range entries {
-		if e.Info.IsPC || seen[e.Info.Name] || e.Info.Name == "Other" || e.Info.Slug == "" {
-			continue
-		}
-		seen[e.Info.Name] = true
-		platforms = append(platforms, map[string]string{"id": e.Info.Slug, "name": e.Info.Name})
-	}
-	for _, ep := range platform.ExtraPlatforms {
-		if !seen[ep.Name] {
-			platforms = append(platforms, map[string]string{"id": ep.Slug, "name": ep.Name})
-		}
+	for _, p := range platform.Registry {
+		platforms = append(platforms, map[string]string{"id": p.Slug, "name": p.Name})
 	}
 	writeJSON(w, 200, map[string]interface{}{"platforms": platforms})
 }

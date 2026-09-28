@@ -350,3 +350,34 @@ func TestScanVaultSkipsHiddenAndSidecars(t *testing.T) {
 		t.Error("sidecar should be skipped")
 	}
 }
+
+func TestScanLibraryRetroFolders(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	m := New(cfg, jobs, nil)
+
+	genesis := filepath.Join(cfg.GamesRomsPath, "genesis")
+	writeFileT(t, filepath.Join(genesis, "Sonic 3 (USA).md"), bigROM())
+	// Markdown outside the Genesis folder is still just notes.
+	writeFileT(t, filepath.Join(cfg.GamesRomsPath, "gbc", "notes", "readme.md"), bigROM())
+
+	m.ScanLibraryDirs()
+
+	if item := jobs.FindLibraryByTitle("Sonic 3 (USA)", "genesis"); item == nil || item.Platform != "Sega Genesis" {
+		t.Errorf("Genesis .md ROM not scanned: %+v", item)
+	}
+	if jobs.LibraryHasSourceID("scan:" + filepath.Join(cfg.GamesRomsPath, "gbc", "notes")) {
+		t.Error("a folder of Markdown notes was taken for a game")
+	}
+}
+
+func TestPlatformNameFromSlugUsesRegistry(t *testing.T) {
+	for slug, want := range map[string]string{
+		"tg16": "PC Engine / TurboGrafx-16", "sega32": "Sega 32X",
+		"n64": "Nintendo 64", "arcade": "ARCADE",
+	} {
+		if got := platformNameFromSlug(slug); got != want {
+			t.Errorf("platformNameFromSlug(%q) = %q, want %q", slug, got, want)
+		}
+	}
+}

@@ -13,6 +13,7 @@ import (
 
 	"gamarr/internal/config"
 	"gamarr/internal/fileops"
+	gplatform "gamarr/internal/platform"
 )
 
 // Pipeline handles post-download game file organization.
@@ -121,68 +122,15 @@ func (p *Pipeline) organizeROM(sourcePath, platformSlug string) (string, error) 
 	return dest, nil
 }
 
-// DetectPlatform tries to detect the platform from a file extension.
+// DetectPlatform tries to detect the platform from a file extension, using
+// the platform registry: a unique ROM extension decides outright, and a shared
+// format such as .iso is settled by the file name.
 func DetectPlatform(filename string) (platform, platformSlug string, isPC bool) {
-	ext := strings.ToLower(filepath.Ext(filename))
-	switch ext {
-	case ".nsp", ".xci", ".nsz":
-		return "Switch", "switch", false
-	case ".3ds", ".cia":
-		return "3DS", "3ds", false
-	case ".nds":
-		return "DS", "nds", false
-	case ".gba":
-		return "Game Boy Advance", "gba", false
-	case ".gb":
-		return "Game Boy", "gb", false
-	case ".gbc":
-		return "Game Boy Color", "gbc", false
-	case ".n64", ".z64", ".v64":
-		return "N64", "n64", false
-	case ".nes":
-		return "NES", "nes", false
-	case ".sfc", ".smc":
-		return "SNES", "snes", false
-	case ".gcm", ".gcz":
-		return "GameCube", "ngc", false
-	case ".wbfs", ".wad":
-		return "Wii", "wii", false
-	case ".rpx":
-		return "Wii U", "wiiu", false
-	case ".pbp", ".cso":
-		return "PSP", "psp", false
-	case ".pkg":
-		return "PS3", "ps3", false
-	case ".gdi", ".cdi":
-		return "Dreamcast", "dc", false
-	case ".iso":
-		// ISO is ambiguous — could be PS2, PSP, PS1, Xbox, etc.
-		// Try to guess from filename.
-		lower := strings.ToLower(filename)
-		if strings.Contains(lower, "ps2") || strings.Contains(lower, "playstation 2") {
-			return "PS2", "ps2", false
-		}
-		if strings.Contains(lower, "psp") {
-			return "PSP", "psp", false
-		}
-		if strings.Contains(lower, "ps1") || strings.Contains(lower, "psx") {
-			return "PS1", "psx", false
-		}
-		if strings.Contains(lower, "xbox") {
-			return "Xbox", "xbox", false
-		}
-		if strings.Contains(lower, "wii") {
-			return "Wii", "wii", false
-		}
-		if strings.Contains(lower, "gamecube") || strings.Contains(lower, "ngc") {
-			return "GameCube", "ngc", false
-		}
-		return "", "", false
-	case ".exe", ".msi":
-		return "PC", "", true
-	default:
+	info, ok := gplatform.DetectPlatformFromFilename(filename)
+	if !ok {
 		return "", "", false
 	}
+	return info.Name, info.Slug, info.IsPC
 }
 
 // CleanFilename removes scene tags and group names from filenames.

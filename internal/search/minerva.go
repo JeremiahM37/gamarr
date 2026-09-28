@@ -320,15 +320,8 @@ func parseMinervaSize(s string) int64 {
 
 func minervaPlatformInfo(slug, consoleFallback string) (string, bool) {
 	if slug != "" {
-		for _, info := range platform.PlatformMap {
-			if info.Slug == slug {
-				return info.Name, info.IsPC
-			}
-		}
-		for _, ep := range platform.ExtraPlatforms {
-			if ep.Slug == slug {
-				return ep.Name, false
-			}
+		if p, ok := platform.Lookup(slug); ok {
+			return p.Name, p.IsPC
 		}
 	}
 	if consoleFallback != "" {

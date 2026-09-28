@@ -562,6 +562,12 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 		return "", fmt.Errorf("torrent not yet complete")
 	}
 
+	// The UI sends the slug it was given and an upper-cased guess at a name;
+	// a registry platform has a proper one.
+	if name := platform.NameForSlug(platSlug); name != "" && !isPC {
+		platf = name
+	}
+
 	jobID := newJobID()
 	m.jobs.Set(jobID, map[string]interface{}{
 		"status":        "organizing",
@@ -2357,19 +2363,6 @@ func (m *Manager) RecoverOrphanedTorrents() {
 		"gog": true, "plaza": true, "cpy": true, "empress": true,
 		"rune": true, "razordox": true, "tinyiso": true, "elamigos": true, "repack": true,
 	}
-	platformHints := map[string]struct {
-		Name string
-		Slug string
-		IsPC bool
-	}{
-		"wii": {"Wii", "wii", false}, "gamecube": {"GameCube", "ngc", false},
-		"ngc": {"GameCube", "ngc", false}, "switch": {"Switch", "switch", false},
-		"nsp": {"Switch", "switch", false}, "xci": {"Switch", "switch", false},
-		"ps2": {"PS2", "ps2", false}, "ps3": {"PS3", "ps3", false},
-		"psp": {"PSP", "psp", false}, "nds": {"DS", "nds", false},
-		"3ds": {"3DS", "3ds", false}, "dreamcast": {"Dreamcast", "dc", false},
-		"gba": {"Game Boy Advance", "gba", false},
-	}
 
 	for _, t := range torrents {
 		m.dismissArchiveShellJobs(t.Hash, t.Name)
@@ -2415,11 +2408,9 @@ func (m *Manager) RecoverOrphanedTorrents() {
 			}
 		}
 		if !isPC {
-			for hint, info := range platformHints {
-				if strings.Contains(nameLower, hint) {
-					platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
-					break
-				}
+			// The registry's title hints, the same ones import falls back on.
+			if info, ok := platform.DetectPlatformFromTitle(t.Name); ok {
+				platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
 			}
 		}
 

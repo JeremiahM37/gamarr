@@ -4,9 +4,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gamarr/internal/db"
+	"gamarr/internal/platform"
 )
 
 // ScanLibraryDirs scans vault and ROM directories to populate the library.
@@ -65,20 +67,36 @@ func (m *Manager) scanVault(dir string) int {
 }
 
 // gameExtensions are file extensions that represent playable games/ROMs.
-var gameExtensions = map[string]bool{
-	".nsp": true, ".xci": true, ".nsz": true, // Switch
-	".nes": true, ".sfc": true, ".smc": true, // NES/SNES
-	".gba": true, ".gb": true, ".gbc": true, // Game Boy
-	".nds": true, ".3ds": true, ".cia": true, // DS/3DS
-	".n64": true, ".z64": true, ".v64": true, // N64
-	".iso": true, ".bin": true, ".cue": true, // Disc images
-	".chd": true, ".gdi": true, ".cdi": true, // Compressed disc
-	".gcz": true, ".gcm": true, ".rvz": true, // GameCube
-	".wbfs": true, ".wad": true, // Wii
-	".pbp": true, ".cso": true, // PSP
-	".zip": true, ".7z": true, ".rar": true, // Archives (common for ROMs)
-	".exe": true, ".msi": true, // PC
-}
+// Every extension and format in the platform registry counts, plus the
+// archive formats ROMs commonly ship in.
+var gameExtensions = func() map[string]bool {
+	m := map[string]bool{".zip": true, ".7z": true, ".rar": true}
+	for _, ext := range platform.KnownExtensions() {
+		m[ext] = true
+	}
+	return m
+}()
+
+// titleExtensions are stripped from a scanned file name to form its title:
+// archives plus every registry format, longest first so ".tar.gz" wins over
+// any shorter suffix.
+var titleExtensions = func() []string {
+	exts := []string{".zip", ".rar", ".7z", ".tar", ".tar.gz"}
+	seen := map[string]bool{}
+	for _, p := range platform.Registry {
+		if p.IsPC {
+			continue
+		}
+		for _, ext := range append(append([]string{}, p.Extensions...), p.Formats...) {
+			if !seen[ext] {
+				seen[ext] = true
+				exts = append(exts, ext)
+			}
+		}
+	}
+	sort.SliceStable(exts, func(i, j int) bool { return len(exts[i]) > len(exts[j]) })
+	return exts
+}()
 
 func (m *Manager) scanDir(dir, platform, platformSlug string, isPC bool) int {
 	entries, err := os.ReadDir(dir)
@@ -99,7 +117,7 @@ func (m *Manager) scanDir(dir, platform, platformSlug string, isPC bool) int {
 		if e.IsDir() {
 			// For ROM platforms, check if this directory contains game files
 			// or is just an organizational subdirectory (like "roms/")
-			if !isPC && containsGameFiles(fp) {
+			if !isPC && containsGameFilesFor(fp, platformSlug) {
 				// This is a game folder (e.g., "TowerFall [NSP]/")
 				added += m.addLibraryEntry(fp, name, platform, platformSlug, isPC)
 			} else {
@@ -109,7 +127,7 @@ func (m *Manager) scanDir(dir, platform, platformSlug string, isPC bool) int {
 		} else {
 			// Single file — check if it's a game file
 			ext := strings.ToLower(filepath.Ext(name))
-			if isPC || gameExtensions[ext] {
+			if isPC || isGameFile(ext, platformSlug) {
 				// Skip small files (DLC, updates, sidecars)
 				if info, err := e.Info(); err == nil && info.Size() < 1_000_000 && !isPC {
 					continue
@@ -177,8 +195,25 @@ func (m *Manager) addLibraryEntry(fp, name, platform, platformSlug string, isPC 
 	return 1
 }
 
+// isGameFile reports whether ext is a game file in the ROM folder for slug:
+// anything in gameExtensions, plus the folder platform's own formats that
+// double as everyday files elsewhere (.md is a Genesis ROM in roms/genesis
+// and Markdown anywhere else).
+func isGameFile(ext, slug string) bool {
+	if gameExtensions[ext] {
+		return true
+	}
+	p, ok := platform.Lookup(slug)
+	return ok && p.Accepts(ext)
+}
+
 // containsGameFiles checks if a directory directly contains game ROM files.
 func containsGameFiles(dir string) bool {
+	return containsGameFilesFor(dir, "")
+}
+
+// containsGameFilesFor is containsGameFiles inside the ROM folder for slug.
+func containsGameFilesFor(dir, slug string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
@@ -188,7 +223,7 @@ func containsGameFiles(dir string) bool {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if gameExtensions[ext] {
+		if isGameFile(ext, slug) {
 			return true
 		}
 	}
@@ -231,9 +266,10 @@ func dirSize(path string) int64 {
 }
 
 func cleanTitle(name string) string {
-	// Remove common archive extensions
-	for _, ext := range []string{".zip", ".rar", ".7z", ".tar", ".tar.gz", ".iso", ".nsp", ".xci", ".cia", ".nds", ".gba", ".nes", ".sfc", ".n64", ".z64", ".chd", ".gdi", ".cso", ".pbp", ".gcz", ".wbfs"} {
-		if strings.HasSuffix(strings.ToLower(name), ext) {
+	// Remove the archive or ROM extension
+	lower := strings.ToLower(name)
+	for _, ext := range titleExtensions {
+		if strings.HasSuffix(lower, ext) {
 			name = name[:len(name)-len(ext)]
 			break
 		}
@@ -246,19 +282,10 @@ func cleanTitle(name string) string {
 	return strings.TrimSpace(name)
 }
 
+// platformNameFromSlug names a ROM library folder: the registry name, or the
+// upper-cased folder name when the folder is not a registry platform.
 func platformNameFromSlug(slug string) string {
-	names := map[string]string{
-		"gba": "Game Boy Advance", "gb": "Game Boy", "gbc": "Game Boy Color",
-		"nes": "NES", "snes": "SNES", "n64": "Nintendo 64",
-		"nds": "DS", "3ds": "3DS", "switch": "Switch",
-		"psx": "PS1", "ps2": "PS2", "ps3": "PS3", "ps4": "PS4",
-		"psp": "PSP", "dc": "Dreamcast",
-		"genesis": "Sega Genesis", "saturn": "Sega Saturn",
-		"ngc": "GameCube", "wii": "Wii", "wiiu": "Wii U",
-		"xbox": "Xbox", "xbox360": "Xbox 360",
-		"psvita": "PS Vita",
-	}
-	if name, ok := names[slug]; ok {
+	if name := platform.NameForSlug(slug); name != "" {
 		return name
 	}
 	return strings.ToUpper(slug)

@@ -1,13 +1,17 @@
 // Package platform defines the game platforms Gamarr supports and maps each
 // one to its display info, indexer categories, and source paths.
+//
+// Every table in this package is derived from Registry (registry.go); edit
+// the registry, not the derived maps.
 package platform
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -18,39 +22,11 @@ type PlatformInfo struct {
 	IsPC bool
 }
 
-// PlatformMap maps Prowlarr category IDs to platform info.
-var PlatformMap = map[int]PlatformInfo{
-	4000:   {Name: "PC", Slug: "", IsPC: true},
-	100010: {Name: "PC", Slug: "", IsPC: true},
-	100011: {Name: "PS2", Slug: "ps2"},
-	100012: {Name: "PSP", Slug: "psp"},
-	100013: {Name: "Xbox", Slug: "xbox"},
-	100014: {Name: "Xbox 360", Slug: "xbox360"},
-	100015: {Name: "PS1", Slug: "psx"},
-	100016: {Name: "Dreamcast", Slug: "dc"},
-	100017: {Name: "Other", Slug: ""},
-	100043: {Name: "PS3", Slug: "ps3"},
-	100044: {Name: "Wii", Slug: "wii"},
-	100045: {Name: "DS", Slug: "nds"},
-	100046: {Name: "GameCube", Slug: "ngc"},
-	100072: {Name: "3DS", Slug: "3ds"},
-	100077: {Name: "PS4", Slug: "ps4"},
-	100082: {Name: "Switch", Slug: "switch"},
-	4050:   {Name: "PC", Slug: "", IsPC: true},
-	// Standard Newznab console categories, as used by Usenet indexers and
-	// most Torznab trackers. Without these, Usenet results come back as
-	// "Unknown" and are dropped from platform-filtered searches.
-	1010: {Name: "DS", Slug: "nds"},
-	1020: {Name: "PSP", Slug: "psp"},
-	1030: {Name: "Wii", Slug: "wii"},
-	1040: {Name: "Xbox", Slug: "xbox"},
-	1050: {Name: "Xbox 360", Slug: "xbox360"},
-	1080: {Name: "PS3", Slug: "ps3"},
-	1110: {Name: "3DS", Slug: "3ds"},
-	1120: {Name: "PS Vita", Slug: "psvita"},
-	1130: {Name: "Wii U", Slug: "wiiu"},
-	1180: {Name: "PS4", Slug: "ps4"},
-}
+// PlatformMap maps Prowlarr category IDs to platform info. Derived from
+// Registry: every platform's Categories, plus the legacy tracker "Other"
+// bucket. Standard Newznab console categories are included, so Usenet results
+// are not reported as "Unknown".
+var PlatformMap map[int]PlatformInfo
 
 // ExtraPlatform is a platform not in Prowlarr categories, for user override.
 type ExtraPlatform struct {
@@ -58,17 +34,8 @@ type ExtraPlatform struct {
 	Name string
 }
 
-var ExtraPlatforms = []ExtraPlatform{
-	{"n64", "Nintendo 64"},
-	{"snes", "SNES"},
-	{"nes", "NES"},
-	{"gb", "Game Boy"},
-	{"gba", "Game Boy Advance"},
-	{"genesis", "Sega Genesis"},
-	{"saturn", "Sega Saturn"},
-	{"wiiu", "Wii U"},
-	{"psvita", "PS Vita"},
-}
+// ExtraPlatforms lists the registry platforms that no category identifies.
+var ExtraPlatforms []ExtraPlatform
 
 // AllGameCategories returns all Prowlarr category IDs.
 func AllGameCategories() []int {
@@ -82,73 +49,43 @@ func AllGameCategories() []int {
 // DetectPlatform detects platform from a list of Prowlarr category items.
 // categories can be []int or []map[string]interface{} (with "id" key).
 func DetectPlatform(categories []interface{}) PlatformInfo {
-	for _, cat := range categories {
-		var catID int
-		switch v := cat.(type) {
-		case float64:
-			catID = int(v)
-		case int:
-			catID = v
-		case map[string]interface{}:
-			if id, ok := v["id"].(float64); ok {
-				catID = int(id)
-			}
-		}
-		if info, ok := PlatformMap[catID]; ok {
-			return info
-		}
-	}
-	return PlatformInfo{Name: "Unknown"}
+	return detectFromIDs(CategoryIDs(categories))
 }
 
-// GetCategoriesForPlatform returns all Prowlarr category IDs matching a platform slug.
-func GetCategoriesForPlatform(slug string) []int {
-	switch slug {
-	case "pc":
-		return []int{4000, 100010, 4050, 1000}
-	case "switch":
-		// Nyaa has no console categories, so Switch releases there come back as
-		// PC/Games; keep requesting it and let file and title hints classify.
-		return []int{100082, 4050}
-	}
-	var matches []int
-	for catID, info := range PlatformMap {
-		if info.Slug == slug {
-			matches = append(matches, catID)
+// CategoryIDs extracts the numeric IDs from a Prowlarr categories array, whose
+// items are numbers or objects carrying an "id".
+func CategoryIDs(categories []interface{}) []int {
+	var ids []int
+	for _, cat := range categories {
+		switch v := cat.(type) {
+		case float64:
+			ids = append(ids, int(v))
+		case int:
+			ids = append(ids, v)
+		case map[string]interface{}:
+			if id, ok := v["id"].(float64); ok {
+				ids = append(ids, int(id))
+			}
 		}
 	}
-	if len(matches) > 0 {
-		return matches
+	return ids
+}
+
+// GetCategoriesForPlatform returns all Prowlarr category IDs matching a
+// platform slug: the categories the platform owns plus the extra ones its
+// search requests. A slug with no categories gets every known category.
+func GetCategoriesForPlatform(slug string) []int {
+	if p, ok := Lookup(slug); ok && len(p.Categories) > 0 {
+		cats := make([]int, 0, len(p.Categories)+len(p.SearchCategories))
+		cats = append(cats, p.Categories...)
+		return append(cats, p.SearchCategories...)
 	}
 	return AllGameCategories()
 }
 
-// metadataPlatformMap maps metadata platform names to PlatformInfo.
-var metadataPlatformMap = map[string]PlatformInfo{
-	"gamecube": {Name: "GameCube", Slug: "ngc"}, "ngc": {Name: "GameCube", Slug: "ngc"},
-	"wii": {Name: "Wii", Slug: "wii"}, "switch": {Name: "Switch", Slug: "switch"},
-	"nintendo switch": {Name: "Switch", Slug: "switch"},
-	"ps1":             {Name: "PS1", Slug: "psx"}, "psx": {Name: "PS1", Slug: "psx"},
-	"playstation": {Name: "PS1", Slug: "psx"},
-	"ps2":         {Name: "PS2", Slug: "ps2"}, "playstation 2": {Name: "PS2", Slug: "ps2"},
-	"ps3": {Name: "PS3", Slug: "ps3"}, "playstation 3": {Name: "PS3", Slug: "ps3"},
-	"ps4":      {Name: "PS4", Slug: "ps4"},
-	"psp":      {Name: "PSP", Slug: "psp"},
-	"xbox":     {Name: "Xbox", Slug: "xbox"},
-	"xbox 360": {Name: "Xbox 360", Slug: "xbox360"}, "xbox360": {Name: "Xbox 360", Slug: "xbox360"},
-	"ds": {Name: "DS", Slug: "nds"}, "nds": {Name: "DS", Slug: "nds"},
-	"nintendo ds": {Name: "DS", Slug: "nds"},
-	"3ds":         {Name: "3DS", Slug: "3ds"}, "nintendo 3ds": {Name: "3DS", Slug: "3ds"},
-	"dreamcast": {Name: "Dreamcast", Slug: "dc"},
-	"n64":       {Name: "Nintendo 64", Slug: "n64"}, "nintendo 64": {Name: "Nintendo 64", Slug: "n64"},
-	"snes": {Name: "SNES", Slug: "snes"}, "super nintendo": {Name: "SNES", Slug: "snes"},
-	"nes": {Name: "NES", Slug: "nes"},
-	"gba": {Name: "Game Boy Advance", Slug: "gba"}, "game boy advance": {Name: "Game Boy Advance", Slug: "gba"},
-	"gb": {Name: "Game Boy", Slug: "gb"}, "game boy": {Name: "Game Boy", Slug: "gb"},
-	"genesis": {Name: "Sega Genesis", Slug: "genesis"}, "sega genesis": {Name: "Sega Genesis", Slug: "genesis"},
-	"saturn": {Name: "Sega Saturn", Slug: "saturn"}, "sega saturn": {Name: "Sega Saturn", Slug: "saturn"},
-	"pc": {Name: "PC", Slug: "", IsPC: true}, "windows": {Name: "PC", Slug: "", IsPC: true},
-}
+// metadataPlatformMap maps metadata platform names to PlatformInfo. Derived
+// from each registry entry's slug, name and Aliases.
+var metadataPlatformMap map[string]PlatformInfo
 
 // DetectPlatformFromMetadata reads metadata.json in content dir.
 func DetectPlatformFromMetadata(contentPath string) (PlatformInfo, bool) {
@@ -178,65 +115,20 @@ func DetectPlatformFromMetadata(contentPath string) (PlatformInfo, bool) {
 	return PlatformInfo{}, false
 }
 
-// extPlatformMap maps file extensions to platform info.
-var extPlatformMap = map[string]PlatformInfo{
-	".nsp": {Name: "Switch", Slug: "switch"}, ".xci": {Name: "Switch", Slug: "switch"},
-	".nsz": {Name: "Switch", Slug: "switch"},
-	".3ds": {Name: "3DS", Slug: "3ds"}, ".cia": {Name: "3DS", Slug: "3ds"},
-	".nds": {Name: "DS", Slug: "nds"},
-	".gba": {Name: "Game Boy Advance", Slug: "gba"},
-	".gbc": {Name: "Game Boy Color", Slug: "gbc"},
-	".gb":  {Name: "Game Boy", Slug: "gb"},
-	".nes": {Name: "NES", Slug: "nes"},
-	".sfc": {Name: "SNES", Slug: "snes"}, ".smc": {Name: "SNES", Slug: "snes"},
-	".n64": {Name: "Nintendo 64", Slug: "n64"}, ".z64": {Name: "Nintendo 64", Slug: "n64"},
-	".v64": {Name: "Nintendo 64", Slug: "n64"},
-	".gcm": {Name: "GameCube", Slug: "ngc"}, ".gcz": {Name: "GameCube", Slug: "ngc"},
-	".wbfs": {Name: "Wii", Slug: "wii"}, ".wad": {Name: "Wii", Slug: "wii"},
-	".pbp": {Name: "PSP", Slug: "psp"}, ".cso": {Name: "PSP", Slug: "psp"},
-	".gdi": {Name: "Dreamcast", Slug: "dc"}, ".cdi": {Name: "Dreamcast", Slug: "dc"},
-}
+// extPlatformMap maps unique ROM extensions to platform info. Derived from
+// each registry entry's Extensions.
+var extPlatformMap map[string]PlatformInfo
 
-var titleHints = []struct {
-	Pattern *regexp.Regexp
-	Info    PlatformInfo
-}{
-	{regexp.MustCompile(`(?i)\[nsp\]|\bnsp\b|switch`), PlatformInfo{Name: "Switch", Slug: "switch"}},
-	{regexp.MustCompile(`(?i)\[xci\]|\bxci\b`), PlatformInfo{Name: "Switch", Slug: "switch"}},
-	{regexp.MustCompile(`(?i)\bwiiu\b|wii\s*u`), PlatformInfo{Name: "Wii U", Slug: "wiiu"}},
-	{regexp.MustCompile(`(?i)\bwii\b`), PlatformInfo{Name: "Wii", Slug: "wii"}},
-	{regexp.MustCompile(`(?i)\bgamecube\b|\bngc\b|\bgcn\b`), PlatformInfo{Name: "GameCube", Slug: "ngc"}},
-	{regexp.MustCompile(`(?i)\b3ds\b`), PlatformInfo{Name: "3DS", Slug: "3ds"}},
-	{regexp.MustCompile(`(?i)\bnds\b|\bnintendo\s*ds\b`), PlatformInfo{Name: "DS", Slug: "nds"}},
-	{regexp.MustCompile(`(?i)\bgba\b`), PlatformInfo{Name: "Game Boy Advance", Slug: "gba"}},
-	{regexp.MustCompile(`(?i)\bps3\b|playstation\s*3`), PlatformInfo{Name: "PS3", Slug: "ps3"}},
-	{regexp.MustCompile(`(?i)\bps2\b|playstation\s*2`), PlatformInfo{Name: "PS2", Slug: "ps2"}},
-	{regexp.MustCompile(`(?i)\bps1\b|\bpsx\b`), PlatformInfo{Name: "PS1", Slug: "psx"}},
-	{regexp.MustCompile(`(?i)\bpsp\b`), PlatformInfo{Name: "PSP", Slug: "psp"}},
-	{regexp.MustCompile(`(?i)\bxbox\s*360`), PlatformInfo{Name: "Xbox 360", Slug: "xbox360"}},
-	{regexp.MustCompile(`(?i)\bxbox\b`), PlatformInfo{Name: "Xbox", Slug: "xbox"}},
-	{regexp.MustCompile(`(?i)\bdreamcast\b`), PlatformInfo{Name: "Dreamcast", Slug: "dc"}},
-	{regexp.MustCompile(`(?i)\bn64\b|nintendo\s*64`), PlatformInfo{Name: "Nintendo 64", Slug: "n64"}},
-	{regexp.MustCompile(`(?i)\bsnes\b|super\s*nintendo`), PlatformInfo{Name: "SNES", Slug: "snes"}},
-	{regexp.MustCompile(`(?i)\bnes\b`), PlatformInfo{Name: "NES", Slug: "nes"}},
-	{regexp.MustCompile(`(?i)\bgenesis\b|mega\s*drive`), PlatformInfo{Name: "Sega Genesis", Slug: "genesis"}},
-}
+// pcOverrideExts are the ROM formats a PC release never legitimately ships.
+// It is deliberately much narrower than extPlatformMap, because it is the only
+// evidence allowed to overturn a PC classification: .wad is a Doom asset, and
+// .nes/.sfc/.gb/.gba/.n64 turn up inside PC games that bundle an emulator, so
+// none of those can be trusted here. .3ds is out too - it is also the 3D
+// Studio model format.
+var pcOverrideExts = []string{".nsp", ".xci", ".nsz", ".cia", ".nds", ".wbfs", ".gcz"}
 
-// consoleROMExts maps ROM formats a PC release never legitimately ships to
-// their platform. It is deliberately much narrower than extPlatformMap,
-// because it is the only evidence allowed to overturn a PC classification:
-// .wad is a Doom asset, and .nes/.sfc/.gb/.gba/.n64 turn up inside PC games
-// that bundle an emulator, so none of those can be trusted here. .3ds is out
-// too - it is also the 3D Studio model format.
-var consoleROMExts = map[string]PlatformInfo{
-	".nsp":  {Name: "Switch", Slug: "switch"},
-	".xci":  {Name: "Switch", Slug: "switch"},
-	".nsz":  {Name: "Switch", Slug: "switch"},
-	".cia":  {Name: "3DS", Slug: "3ds"},
-	".nds":  {Name: "DS", Slug: "nds"},
-	".wbfs": {Name: "Wii", Slug: "wii"},
-	".gcz":  {Name: "GameCube", Slug: "ngc"},
-}
+// consoleROMExts maps pcOverrideExts to their registry platform.
+var consoleROMExts map[string]PlatformInfo
 
 // DetectConsoleROM reports a console platform when the content carries a ROM
 // format no PC release ships.
@@ -245,11 +137,17 @@ var consoleROMExts = map[string]PlatformInfo{
 // games category (Software - Games) to, so Switch ROMs from Nyaa arrive
 // tagged PC. Category alone cannot separate the two, but the payload can:
 // a torrent holding an .nsp is a Switch release whatever it was tagged.
-// Only extensions are consulted - the title hints below are too loose to
+// Only extensions are consulted - the title hints are too loose to
 // overturn an explicit PC classification ("switch" matches plenty of PC
 // game titles).
 func DetectConsoleROM(contentPath string) (PlatformInfo, bool) {
-	for ext := range collectExtensions(contentPath) {
+	exts := collectExtensions(contentPath)
+	sorted := make([]string, 0, len(exts))
+	for ext := range exts {
+		sorted = append(sorted, ext)
+	}
+	sort.Strings(sorted)
+	for _, ext := range sorted {
 		if info, ok := consoleROMExts[ext]; ok {
 			slog.Info("console ROM format found in PC-tagged content", "ext", ext, "platform", info.Name)
 			return info, true
@@ -260,21 +158,168 @@ func DetectConsoleROM(contentPath string) (PlatformInfo, bool) {
 
 // DetectPlatformFromFiles detects platform from file extensions and title keywords.
 func DetectPlatformFromFiles(contentPath, title string) (PlatformInfo, bool) {
-	exts := collectExtensions(contentPath)
-	for ext := range exts {
-		if info, ok := extPlatformMap[ext]; ok {
-			slog.Info("platform detected from extension", "ext", ext)
-			return info, true
-		}
+	if info, ok := DetectROMPlatform(contentPath); ok {
+		return info, true
 	}
-	titleLower := strings.ToLower(title)
-	for _, hint := range titleHints {
-		if hint.Pattern.MatchString(titleLower) {
-			slog.Info("platform detected from title keyword", "pattern", hint.Pattern.String())
-			return hint.Info, true
+	if info, ok := DetectPlatformFromTitle(title); ok {
+		slog.Info("platform detected from title keyword", "platform", info.Name)
+		return info, true
+	}
+	return PlatformInfo{}, false
+}
+
+// DetectROMPlatform classifies content from its ROM files alone: loose files,
+// files in subfolders, and the members of .zip archives. Each file with a
+// unique ROM extension votes for its platform and the most votes win (ties go
+// to registry order). When no file has a unique extension but the content is a
+// single file whose format only one console uses (.vb, .md, .pkg), that
+// console is reported.
+func DetectROMPlatform(contentPath string) (PlatformInfo, bool) {
+	scan := scanContent(contentPath)
+	if info, ok := scan.vote(); ok {
+		slog.Info("platform detected from ROM extensions", "platform", info.Name)
+		return info, true
+	}
+	if scan.single != "" {
+		var only []Platform
+		for _, p := range PlatformsAccepting(scan.single) {
+			if !p.IsPC {
+				only = append(only, p)
+			}
+		}
+		if len(only) == 1 {
+			slog.Info("platform detected from single-file format", "ext", scan.single, "platform", only[0].Name)
+			return only[0].Info(), true
 		}
 	}
 	return PlatformInfo{}, false
+}
+
+// ContentConflict is the post-download sanity check on a platform the job
+// already carries. It reports the platform the content positively belongs to
+// when that is not slug: none of the content's files is a format slug's
+// platform uses, and its unique ROM extensions point elsewhere. A job whose
+// content includes any format of its own platform is never contradicted, so a
+// Switch release with a stray .nes inside stays a Switch release.
+func ContentConflict(slug, contentPath string) (PlatformInfo, bool) {
+	p, known := Lookup(slug)
+	if known && p.IsPC {
+		return PlatformInfo{}, false
+	}
+	scan := scanContent(contentPath)
+	if known {
+		for ext := range scan.exts {
+			if p.Accepts(ext) {
+				return PlatformInfo{}, false
+			}
+		}
+	}
+	info, ok := scan.vote()
+	if !ok || info.Slug == slug {
+		return PlatformInfo{}, false
+	}
+	return info, true
+}
+
+// contentScan is what the extension checks read from downloaded content.
+type contentScan struct {
+	exts   map[string]bool
+	counts map[string]int // files per unique-extension platform slug
+	// single is the extension of the only file when the content is one file,
+	// looking through a .zip that holds one file.
+	single string
+}
+
+// maxZipMembers bounds how much of a zip's directory is read.
+const maxZipMembers = 5000
+
+func scanContent(path string) contentScan {
+	scan := contentScan{exts: map[string]bool{}, counts: map[string]int{}}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return scan
+	}
+	var files []string
+	if fi.IsDir() {
+		_ = filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			// Gamarr's own sidecars are not content.
+			if strings.HasSuffix(info.Name(), ".gamarr.json") || info.Name() == "metadata.json" {
+				return nil
+			}
+			files = append(files, p)
+			return nil
+		})
+	} else {
+		files = []string{path}
+	}
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		scan.add(ext)
+		if ext == ".zip" {
+			members := zipMemberExts(f)
+			for _, m := range members {
+				scan.add(m)
+			}
+			if len(files) == 1 && len(members) == 1 {
+				scan.single = members[0]
+			}
+		}
+	}
+	if len(files) == 1 && scan.single == "" {
+		scan.single = strings.ToLower(filepath.Ext(files[0]))
+	}
+	return scan
+}
+
+func (s *contentScan) add(ext string) {
+	if ext == "" {
+		return
+	}
+	s.exts[ext] = true
+	if p, ok := byExtension[ext]; ok {
+		s.counts[p.Slug]++
+	}
+}
+
+// vote returns the platform with the most unique-extension files.
+func (s *contentScan) vote() (PlatformInfo, bool) {
+	var best *Platform
+	bestN := 0
+	for i := range Registry {
+		if n := s.counts[Registry[i].Slug]; n > bestN {
+			best, bestN = &Registry[i], n
+		}
+	}
+	if best == nil {
+		return PlatformInfo{}, false
+	}
+	return best.Info(), true
+}
+
+// zipMemberExts lists the extensions of a zip's file members from its central
+// directory, without extracting anything. Unreadable archives list nothing.
+func zipMemberExts(path string) []string {
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		return nil
+	}
+	defer r.Close()
+	var out []string
+	for i, f := range r.File {
+		if i >= maxZipMembers {
+			break
+		}
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if ext := strings.ToLower(filepath.Ext(f.Name)); ext != "" {
+			out = append(out, ext)
+		}
+	}
+	return out
 }
 
 func collectExtensions(path string) map[string]bool {
