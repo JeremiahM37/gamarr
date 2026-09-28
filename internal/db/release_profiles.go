@@ -153,7 +153,7 @@ func (s *JobStore) ApplyReleaseProfiles(title string) (int, bool) {
 
 		// Check must_not_contain (exclude)
 		for _, word := range p.MustNotContain {
-			if containsIgnoreCase(titleLower, toLower(word)) {
+			if containsWordIgnoreCase(titleLower, toLower(word)) {
 				return 0, true
 			}
 		}
@@ -215,4 +215,32 @@ func containsIgnoreCase(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// containsWordIgnoreCase matches needle only as a whole word, bounded by a
+// non-alphanumeric character or the string edge on both sides, so an exclusion
+// entry cannot fire inside a longer word. The substring form stays on the
+// other two lists because their entries are deliberate fragments: bounding
+// "MULTi" would stop it scoring "MULTi12" on the seeded default profile.
+func containsWordIgnoreCase(haystack, needle string) bool {
+	if len(needle) == 0 {
+		return false
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] != needle {
+			continue
+		}
+		if i > 0 && isWordByte(haystack[i-1]) {
+			continue
+		}
+		if end := i + len(needle); end < len(haystack) && isWordByte(haystack[end]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
