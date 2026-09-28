@@ -298,3 +298,63 @@ func TestJsonHelpers(t *testing.T) {
 		t.Errorf("jsonArray missing should be nil")
 	}
 }
+
+// A platform-filtered search keeps what the categories do not place anywhere
+// else and files it under the searched platform, and drops what they place on
+// a different platform.
+func TestSearchProwlarr_SearchContextPlatform(t *testing.T) {
+	item := func(title string, cats ...float64) map[string]interface{} {
+		ic := make([]interface{}, len(cats))
+		for i, c := range cats {
+			ic[i] = c
+		}
+		return map[string]interface{}{
+			"title": title, "size": float64(2_000_000), "seeders": float64(10),
+			"categories": ic,
+		}
+	}
+	items := []map[string]interface{}{
+		item("Chrono Trigger Console Other", 1090),
+		item("Chrono Trigger Console", 1000),
+		item("Chrono Trigger Uncategorised"),
+		item("Chrono Trigger Tracker Retro", 100999),
+		item("Chrono Trigger PS2 Tagged", 100011),
+		item("Chrono Trigger DS Newznab", 1000, 1010),
+		item("Chrono Trigger Movie", 2000),
+		item("Chrono Trigger FitGirl Repack", 1090),
+	}
+	srv := stubProwlarr(t, items)
+	defer srv.Close()
+	cfg := &config.Config{ProwlarrURL: srv.URL, ProwlarrAPIKey: "key", ProwlarrGameIndexers: []int{1}}
+
+	results := SearchProwlarr(cfg, "chrono trigger", "snes")
+	kept := map[string]string{}
+	for _, r := range results {
+		kept[r.Title] = r.PlatformSlug + "|" + r.Platform
+	}
+	for _, title := range []string{
+		"Chrono Trigger Console Other", "Chrono Trigger Console",
+		"Chrono Trigger Uncategorised", "Chrono Trigger Tracker Retro",
+	} {
+		if got, ok := kept[title]; !ok {
+			t.Errorf("%q dropped, want kept as snes", title)
+		} else if got != "snes|SNES" {
+			t.Errorf("%q platform = %s, want snes|SNES", title, got)
+		}
+	}
+	for _, title := range []string{
+		"Chrono Trigger PS2 Tagged", "Chrono Trigger DS Newznab",
+		"Chrono Trigger Movie", "Chrono Trigger FitGirl Repack",
+	} {
+		if _, ok := kept[title]; ok {
+			t.Errorf("%q kept in a SNES search, want dropped", title)
+		}
+	}
+
+	// Unfiltered, nothing is assigned: generic results stay Unknown.
+	for _, r := range SearchProwlarr(cfg, "chrono trigger", "") {
+		if r.Title == "Chrono Trigger Console Other" && r.Platform != "Unknown" {
+			t.Errorf("unfiltered generic result platform = %q, want Unknown", r.Platform)
+		}
+	}
+}
