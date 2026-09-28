@@ -1009,6 +1009,16 @@ func (m *Manager) platformChosenManually(jobID string) bool {
 	return src == platformSourceManual
 }
 
+// romDestDir is the ROM library folder a platform's content is filed in:
+// GAMES_ROMS_PATH/<slug>, or <slug>-hacks under HACKS_SUFFIX_ROUTING when a
+// release or file name looks like a ROM hack. platSlug arrives from the
+// download request, so it is kept a single path component that cannot climb
+// out of the ROM library root.
+func (m *Manager) romDestDir(platSlug string, names ...string) string {
+	folder := platform.LibraryFolder(platSlug, m.cfg.HacksSuffixRouting, names...)
+	return filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(folder))
+}
+
 // organizeGame imports a finished torrent, reporting whether a failure is worth
 // another attempt later. Only a content path that is not there yet is: the
 // client may still be moving files into place when the download reads complete.
@@ -1152,9 +1162,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		m.jobs.LogActivity("download_completed", torrentName, "Organized to GameVault", jobID, nil)
 		slog.Info("PC game organized", "name", sanitizeLog(torrentName), "dest", sanitizeLog(dest))
 	} else if platSlug != "" {
-		// platSlug arrives from the download request; keep it a single path
-		// component so it cannot climb out of the ROM library root.
-		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
+		destDir := m.romDestDir(platSlug, torrentName, importName)
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, sanitizeFilename(importName))
 		defer lockDest(dest)()
@@ -2290,7 +2298,7 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 		m.jobs.LogActivity("download_completed", title, "DDL to GameVault", jobID, nil)
 		slog.Info("DDL PC game organized", "file", sanitizeLog(filename), "dest", sanitizeLog(dest))
 	} else if platSlug != "" {
-		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
+		destDir := m.romDestDir(platSlug, title, filename)
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, filename)
 		if err := moveFile(fp, dest); err != nil {

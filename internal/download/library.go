@@ -203,6 +203,7 @@ func isGameFile(ext, slug string) bool {
 	if gameExtensions[ext] {
 		return true
 	}
+	slug = strings.TrimSuffix(slug, platform.HacksSuffix)
 	p, ok := platform.Lookup(slug)
 	return ok && p.Accepts(ext)
 }
@@ -282,11 +283,17 @@ func cleanTitle(name string) string {
 	return strings.TrimSpace(name)
 }
 
-// platformNameFromSlug names a ROM library folder: the registry name, or the
-// upper-cased folder name when the folder is not a registry platform.
+// platformNameFromSlug names a ROM library folder: the registry name, with
+// " Hacks" for a hacks-routing folder, or the upper-cased folder name when the
+// folder is not a registry platform.
 func platformNameFromSlug(slug string) string {
 	if name := platform.NameForSlug(slug); name != "" {
 		return name
+	}
+	if base, ok := strings.CutSuffix(slug, platform.HacksSuffix); ok {
+		if name := platform.NameForSlug(base); name != "" {
+			return name + " Hacks"
+		}
 	}
 	return strings.ToUpper(slug)
 }

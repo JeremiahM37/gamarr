@@ -99,12 +99,13 @@ func (p *Pipeline) organizePC(sourcePath string) (string, error) {
 }
 
 func (p *Pipeline) organizeROM(sourcePath, platformSlug string) (string, error) {
-	destDir := filepath.Join(p.cfg.GamesRomsPath, platformSlug)
+	baseName := filepath.Base(sourcePath)
+	folder := gplatform.LibraryFolder(platformSlug, p.cfg.HacksSuffixRouting, baseName)
+	destDir := filepath.Join(p.cfg.GamesRomsPath, folder)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return sourcePath, err
 	}
 
-	baseName := filepath.Base(sourcePath)
 	dest := filepath.Join(destDir, baseName)
 
 	// Same sentinel as the vault path. Reporting this with a bare error left the
@@ -118,7 +119,7 @@ func (p *Pipeline) organizeROM(sourcePath, platformSlug string) (string, error) 
 		return sourcePath, err
 	}
 
-	slog.Info("ROM organized", "source", sourcePath, "dest", dest, "platform", platformSlug)
+	slog.Info("ROM organized", "source", sourcePath, "dest", dest, "platform", platformSlug, "folder", folder)
 	return dest, nil
 }
 

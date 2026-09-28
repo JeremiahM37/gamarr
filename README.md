@@ -379,6 +379,7 @@ Configure either SABnzbd or NZBGet for NZB downloads. If both are configured, SA
 | `RENAME_PATTERN` | `{title} ({platform}).{ext}` | Rename pattern |
 | `GAMEVAULT_URL` | | GameVault server URL |
 | `ROMM_URL` | | RomM server URL |
+| `HACKS_SUFFIX_ROUTING` | `false` | File ROM hacks and fan translations under `<slug>-hacks` instead of `<slug>` (e.g. `snes-hacks`). A release or file name counts as a hack when it carries a GoodTools-style `[h...]` tag, a `[T+...]`/`[T-...]` translation tag, `(Hack)`, or the word "hack" |
 
 ### Notifications
 

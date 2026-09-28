@@ -60,6 +60,10 @@ type Config struct {
 	// after whichever loose file inside it has a supported extension.
 	VaultArchiveEnabled bool
 
+	// HacksSuffixRouting files a ROM whose release or file name looks like a
+	// ROM hack or fan translation under "<slug>-hacks" instead of "<slug>".
+	HacksSuffixRouting bool
+
 	// Experimental
 	ExtractArchives bool
 
@@ -203,6 +207,7 @@ func Load() *Config {
 		ImportHardlinkFallback: envHardlinkFallback("IMPORT_HARDLINK_FALLBACK"),
 
 		VaultArchiveEnabled: envBool("VAULT_ARCHIVE_ENABLED", false),
+		HacksSuffixRouting:  envBool("HACKS_SUFFIX_ROUTING", false),
 
 		ExtractArchives: envBool("EXTRACT_ARCHIVES", false),
 

@@ -457,3 +457,23 @@ func TestDetectPlatformRetroExtensions(t *testing.T) {
 		})
 	}
 }
+
+func TestOrganizeROMHacksRouting(t *testing.T) {
+	for _, routing := range []bool{false, true} {
+		p, _, roms := newTestPipeline(t)
+		p.cfg.HacksSuffixRouting = routing
+		src := filepath.Join(t.TempDir(), "Super Mario World [h1].sfc")
+		writeFile(t, src, "rom")
+		dest, err := p.OrganizeGame(src, "SNES", "snes", false)
+		if err != nil {
+			t.Fatalf("routing=%v: %v", routing, err)
+		}
+		folder := "snes"
+		if routing {
+			folder = "snes-hacks"
+		}
+		if want := filepath.Join(roms, folder, "Super Mario World [h1].sfc"); dest != want {
+			t.Errorf("routing=%v: dest = %s, want %s", routing, dest, want)
+		}
+	}
+}
