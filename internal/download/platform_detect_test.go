@@ -79,3 +79,11 @@ func TestManualPlatformSkipsSanityCheck(t *testing.T) {
 		t.Error("manually chosen platform was overridden")
 	}
 }
+
+func TestManualPCPlatformSkipsSanityCheck(t *testing.T) {
+	m, id, src := ddlFixture(t, "bundled.nds", map[string]interface{}{"platform_source": platformSourceManual})
+	name, slug, pc := m.resolvePlatform(id, src, "Emulator bundle", "PC", "", true)
+	if name != "PC" || slug != "" || !pc {
+		t.Fatalf("manual PC selection overridden: %s %s %v", name, slug, pc)
+	}
+}

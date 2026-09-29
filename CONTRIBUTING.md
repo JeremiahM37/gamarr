@@ -13,10 +13,10 @@ go test ./...
 
 ## Adding a Platform
 
-1. Add the platform to `internal/platform/platform.go`
-2. Map Prowlarr categories in the platform map
-3. Add Myrient path if applicable
-4. Write tests
+1. Add an entry to `internal/platform/registry.go` with its slug, categories, formats and metadata hints.
+2. Keep automatic-detection extensions unique; put shared or ambiguous formats in `Formats`.
+3. Add source registry paths if applicable.
+4. Write detection, search and import tests.
 
 ## License
 

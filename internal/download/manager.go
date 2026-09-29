@@ -941,6 +941,10 @@ func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug strin
 // what it finds on the job row. Every import path calls it, so none can drift
 // from the others on what a download turns out to be.
 func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug string, isPC bool) (string, string, bool) {
+	// An explicit operator choice takes precedence over every detection layer.
+	if m.platformChosenManually(jobID) {
+		return platf, platSlug, isPC
+	}
 	// Platform detection from metadata
 	if platSlug == "" && !isPC {
 		if info, ok := platform.DetectPlatformFromMetadata(contentPath); ok {

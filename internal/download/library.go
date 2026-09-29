@@ -128,8 +128,8 @@ func (m *Manager) scanDir(dir, platform, platformSlug string, isPC bool) int {
 			// Single file — check if it's a game file
 			ext := strings.ToLower(filepath.Ext(name))
 			if isPC || isGameFile(ext, platformSlug) {
-				// Skip small files (DLC, updates, sidecars)
-				if info, err := e.Info(); err == nil && info.Size() < 1_000_000 && !isPC {
+				// Small ROMs are normal on retro systems; only empty files are invalid.
+				if info, err := e.Info(); err == nil && info.Size() == 0 && !isPC {
 					continue
 				}
 				// Skip update files

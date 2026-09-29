@@ -172,7 +172,7 @@ func DetectPlatformFromFiles(contentPath, title string) (PlatformInfo, bool) {
 // files in subfolders, and the members of .zip archives. Each file with a
 // unique ROM extension votes for its platform and the most votes win (ties go
 // to registry order). When no file has a unique extension but the content is a
-// single file whose format only one console uses (.vb, .md, .pkg), that
+// single file whose unambiguous game format only one console uses (.pkg), that
 // console is reported.
 func DetectROMPlatform(contentPath string) (PlatformInfo, bool) {
 	scan := scanContent(contentPath)
@@ -180,7 +180,7 @@ func DetectROMPlatform(contentPath string) (PlatformInfo, bool) {
 		slog.Info("platform detected from ROM extensions", "platform", info.Name)
 		return info, true
 	}
-	if scan.single != "" {
+	if scan.single != "" && !nonROMCollisions[scan.single] {
 		var only []Platform
 		for _, p := range PlatformsAccepting(scan.single) {
 			if !p.IsPC {

@@ -268,9 +268,6 @@ func TestDetectROMPlatformRetroExtensions(t *testing.T) {
 		{[]string{"disk1.d64", "disk2.d64"}, "c64"},
 		{[]string{"Lemmings Disk1.adf", "Lemmings Disk2.adf"}, "amiga"},
 		{[]string{"Streets of Rage (USA).gen"}, "genesis"},
-		// A lone file whose format only one console uses decides it.
-		{[]string{"Sonic (USA).md"}, "genesis"},
-		{[]string{"Mario Clash (USA).vb"}, "virtualboy"},
 		// Nested inside the downloaded folder.
 		{[]string{"Pack/roms/Alex Kidd.sms", "Pack/readme.txt"}, "sms"},
 		// Majority of unique-extension files wins.
@@ -297,8 +294,8 @@ func TestDetectROMPlatformLooksInsideZips(t *testing.T) {
 
 	single := filepath.Join(t.TempDir(), "Sonic (USA).zip")
 	writeZip(t, single, "Sonic (USA).md")
-	if info, ok := DetectROMPlatform(single); !ok || info.Slug != "genesis" {
-		t.Errorf("zip holding one .md = %+v, %v; want genesis", info, ok)
+	if info, ok := DetectROMPlatform(single); ok {
+		t.Errorf("ambiguous .md must require a platform selection, got %+v", info)
 	}
 }
 
@@ -410,5 +407,22 @@ func TestDetectPlatformFromFilename(t *testing.T) {
 		if !ok || info.Slug != want {
 			t.Errorf("%s: got %+v, %v; want %s", name, info, ok, want)
 		}
+	}
+}
+
+func TestAutomaticDetectionDoesNotClassifyDocuments(t *testing.T) {
+	for _, filename := range []string{"README.md", "Form.vb", "root.crt"} {
+		t.Run(filename, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFiles(t, dir, filename)
+			if info, ok := DetectROMPlatform(dir); ok {
+				t.Fatalf("document classified as ROM: %+v", info)
+			}
+			zipped := filepath.Join(t.TempDir(), "documents.zip")
+			writeZip(t, zipped, filename)
+			if info, ok := DetectROMPlatform(zipped); ok {
+				t.Fatalf("zipped document classified as ROM: %+v", info)
+			}
+		})
 	}
 }
