@@ -3,6 +3,8 @@ package db
 import (
 	"encoding/json"
 	"log/slog"
+	"unicode"
+	"unicode/utf8"
 )
 
 // PreferredWord is a word with a score boost/penalty.
@@ -218,7 +220,7 @@ func containsIgnoreCase(haystack, needle string) bool {
 }
 
 // containsWordIgnoreCase matches needle only as a whole word, bounded by a
-// non-alphanumeric character or the string edge on both sides, so an exclusion
+// non-letter/number/mark character or the string edge on both sides, so an exclusion
 // entry cannot fire inside a longer word. The substring form stays on the
 // other two lists because their entries are deliberate fragments: bounding
 // "MULTi" would stop it scoring "MULTi12" on the seeded default profile.
@@ -230,17 +232,23 @@ func containsWordIgnoreCase(haystack, needle string) bool {
 		if haystack[i:i+len(needle)] != needle {
 			continue
 		}
-		if i > 0 && isWordByte(haystack[i-1]) {
-			continue
+		if i > 0 {
+			previous, _ := utf8.DecodeLastRuneInString(haystack[:i])
+			if isWordRune(previous) {
+				continue
+			}
 		}
-		if end := i + len(needle); end < len(haystack) && isWordByte(haystack[end]) {
-			continue
+		if end := i + len(needle); end < len(haystack) {
+			next, _ := utf8.DecodeRuneInString(haystack[end:])
+			if isWordRune(next) {
+				continue
+			}
 		}
 		return true
 	}
 	return false
 }
 
-func isWordByte(c byte) bool {
-	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+func isWordRune(c rune) bool {
+	return unicode.IsLetter(c) || unicode.IsNumber(c) || unicode.IsMark(c)
 }

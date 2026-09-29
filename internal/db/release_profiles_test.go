@@ -28,6 +28,12 @@ func TestContainsWordIgnoreCase(t *testing.T) {
 		{"phrase between spaces", "a free download here", "free download", true},
 		{"phrase inside a word", "free downloadable", "free download", false},
 
+		{"unicode prefix is part of word", "érat", "rat", false},
+		{"unicode suffix is part of word", "raté", "rat", false},
+		{"combining mark continues word", "rat\u0301", "rat", false},
+		{"unicode punctuation separates", "game—rat", "rat", true},
+		{"later bounded occurrence", "ratchet rat", "rat", true},
+
 		{"empty entry", "anything", "", false},
 		{"no occurrence", "normal game release", "rat", false},
 	}
