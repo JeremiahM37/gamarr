@@ -26,3 +26,25 @@ def test_console_categories_and_retro_context(ui, monkeypatch):
         expect(page.locator("#results")).to_contain_text("RegistryFixture Generic")
         expect(page.locator("#results")).not_to_contain_text("WrongPlatform")
     expect(page.locator("#results")).to_contain_text("Game Boy Color")
+
+
+def test_manual_organize_lists_registry_platforms(ui):
+    # Keep the unfinished download deterministic; the platform API and UI are real.
+    page = ui["page"]
+    page.route("**/api/downloads", lambda route: route.fulfill(json={"downloads": [{
+        "title": "Manual Platform Fixture", "hash": "registry-fixture",
+        "status": "completed_unorganized", "progress": 100,
+    }]}))
+    with page.expect_response(lambda r: r.url.endswith("/api/platforms")) as reply:
+        page.locator('#main-nav button[data-tab="downloads"]').click()
+    slugs = [p["id"] for p in reply.value.json()["platforms"] if p["id"] != "all"]
+    dialogs = []
+
+    def inspect(dialog):
+        dialogs.append(dialog.message)
+        dialog.dismiss()
+
+    page.once("dialog", inspect)
+    page.get_by_role("button", name="Organize", exact=True).click()
+    assert dialogs == [f"Platform? ({', '.join(slugs)})"]
+    assert "gbc" in slugs and "sms" in slugs

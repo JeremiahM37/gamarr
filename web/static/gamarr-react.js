@@ -9821,44 +9821,44 @@ function se({ page: e, total: t, setPage: n }) {
 	});
 }
 function ce({ call: e, toast: t }) {
-	let [n, r] = (0, l.useState)([]), [i, a] = (0, l.useState)({}), o = (0, l.useCallback)(async () => {
+	let [n, r] = (0, l.useState)([]), i = S(e), [a, o] = (0, l.useState)({}), s = (0, l.useCallback)(async () => {
 		let t = await e("/api/downloads");
 		r(t.downloads ?? []);
 	}, [e]);
 	(0, l.useEffect)(() => {
-		o().catch(() => void 0);
-		let e = window.setInterval(() => void o().catch(() => void 0), 5e3);
+		s().catch(() => void 0);
+		let e = window.setInterval(() => void s().catch(() => void 0), 5e3);
 		return () => window.clearInterval(e);
-	}, [o]);
-	let s = async (n, r, i) => {
+	}, [s]);
+	let c = async (n, r, i) => {
 		try {
 			let a = await e(n, r);
-			await o(), t(a.message || i, "success");
+			await s(), t(a.message || i, "success");
 		} catch (e) {
 			t(e instanceof Error ? e.message : "Action failed", "error");
 		}
-	}, c = async (n) => {
+	}, u = async (n) => {
 		try {
 			n.hash && await e(`/api/downloads/torrent/${encodeURIComponent(n.hash)}`, { method: "DELETE" });
 			let r = n.files?.length ? n.files : [n];
 			for (let t of r) t.job_id && await e(`/api/downloads/${encodeURIComponent(t.job_id)}`, { method: "DELETE" });
-			await o(), t("Removed download", "success");
+			await s(), t("Removed download", "success");
 		} catch (e) {
 			t(e instanceof Error ? e.message : "Remove failed", "error");
 		}
-	}, u = async (n) => {
+	}, d = async (n) => {
 		if (!n.hash) return;
-		let r = window.prompt("Platform? (pc, switch, ps2, ps3, psp, nds, 3ds, wii, ngc, dc, psx, gba, n64, snes, nes, gb, genesis, saturn, xbox, xbox360)", "pc");
+		let r = window.prompt(`Platform? (${i.filter((e) => e.id !== "all").map((e) => e.id).join(", ")})`, "pc");
 		if (!r) return;
-		let i = r.trim().toLowerCase(), a = i === "pc";
+		let a = r.trim().toLowerCase(), o = a === "pc";
 		try {
 			let r = await e(`/api/downloads/organize/${encodeURIComponent(n.hash)}`, f("POST", {
-				platform: a ? "PC" : i.toUpperCase(),
-				platform_slug: a ? "" : i,
-				is_pc: a
+				platform: o ? "PC" : a.toUpperCase(),
+				platform_slug: o ? "" : a,
+				is_pc: o
 			}));
 			if (!r.success) throw Error(r.error ?? "Failed to organize torrent");
-			n.job_id && await e(`/api/downloads/${encodeURIComponent(n.job_id)}`, { method: "DELETE" }), await o(), t("Organizing…", "success");
+			n.job_id && await e(`/api/downloads/${encodeURIComponent(n.job_id)}`, { method: "DELETE" }), await s(), t("Organizing…", "success");
 		} catch (e) {
 			t(e instanceof Error ? e.message : "Failed to organize torrent", "error");
 		}
@@ -9871,7 +9871,7 @@ function ce({ call: e, toast: t }) {
 				className: "text-xl font-semibold text-white",
 				children: "Downloads"
 			}), /* @__PURE__ */ (0, m.jsx)("button", {
-				onClick: () => void s("/api/downloads/clear", f("POST"), "Cleared"),
+				onClick: () => void c("/api/downloads/clear", f("POST"), "Cleared"),
 				className: "secondary",
 				children: "Clear Finished"
 			})]
@@ -9882,7 +9882,7 @@ function ce({ call: e, toast: t }) {
 				icon: "⬇",
 				children: "No active downloads"
 			}), n.map((e) => {
-				let t = e.files || [], n = e.type === "archive" || t.length > 1, r = e.hash || e.title, o = e.progress, l = {
+				let t = e.files || [], n = e.type === "archive" || t.length > 1, r = e.hash || e.title, s = e.progress, l = {
 					downloading: "bg-blue-500/20 text-blue-400",
 					completed: "bg-emerald-500/20 text-emerald-400",
 					error: "bg-red-500/20 text-red-400",
@@ -9890,7 +9890,7 @@ function ce({ call: e, toast: t }) {
 					scanning: "bg-purple-500/20 text-purple-400",
 					dead_letter: "bg-red-500/20 text-red-300",
 					interrupted: "bg-orange-500/20 text-orange-400"
-				}, d = e.eta && e.eta > 0 && e.eta < 864e3 ? e.eta > 3600 ? `${Math.floor(e.eta / 3600)}h ${Math.floor(e.eta % 3600 / 60)}m` : `${Math.floor(e.eta / 60)}m` : "";
+				}, p = e.eta && e.eta > 0 && e.eta < 864e3 ? e.eta > 3600 ? `${Math.floor(e.eta / 3600)}h ${Math.floor(e.eta % 3600 / 60)}m` : `${Math.floor(e.eta / 60)}m` : "";
 				return /* @__PURE__ */ (0, m.jsxs)("article", {
 					className: "bg-slate-900 border border-slate-800 rounded-xl p-4",
 					children: [
@@ -9903,7 +9903,8 @@ function ce({ call: e, toast: t }) {
 								className: "flex gap-1.5 shrink-0",
 								children: [
 									!n && e.status === "completed_unorganized" && e.hash && /* @__PURE__ */ (0, m.jsx)("button", {
-										onClick: () => void u(e),
+										onClick: () => void d(e),
+										disabled: i.length === 0,
 										className: "secondary",
 										children: "Organize"
 									}),
@@ -9912,16 +9913,16 @@ function ce({ call: e, toast: t }) {
 										"interrupted",
 										"dead_letter"
 									].includes(e.status) && !n && e.job_id && e.can_retry && /* @__PURE__ */ (0, m.jsx)("button", {
-										onClick: () => void s(`/api/downloads/${encodeURIComponent(e.job_id)}/retry`, f("POST"), "Retrying…"),
+										onClick: () => void c(`/api/downloads/${encodeURIComponent(e.job_id)}/retry`, f("POST"), "Retrying…"),
 										className: "secondary",
 										children: "Retry"
 									}),
 									e.hash ? /* @__PURE__ */ (0, m.jsx)("button", {
-										onClick: () => void c(e),
+										onClick: () => void u(e),
 										className: "secondary",
 										children: "Remove"
 									}) : e.job_id && /* @__PURE__ */ (0, m.jsx)("button", {
-										onClick: () => void s(`/api/downloads/${encodeURIComponent(e.job_id)}`, { method: "DELETE" }, "Dismissed job"),
+										onClick: () => void c(`/api/downloads/${encodeURIComponent(e.job_id)}`, { method: "DELETE" }, "Dismissed job"),
 										className: "secondary",
 										children: "Dismiss"
 									})
@@ -9947,30 +9948,30 @@ function ce({ call: e, toast: t }) {
 									className: "text-slate-500",
 									children: e.speed
 								}),
-								d && /* @__PURE__ */ (0, m.jsxs)("span", {
+								p && /* @__PURE__ */ (0, m.jsxs)("span", {
 									className: "text-slate-500",
-									children: ["ETA: ", d]
+									children: ["ETA: ", p]
 								}),
-								o !== void 0 && /* @__PURE__ */ (0, m.jsxs)("span", {
+								s !== void 0 && /* @__PURE__ */ (0, m.jsxs)("span", {
 									className: "text-slate-400",
-									children: [o, "%"]
+									children: [s, "%"]
 								})
 							]
 						}),
-						o !== void 0 && /* @__PURE__ */ (0, m.jsx)("div", {
+						s !== void 0 && /* @__PURE__ */ (0, m.jsx)("div", {
 							className: "bg-slate-800 rounded-full h-1.5 overflow-hidden",
 							children: /* @__PURE__ */ (0, m.jsx)("div", {
-								"data-download-progress": o,
-								className: `progress-bar h-full rounded-full ${o >= 100 ? "bg-emerald-500" : e.status === "error" ? "bg-red-500" : "bg-indigo-500"}`,
-								style: { width: `${Math.max(0, Math.min(100, o))}%` }
+								"data-download-progress": s,
+								className: `progress-bar h-full rounded-full ${s >= 100 ? "bg-emerald-500" : e.status === "error" ? "bg-red-500" : "bg-indigo-500"}`,
+								style: { width: `${Math.max(0, Math.min(100, s))}%` }
 							})
 						}),
 						n && /* @__PURE__ */ (0, m.jsxs)("details", {
 							"data-archive-hash": r,
-							open: i[r] !== !1,
+							open: a[r] !== !1,
 							onToggle: (e) => {
 								let t = e.currentTarget.open;
-								a((e) => e[r] === t ? e : {
+								o((e) => e[r] === t ? e : {
 									...e,
 									[r]: t
 								});
@@ -10014,11 +10015,11 @@ function ce({ call: e, toast: t }) {
 											"dead_letter"
 										].includes(e.status) && /* @__PURE__ */ (0, m.jsx)("button", {
 											className: "secondary",
-											onClick: () => void s(`/api/downloads/${encodeURIComponent(e.job_id)}/retry`, f("POST"), "Retrying…"),
+											onClick: () => void c(`/api/downloads/${encodeURIComponent(e.job_id)}/retry`, f("POST"), "Retrying…"),
 											children: "Retry"
 										}), /* @__PURE__ */ (0, m.jsx)("button", {
 											className: "secondary",
-											onClick: () => void s(`/api/downloads/${encodeURIComponent(e.job_id)}`, { method: "DELETE" }, "Dismissed job"),
+											onClick: () => void c(`/api/downloads/${encodeURIComponent(e.job_id)}`, { method: "DELETE" }, "Dismissed job"),
 											children: "Dismiss"
 										})]
 									})
