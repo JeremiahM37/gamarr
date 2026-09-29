@@ -37,6 +37,19 @@ var PlatformMap = map[int]PlatformInfo{
 	100077: {Name: "PS4", Slug: "ps4"},
 	100082: {Name: "Switch", Slug: "switch"},
 	4050:   {Name: "PC", Slug: "", IsPC: true},
+	// Standard Newznab console categories, as used by Usenet indexers and
+	// most Torznab trackers. Without these, Usenet results come back as
+	// "Unknown" and are dropped from platform-filtered searches.
+	1010: {Name: "DS", Slug: "nds"},
+	1020: {Name: "PSP", Slug: "psp"},
+	1030: {Name: "Wii", Slug: "wii"},
+	1040: {Name: "Xbox", Slug: "xbox"},
+	1050: {Name: "Xbox 360", Slug: "xbox360"},
+	1080: {Name: "PS3", Slug: "ps3"},
+	1110: {Name: "3DS", Slug: "3ds"},
+	1120: {Name: "PS Vita", Slug: "psvita"},
+	1130: {Name: "Wii U", Slug: "wiiu"},
+	1180: {Name: "PS4", Slug: "ps4"},
 }
 
 // ExtraPlatform is a platform not in Prowlarr categories, for user override.

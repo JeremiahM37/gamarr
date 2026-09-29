@@ -55,6 +55,21 @@ func TestDetectPlatform(t *testing.T) {
 			wantName:   "DS",
 		},
 		{
+			name:       "DS from standard Newznab 1010",
+			categories: []interface{}{float64(1000), float64(1010)},
+			wantName:   "DS",
+		},
+		{
+			name:       "3DS from standard Newznab 1110 as object",
+			categories: []interface{}{map[string]interface{}{"id": float64(1110)}},
+			wantName:   "3DS",
+		},
+		{
+			name:       "Wii U from standard Newznab 1130",
+			categories: []interface{}{float64(1130)},
+			wantName:   "Wii U",
+		},
+		{
 			name:       "unknown category",
 			categories: []interface{}{float64(99999)},
 			wantName:   "Unknown",
@@ -363,6 +378,22 @@ func TestConsoleROMExtsExcludePCAmbiguousFormats(t *testing.T) {
 	for _, ext := range []string{".wad", ".nes", ".sfc", ".smc", ".gb", ".gbc", ".gba", ".n64", ".z64", ".v64", ".3ds", ".iso", ".bin"} {
 		if _, ok := consoleROMExts[ext]; ok {
 			t.Errorf("%s also occurs in PC content and cannot overturn a PC tag", ext)
+		}
+	}
+}
+
+func TestGetCategoriesForPlatformIncludesNewznab(t *testing.T) {
+	cases := map[string]int{"nds": 1010, "psp": 1020, "wii": 1030, "xbox": 1040,
+		"xbox360": 1050, "ps3": 1080, "3ds": 1110, "psvita": 1120, "wiiu": 1130, "ps4": 1180}
+	for slug, want := range cases {
+		found := false
+		for _, c := range GetCategoriesForPlatform(slug) {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("GetCategoriesForPlatform(%q) missing Newznab category %d", slug, want)
 		}
 	}
 }
