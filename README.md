@@ -20,7 +20,7 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 
 - **Pluggable indexer registry** -- driver kinds (Torznab proxy, DDL archive listing, web-scrape, Minerva browse listing) loaded at runtime from an embedded JSON registry; optionally overrideable via `GAMARR_SOURCES_URL` / `GAMARR_SOURCES_PATH`
 - **Minerva Archive** -- loads the per-system browse page (every title on that console), caches it for an hour, and matches locally. Hits use the shared console archive magnet; Gamarr selects the matching ROM via qBittorrent file priorities. Ranked above Prowlarr.
-- **24 gaming platforms** -- PC, Switch, PS1-PS5, PSP, PS Vita, Xbox, Xbox 360, Wii, Wii U, NES, SNES, N64, GameCube, Game Boy, GBA, DS, 3DS, Genesis, Saturn, Dreamcast, Atari 2600
+- **52 gaming platforms** -- PC, Switch, PS1-PS4, PSP, PS Vita, Xbox, Xbox 360, Wii, Wii U, GameCube, N64, (S)NES, the Game Boy family, DS, 3DS, Sega 8-bit to Dreamcast, PC Engine, Neo Geo, Atari, and more, filed into RomM-compatible folders (see [Supported Platforms](#supported-platforms))
 - **Search scoring** -- composite 0-100 score based on title match, platform relevance, seeder count, file size, and safety analysis
 - **Safety scoring** -- analyzes file names, sizes, and scene group trust to detect malware, crack-only uploads, and suspicious downloads
 - **Duplicate detection** -- search results show an `in_library` flag when a game already exists in your library
@@ -87,32 +87,70 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 
 ## Supported Platforms
 
-| Platform | Slug | DDL archive | Minerva | Torznab |
-|----------|------|-------------|---------|---------|
-| PC | `pc` | -- | -- | Yes |
-| Nintendo Switch | `switch` | -- | -- | Yes |
-| PS1 | `psx` | Yes | Yes | Yes |
-| PS2 | `ps2` | Yes | Yes | Yes |
-| PS3 | `ps3` | Yes | Yes | Yes |
-| PS4 | `ps4` | -- | -- | Yes |
-| PSP | `psp` | Yes | Yes | Yes |
-| PS Vita | `psvita` | Yes | Yes | Yes |
-| Xbox | `xbox` | Yes | Yes | Yes |
-| Xbox 360 | `xbox360` | Yes | Yes | Yes |
-| Wii | `wii` | Yes | Yes | Yes |
-| Wii U | `wiiu` | Yes | Yes | Yes |
-| NES | `nes` | Yes | Yes | Yes |
-| SNES | `snes` | Yes | Yes | Yes |
-| Nintendo 64 | `n64` | Yes | Yes | Yes |
-| Nintendo DS | `nds` | Yes | Yes | Yes |
-| Nintendo 3DS | `3ds` | Yes | Yes | Yes |
-| Game Boy | `gb` | Yes | Yes | Yes |
-| Game Boy Advance | `gba` | Yes | Yes | Yes |
-| Sega Genesis | `genesis` | Yes | Yes | Yes |
-| Sega Saturn | `saturn` | Yes | Yes | Yes |
-| Dreamcast | `dreamcast` | Yes | Yes | Yes |
-| GameCube | `gamecube` | Yes | Yes | Yes |
-| Atari 2600 | `atari2600` | Yes | Yes | Yes |
+Every platform lives in one table, `internal/platform/registry.go`. Category mapping, extension detection, title hints, `metadata.json` names, size scoring, RAWG ids, Torznab routing and the UI's platform list are all derived from it, so adding a platform is a one-entry change. The slug is the [RomM](https://github.com/rommapp/romm) folder name: ROMs are filed under `GAMES_ROMS_PATH/<slug>/`, and PC games go to the GameVault vault.
+
+| Platform | Slug | Indexer categories | Myrient | Minerva | Vimm |
+|----------|------|--------------------|---------|---------|------|
+| PC | `pc` | 4000, 4050, 100010 | -- | -- | -- |
+| NES | `nes` | -- | Yes | Yes | Yes |
+| Famicom Disk System | `fds` | -- | -- | -- | -- |
+| SNES | `snes` | -- | Yes | Yes | Yes |
+| Satellaview | `satellaview` | -- | -- | -- | -- |
+| Nintendo 64 | `n64` | -- | Yes | Yes | Yes |
+| GameCube | `ngc` | 100046 | Yes | Yes | Yes |
+| Wii | `wii` | 1030, 1060, 100044 | Yes | Yes | Yes |
+| Wii U | `wiiu` | 1130 | -- | Yes | -- |
+| Switch | `switch` | 100082 | -- | -- | -- |
+| Game & Watch | `g-and-w` | -- | -- | -- | -- |
+| Game Boy | `gb` | -- | Yes | Yes | Yes |
+| Game Boy Color | `gbc` | -- | Yes | Yes | Yes |
+| Game Boy Advance | `gba` | -- | Yes | Yes | Yes |
+| Virtual Boy | `virtualboy` | -- | -- | -- | -- |
+| Nintendo DS | `nds` | 1010, 100045 | Yes | Yes | Yes |
+| Nintendo 3DS | `3ds` | 1110, 100072 | Yes | Yes | -- |
+| PS1 | `psx` | 100015 | Yes | Yes | Yes |
+| PS2 | `ps2` | 100011 | Yes | Yes | Yes |
+| PS3 | `ps3` | 1080, 100043 | Yes | Yes | Yes |
+| PS4 | `ps4` | 1180, 100077 | -- | -- | -- |
+| PSP | `psp` | 1020, 100012 | Yes | Yes | Yes |
+| PS Vita | `psvita` | 1120 | -- | Yes | -- |
+| Xbox | `xbox` | 1040, 100013 | Yes | Yes | Yes |
+| Xbox 360 | `xbox360` | 1050, 100014 | Yes | Yes | Yes |
+| Master System | `sms` | -- | -- | -- | -- |
+| Sega Genesis / Mega Drive | `genesis` | -- | Yes | Yes | Yes |
+| Sega CD | `segacd` | -- | -- | -- | -- |
+| Sega 32X | `sega32` | -- | -- | -- | -- |
+| Sega Saturn | `saturn` | -- | Yes | Yes | Yes |
+| Dreamcast | `dc` | 100016 | Yes | Yes | Yes |
+| Game Gear | `gamegear` | -- | -- | -- | -- |
+| Sega Pico | `sega-pico` | -- | -- | -- | -- |
+| PC Engine / TurboGrafx-16 | `tg16` | -- | -- | -- | -- |
+| PC Engine CD / TurboGrafx-CD | `turbografx-cd` | -- | -- | -- | -- |
+| PC-98 | `pc98` | -- | -- | -- | -- |
+| Neo Geo AES/MVS | `neogeoaes` | -- | -- | -- | -- |
+| Neo Geo CD | `neo-geo-cd` | -- | -- | -- | -- |
+| Neo Geo Pocket / Color | `ngp` | -- | -- | -- | -- |
+| Atari 2600 | `atari2600` | -- | -- | Yes | -- |
+| Atari 5200 | `atari5200` | -- | -- | -- | -- |
+| Atari 7800 | `atari7800` | -- | -- | -- | -- |
+| Atari Lynx | `lynx` | -- | -- | -- | -- |
+| ColecoVision | `colecovision` | -- | -- | -- | -- |
+| Vectrex | `vectrex` | -- | -- | -- | -- |
+| 3DO | `3do` | -- | -- | -- | -- |
+| Philips CD-i | `cdi` | -- | -- | -- | -- |
+| WonderSwan / Color | `wonderswan-color` | -- | -- | -- | -- |
+| MSX | `msx` | -- | -- | -- | -- |
+| Commodore 64 | `c64` | -- | -- | -- | -- |
+| Amiga | `amiga` | -- | -- | -- | -- |
+| DOS | `dos` | -- | -- | -- | -- |
+
+Arcade is deliberately not a platform: MAME sets are tied to an emulator version and cannot be filed reliably. Current-generation consoles are out of scope.
+
+**How a download finds its platform**
+
+- **Categories.** A result tagged with a category in the table is that platform. Every platform is advertised to Torznab consumers (anything without its own Newznab subcategory goes out as Console/Other).
+- **Search context.** Most trackers and Usenet indexers have no category for retro systems, so their releases arrive as `Console`, `Console/Other`, an unmapped tracker category, or nothing. When a search is filtered to a platform, those results are kept and filed under the platform searched for. A result whose categories positively name something else (another platform, PC, Movies, TV, ...) is dropped from that search.
+- **Files.** When a job has no platform, the downloaded files decide it: ROM extensions unique to one platform (`.gbc`, `.sms`, `.pce`, `.a78`, `.adf`, ...), including files inside a `.zip`, and failing that the release name. As a sanity check, a console job whose files include none of its platform's formats but whose ROM extensions plainly belong to another platform is refiled there (a platform chosen by hand with the Organize button is left alone). Disc formats shared by many systems (`.iso`, `.chd`, `.cue`, `.bin`) and formats that overlap ordinary files (`.md`, `.vb`, `.crt`) never decide a platform on their own. Those ROMs need a platform selection or a recognized title hint. Library scans retain small retro ROMs; empty files are skipped.
 
 ## Quick Start
 
@@ -341,6 +379,7 @@ Configure either SABnzbd or NZBGet for NZB downloads. If both are configured, SA
 | `RENAME_PATTERN` | `{title} ({platform}).{ext}` | Rename pattern |
 | `GAMEVAULT_URL` | | GameVault server URL |
 | `ROMM_URL` | | RomM server URL |
+| `HACKS_SUFFIX_ROUTING` | `false` | File ROM hacks and fan translations under `<slug>-hacks` instead of `<slug>` (e.g. `snes-hacks`). A release or file name counts as a hack when it carries a GoodTools-style `[h...]` tag, a `[T+...]`/`[T-...]` translation tag, `(Hack)`, or the word "hack" |
 
 ### Notifications
 

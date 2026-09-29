@@ -18,10 +18,13 @@ import (
 // JobStore is a SQLite-backed dict-like store for download jobs.
 // It keeps an in-memory cache and writes through to SQLite on every mutation.
 type JobStore struct {
-	mu    sync.RWMutex
-	cache map[string]map[string]interface{}
-	db    *sql.DB
-	path  string
+	// A SQL connection may still be opening when database/sql.Close returns.
+	// Drain job writes before closing so none can recreate SQLite files afterward.
+	persistMu sync.RWMutex
+	mu        sync.RWMutex
+	cache     map[string]map[string]interface{}
+	db        *sql.DB
+	path      string
 }
 
 // New creates a new JobStore at the given path.
@@ -357,10 +360,14 @@ func (s *JobStore) Cleanup(days int) int {
 
 // Close closes the database.
 func (s *JobStore) Close() error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	return s.db.Close()
 }
 
 func (s *JobStore) persist(jobID string, data map[string]interface{}, touchUpdatedAt bool) {
+	s.persistMu.RLock()
+	defer s.persistMu.RUnlock()
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		slog.Error("failed to marshal job", "error", err)

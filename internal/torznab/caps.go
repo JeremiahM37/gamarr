@@ -1,5 +1,11 @@
 package torznab
 
+import (
+	"strconv"
+
+	"gamarr/internal/platform"
+)
+
 // BuildCaps returns the Torznab capabilities document, advertising game-
 // specific Newznab categories so Prowlarr can route searches correctly.
 //
@@ -46,26 +52,13 @@ func BuildCaps() *Caps {
 	}
 }
 
-// CategoryForPlatform maps Gamarr's platform slugs to a Torznab category ID.
-// Used so Prowlarr can route results back to the right *arr instance.
+// CategoryForPlatform maps Gamarr's platform slugs to a Torznab category ID,
+// from the platform registry. Used so Prowlarr can route results back to the
+// right *arr instance. Anything the registry does not place on an advertised
+// subcategory is Console/Other.
 func CategoryForPlatform(slug string) string {
-	switch slug {
-	case "pc":
-		return "4050"
-	case "nds", "3ds":
-		return "1010"
-	case "psp", "psvita":
-		return "1020"
-	case "wii", "wiiu":
-		return "1030"
-	case "xbox":
-		return "1040"
-	case "xbox360":
-		return "1050"
-	case "ps3":
-		return "1080"
-	case "nes", "snes", "n64", "ngc", "gb", "gbc", "gba", "genesis", "saturn", "dc", "psx", "ps2", "ps4", "ps5", "switch", "atari2600":
-		return "1090"
+	if p, ok := platform.Lookup(slug); ok {
+		return strconv.Itoa(p.TorznabCategoryID())
 	}
 	return "1090" // Console/Other as a safe default
 }

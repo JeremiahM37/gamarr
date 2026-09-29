@@ -308,7 +308,7 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 		// already gone. When the content is sitting at its destination the
 		// import did succeed, so finish the job instead of reporting a
 		// completed import as a failure.
-		if dest, mode, ok := m.nzbImportedDest(storagePath, platSlug, isPC); ok {
+		if dest, mode, ok := m.nzbImportedDest(storagePath, title, platSlug, isPC); ok {
 			m.completeNZBOrganize(jobID, dest, title, platf, platSlug, isPC, sourceClient, mode)
 			return
 		}
@@ -318,7 +318,7 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 
 	platf, platSlug, isPC = m.resolvePlatform(jobID, storagePath, title, platf, platSlug, isPC)
 
-	dest, ok := m.nzbDestPath(storagePath, platSlug, isPC)
+	dest, ok := m.nzbDestPath(storagePath, title, platSlug, isPC)
 	if !ok {
 		slog.Warn("no platform detected, left in staging", "title", sanitizeLog(title), "path", sanitizeLog(storagePath))
 		m.jobs.UpdateMulti(jobID, jobCompleted("Downloaded (unknown platform, left in staging)"))
@@ -377,8 +377,8 @@ func (m *Manager) organizeNZBDownloadWithClient(jobID, storagePath, title, platf
 // staging path is gone. Both vault layouts are checked, since the archive
 // option may have been toggled between the import and a restart that
 // re-enters organize.
-func (m *Manager) nzbImportedDest(storagePath, platSlug string, isPC bool) (string, fileops.Mode, bool) {
-	dest, ok := m.nzbDestPath(storagePath, platSlug, isPC)
+func (m *Manager) nzbImportedDest(storagePath, title, platSlug string, isPC bool) (string, fileops.Mode, bool) {
+	dest, ok := m.nzbDestPath(storagePath, title, platSlug, isPC)
 	if !ok {
 		return "", "", false
 	}
@@ -399,13 +399,13 @@ func (m *Manager) nzbImportedDest(storagePath, platSlug string, isPC bool) (stri
 // nzbDestPath returns the library destination for a finished Usenet download.
 // The second return is false when the platform is unknown, in which case the
 // content stays in staging.
-func (m *Manager) nzbDestPath(storagePath, platSlug string, isPC bool) (string, bool) {
+func (m *Manager) nzbDestPath(storagePath, title, platSlug string, isPC bool) (string, bool) {
 	base := filepath.Base(storagePath)
 	switch {
 	case isPC:
 		return filepath.Join(m.cfg.GamesVaultPath, base), true
 	case platSlug != "":
-		return filepath.Join(m.cfg.GamesRomsPath, platSlug, base), true
+		return filepath.Join(m.romDestDir(platSlug, title, base), base), true
 	default:
 		return "", false
 	}

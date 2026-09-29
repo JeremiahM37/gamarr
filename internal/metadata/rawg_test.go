@@ -180,7 +180,7 @@ func TestSearchGameUnknownPlatformOmitsParam(t *testing.T) {
 		w.Write([]byte(searchResponseJSON))
 	})
 
-	if _, err := c.SearchGame("chrono trigger", "amiga"); err != nil {
+	if _, err := c.SearchGame("chrono trigger", "ios"); err != nil {
 		t.Fatalf("SearchGame: %v", err)
 	}
 	if _, present := gotQuery["platforms"]; present {
@@ -442,7 +442,8 @@ func TestMapPlatformSlugToRAWG(t *testing.T) {
 		{"gamegear", "77"},
 		{"sms", "74"}, // Sega Master System — 26 is Game Boy's ID
 		{"gb", "26"},
-		{"amiga", ""},
+		{"amiga", "166"},
+		{"ios", ""},
 		{"", ""},
 	}
 	for _, tt := range tests {
@@ -467,7 +468,8 @@ func TestMapRAWGPlatformToSlug(t *testing.T) {
 		{"Sega Saturn", "saturn"},
 		{"Game Gear", "gamegear"},
 		{"Nintendo%2064", "n64"}, // URL-encoded input is decoded
-		{"Atari 2600", ""},       // unmapped
+		{"Atari 2600", "atari2600"},
+		{"iOS", ""}, // unmapped
 		{"", ""},
 		// Ambiguous names: one map key is a substring of another matching
 		// name. Longest-match-first ordering must resolve these

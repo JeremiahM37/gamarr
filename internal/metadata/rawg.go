@@ -10,10 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"gamarr/internal/platform"
 )
 
 // GameMetadata holds enriched game information from RAWG.
@@ -326,80 +329,40 @@ func truncate(s string, maxLen int) string {
 
 // ── Platform slug mapping ────────────────────────────────────────────────────
 
-// mapPlatformSlugToRAWG maps Gamarr platform slugs to RAWG platform IDs.
+// rawgExtraSlugIDs covers slugs outside the platform registry that can still
+// reach a metadata lookup (a request made from a RAWG result, say). Current
+// generation consoles are not Gamarr platforms, and "vita" is the slug this
+// map used before the registry named the platform "psvita".
+var rawgExtraSlugIDs = map[string]string{
+	"ps5":     "187",
+	"xboxone": "1",
+	"vita":    "19",
+}
+
+// mapPlatformSlugToRAWG maps Gamarr platform slugs to RAWG platform IDs, from
+// the platform registry.
 // RAWG platform IDs: https://api.rawg.io/api/platforms?key=...
 func mapPlatformSlugToRAWG(slug string) string {
-	m := map[string]string{
-		"pc":       "4",
-		"ps2":      "15",
-		"ps3":      "16",
-		"ps4":      "18",
-		"ps5":      "187",
-		"psp":      "17",
-		"psx":      "27",
-		"vita":     "19",
-		"xbox":     "80",
-		"xbox360":  "14",
-		"xboxone":  "1",
-		"switch":   "7",
-		"wii":      "11",
-		"wiiu":     "10",
-		"n64":      "83",
-		"ngc":      "105",
-		"nes":      "49",
-		"snes":     "79",
-		"gba":      "24",
-		"gb":       "26",
-		"gbc":      "43",
-		"nds":      "9",
-		"3ds":      "8",
-		"genesis":  "167",
-		"dc":       "106",
-		"saturn":   "107",
-		"sms":      "74",
-		"gamegear": "77",
+	if id, ok := platform.RAWGPlatformID(slug); ok {
+		return strconv.Itoa(id)
 	}
-	if id, ok := m[slug]; ok {
-		return id
-	}
-	return ""
+	return rawgExtraSlugIDs[slug]
 }
 
 // rawgPlatformNameToSlug maps lowercase RAWG platform-name substrings to
-// Gamarr platform slugs.
-var rawgPlatformNameToSlug = map[string]string{
-	"pc":                 "pc",
-	"playstation 2":      "ps2",
-	"playstation 3":      "ps3",
-	"playstation 4":      "ps4",
-	"playstation 5":      "ps5",
-	"psp":                "psp",
-	"playstation":        "psx",
-	"ps vita":            "vita",
-	"xbox":               "xbox",
-	"xbox 360":           "xbox360",
-	"xbox one":           "xboxone",
-	"xbox series s/x":    "xboxone",
-	"nintendo switch":    "switch",
-	"wii":                "wii",
-	"wii u":              "wiiu",
-	"nintendo 64":        "n64",
-	"gamecube":           "ngc",
-	"nes":                "nes",
-	"snes":               "snes",
-	"super nintendo":     "snes",
-	"game boy advance":   "gba",
-	"game boy":           "gb",
-	"game boy color":     "gbc",
-	"nintendo ds":        "nds",
-	"nintendo 3ds":       "3ds",
-	"sega genesis":       "genesis",
-	"sega mega drive":    "genesis",
-	"dreamcast":          "dc",
-	"sega saturn":        "saturn",
-	"sega master system": "sms",
-	"game gear":          "gamegear",
-}
+// Gamarr platform slugs: the registry's RAWG names, plus the current
+// generation consoles RAWG reports that are not Gamarr platforms.
+var rawgPlatformNameToSlug = func() map[string]string {
+	m := platform.RAWGNameSlugs()
+	for name, slug := range map[string]string{
+		"playstation 5":   "ps5",
+		"xbox one":        "xboxone",
+		"xbox series s/x": "xboxone",
+	} {
+		m[name] = slug
+	}
+	return m
+}()
 
 // rawgPlatformNamesOrdered holds the keys of rawgPlatformNameToSlug sorted
 // longest-first (ties broken lexicographically) so substring matching is

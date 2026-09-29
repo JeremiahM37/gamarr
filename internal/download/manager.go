@@ -562,16 +562,23 @@ func (m *Manager) OrganizeTorrent(hash, platf, platSlug string, isPC bool) (stri
 		return "", fmt.Errorf("torrent not yet complete")
 	}
 
+	// The UI sends the slug it was given and an upper-cased guess at a name;
+	// a registry platform has a proper one.
+	if name := platform.NameForSlug(platSlug); name != "" && !isPC {
+		platf = name
+	}
+
 	jobID := newJobID()
 	m.jobs.Set(jobID, map[string]interface{}{
-		"status":        "organizing",
-		"title":         torrent.Name,
-		"info_hash":     torrent.Hash,
-		"platform":      platf,
-		"platform_slug": platSlug,
-		"is_pc":         isPC,
-		"error":         nil,
-		"detail":        "Scanning and organizing...",
+		"status":          "organizing",
+		"title":           torrent.Name,
+		"info_hash":       torrent.Hash,
+		"platform":        platf,
+		"platform_slug":   platSlug,
+		"platform_source": platformSourceManual,
+		"is_pc":           isPC,
+		"error":           nil,
+		"detail":          "Scanning and organizing...",
 	})
 
 	// By value: the retry reassigns its torrent as the client republishes it, and
@@ -934,6 +941,10 @@ func (m *Manager) watchGameTorrent(jobID, infoHash, title, platf, platSlug strin
 // what it finds on the job row. Every import path calls it, so none can drift
 // from the others on what a download turns out to be.
 func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug string, isPC bool) (string, string, bool) {
+	// An explicit operator choice takes precedence over every detection layer.
+	if m.platformChosenManually(jobID) {
+		return platf, platSlug, isPC
+	}
 	// Platform detection from metadata
 	if platSlug == "" && !isPC {
 		if info, ok := platform.DetectPlatformFromMetadata(contentPath); ok {
@@ -971,7 +982,45 @@ func (m *Manager) resolvePlatform(jobID, contentPath, title, platf, platSlug str
 		}
 	}
 
+	// A console platform can arrive from search context alone: a result tagged
+	// only Console/Other in a SNES search is filed as SNES. When the payload
+	// has none of that platform's formats and its ROM extensions name another
+	// platform, the files win. A platform chosen by hand is left alone.
+	if !isPC && platSlug != "" && !m.platformChosenManually(jobID) {
+		if info, ok := platform.ContentConflict(platSlug, contentPath); ok {
+			slog.Warn("download content contradicts its platform, reclassifying",
+				"title", sanitizeLog(title), "was", platSlug, "now", info.Slug)
+			platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
+			m.jobs.UpdateMulti(jobID, map[string]interface{}{
+				"platform": platf, "platform_slug": platSlug, "is_pc": isPC,
+			})
+		}
+	}
+
 	return platf, platSlug, isPC
+}
+
+// platformSourceManual marks a job whose platform the operator picked, which
+// the post-download sanity check must not second-guess.
+const platformSourceManual = "manual"
+
+func (m *Manager) platformChosenManually(jobID string) bool {
+	job, ok := m.jobs.Get(jobID)
+	if !ok {
+		return false
+	}
+	src, _ := job["platform_source"].(string)
+	return src == platformSourceManual
+}
+
+// romDestDir is the ROM library folder a platform's content is filed in:
+// GAMES_ROMS_PATH/<slug>, or <slug>-hacks under HACKS_SUFFIX_ROUTING when a
+// release or file name looks like a ROM hack. platSlug arrives from the
+// download request, so it is kept a single path component that cannot climb
+// out of the ROM library root.
+func (m *Manager) romDestDir(platSlug string, names ...string) string {
+	folder := platform.LibraryFolder(platSlug, m.cfg.HacksSuffixRouting, names...)
+	return filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(folder))
 }
 
 // organizeGame imports a finished torrent, reporting whether a failure is worth
@@ -1117,9 +1166,7 @@ func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platS
 		m.jobs.LogActivity("download_completed", torrentName, "Organized to GameVault", jobID, nil)
 		slog.Info("PC game organized", "name", sanitizeLog(torrentName), "dest", sanitizeLog(dest))
 	} else if platSlug != "" {
-		// platSlug arrives from the download request; keep it a single path
-		// component so it cannot climb out of the ROM library root.
-		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
+		destDir := m.romDestDir(platSlug, torrentName, importName)
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, sanitizeFilename(importName))
 		defer lockDest(dest)()
@@ -2255,7 +2302,7 @@ func (m *Manager) organizeDDLFile(jobID, fp, title, platf, platSlug string, isPC
 		m.jobs.LogActivity("download_completed", title, "DDL to GameVault", jobID, nil)
 		slog.Info("DDL PC game organized", "file", sanitizeLog(filename), "dest", sanitizeLog(dest))
 	} else if platSlug != "" {
-		destDir := filepath.Join(m.cfg.GamesRomsPath, sanitizeFilename(platSlug))
+		destDir := m.romDestDir(platSlug, title, filename)
 		os.MkdirAll(destDir, 0755)
 		dest := filepath.Join(destDir, filename)
 		if err := moveFile(fp, dest); err != nil {
@@ -2357,19 +2404,6 @@ func (m *Manager) RecoverOrphanedTorrents() {
 		"gog": true, "plaza": true, "cpy": true, "empress": true,
 		"rune": true, "razordox": true, "tinyiso": true, "elamigos": true, "repack": true,
 	}
-	platformHints := map[string]struct {
-		Name string
-		Slug string
-		IsPC bool
-	}{
-		"wii": {"Wii", "wii", false}, "gamecube": {"GameCube", "ngc", false},
-		"ngc": {"GameCube", "ngc", false}, "switch": {"Switch", "switch", false},
-		"nsp": {"Switch", "switch", false}, "xci": {"Switch", "switch", false},
-		"ps2": {"PS2", "ps2", false}, "ps3": {"PS3", "ps3", false},
-		"psp": {"PSP", "psp", false}, "nds": {"DS", "nds", false},
-		"3ds": {"3DS", "3ds", false}, "dreamcast": {"Dreamcast", "dc", false},
-		"gba": {"Game Boy Advance", "gba", false},
-	}
 
 	for _, t := range torrents {
 		m.dismissArchiveShellJobs(t.Hash, t.Name)
@@ -2415,11 +2449,9 @@ func (m *Manager) RecoverOrphanedTorrents() {
 			}
 		}
 		if !isPC {
-			for hint, info := range platformHints {
-				if strings.Contains(nameLower, hint) {
-					platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
-					break
-				}
+			// The registry's title hints, the same ones import falls back on.
+			if info, ok := platform.DetectPlatformFromTitle(t.Name); ok {
+				platf, platSlug, isPC = info.Name, info.Slug, info.IsPC
 			}
 		}
 

@@ -245,7 +245,7 @@ func TestDetectPlatform(t *testing.T) {
 		{"game.gba", "Game Boy Advance", "gba", false},
 		{"game.gb", "Game Boy", "gb", false},
 		{"game.gbc", "Game Boy Color", "gbc", false},
-		{"game.z64", "N64", "n64", false},
+		{"game.z64", "Nintendo 64", "n64", false},
 		{"game.nes", "NES", "nes", false},
 		{"game.sfc", "SNES", "snes", false},
 		{"game.smc", "SNES", "snes", false},
@@ -418,5 +418,62 @@ func TestExtractArchivesZip(t *testing.T) {
 	// A second pass skips everything already extracted.
 	if again := ExtractArchives(dir); len(again) != 0 {
 		t.Errorf("second pass extracted = %v, want none", again)
+	}
+}
+
+func TestDetectPlatformRetroExtensions(t *testing.T) {
+	tests := []struct {
+		filename, platform, slug string
+	}{
+		{"game.gbc", "Game Boy Color", "gbc"},
+		{"game.sms", "Master System", "sms"},
+		{"game.gg", "Game Gear", "gamegear"},
+		{"game.gen", "Sega Genesis", "genesis"},
+		{"game.md", "Sega Genesis", "genesis"},
+		{"game.32x", "Sega 32X", "sega32"},
+		{"game.pce", "PC Engine / TurboGrafx-16", "tg16"},
+		{"game.ws", "WonderSwan / Color", "wonderswan-color"},
+		{"game.ngp", "Neo Geo Pocket / Color", "ngp"},
+		{"game.a52", "Atari 5200", "atari5200"},
+		{"game.lnx", "Atari Lynx", "lynx"},
+		{"game.col", "ColecoVision", "colecovision"},
+		{"game.fds", "Famicom Disk System", "fds"},
+		{"game.vb", "Virtual Boy", "virtualboy"},
+		{"game.vec", "Vectrex", "vectrex"},
+		{"game.adf", "Amiga", "amiga"},
+		{"game.d64", "Commodore 64", "c64"},
+		{"game.bs", "Satellaview", "satellaview"},
+		// A disc image names its system or stays undecided.
+		{"Snatcher (Sega CD).chd", "Sega CD", "segacd"},
+		{"Snatcher.chd", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.filename, func(t *testing.T) {
+			platform, slug, isPC := DetectPlatform(tt.filename)
+			if platform != tt.platform || slug != tt.slug || isPC {
+				t.Errorf("DetectPlatform(%q) = (%q, %q, %v), want (%q, %q, false)",
+					tt.filename, platform, slug, isPC, tt.platform, tt.slug)
+			}
+		})
+	}
+}
+
+func TestOrganizeROMHacksRouting(t *testing.T) {
+	for _, routing := range []bool{false, true} {
+		p, _, roms := newTestPipeline(t)
+		p.cfg.HacksSuffixRouting = routing
+		src := filepath.Join(t.TempDir(), "Super Mario World [h1].sfc")
+		writeFile(t, src, "rom")
+		dest, err := p.OrganizeGame(src, "SNES", "snes", false)
+		if err != nil {
+			t.Fatalf("routing=%v: %v", routing, err)
+		}
+		folder := "snes"
+		if routing {
+			folder = "snes-hacks"
+		}
+		if want := filepath.Join(roms, folder, "Super Mario World [h1].sfc"); dest != want {
+			t.Errorf("routing=%v: dest = %s, want %s", routing, dest, want)
+		}
 	}
 }

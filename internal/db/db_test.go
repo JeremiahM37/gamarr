@@ -556,3 +556,34 @@ func TestJobStore_DBDir(t *testing.T) {
 		t.Error("expected nested directory to be created")
 	}
 }
+
+// Recovery can still have job writes queued when the process closes its store.
+// A close must drain in-flight persistence before its files can be removed.
+func TestCloseDrainsConcurrentJobWrites(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "store")
+	store, err := New(filepath.Join(dir, "jobs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writers sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 32; i++ {
+		writers.Add(1)
+		go func(n int) {
+			defer writers.Done()
+			<-start
+			store.Set(fmt.Sprint(n), map[string]interface{}{"status": "downloading"})
+		}(i)
+	}
+	close(start)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	writers.Wait()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("closed store recreated its directory: %v", err)
+	}
+}

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// bigROM is >1MB so ROM scans don't skip it as a small sidecar file.
+// bigROM supplies a larger fixture for size and scanning assertions.
 func bigROM() []byte {
 	return bytes.Repeat([]byte("R"), 1_100_000)
 }
@@ -25,7 +25,7 @@ func TestScanLibraryDirs(t *testing.T) {
 	// ROMs: platform dirs with mixed content.
 	snes := filepath.Join(cfg.GamesRomsPath, "snes")
 	writeFileT(t, filepath.Join(snes, "Mario World.sfc"), bigROM())
-	writeFileT(t, filepath.Join(snes, "tiny.sfc"), []byte("small"))              // <1MB skipped
+	writeFileT(t, filepath.Join(snes, "tiny.sfc"), nil)                          // empty file skipped
 	writeFileT(t, filepath.Join(snes, "[Update] Game v2.sfc"), bigROM())         // update skipped
 	writeFileT(t, filepath.Join(snes, "Hero costume pack.sfc"), bigROM())        // DLC skipped
 	writeFileT(t, filepath.Join(snes, "readme.txt"), []byte("not a game"))       // wrong ext
@@ -348,5 +348,55 @@ func TestScanVaultSkipsHiddenAndSidecars(t *testing.T) {
 	}
 	if jobs.LibraryHasSourceID("scan:" + filepath.Join(dir, "Game.zip.gamarr.json")) {
 		t.Error("sidecar should be skipped")
+	}
+}
+
+func TestScanLibraryRetroFolders(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	m := New(cfg, jobs, nil)
+
+	genesis := filepath.Join(cfg.GamesRomsPath, "genesis")
+	writeFileT(t, filepath.Join(genesis, "Sonic 3 (USA).md"), bigROM())
+	// Markdown outside the Genesis folder is still just notes.
+	writeFileT(t, filepath.Join(cfg.GamesRomsPath, "gbc", "notes", "readme.md"), bigROM())
+
+	m.ScanLibraryDirs()
+
+	if item := jobs.FindLibraryByTitle("Sonic 3 (USA)", "genesis"); item == nil || item.Platform != "Sega Genesis" {
+		t.Errorf("Genesis .md ROM not scanned: %+v", item)
+	}
+	if jobs.LibraryHasSourceID("scan:" + filepath.Join(cfg.GamesRomsPath, "gbc", "notes")) {
+		t.Error("a folder of Markdown notes was taken for a game")
+	}
+}
+
+func TestPlatformNameFromSlugUsesRegistry(t *testing.T) {
+	for slug, want := range map[string]string{
+		"tg16": "PC Engine / TurboGrafx-16", "sega32": "Sega 32X",
+		"n64": "Nintendo 64", "arcade": "ARCADE",
+	} {
+		if got := platformNameFromSlug(slug); got != want {
+			t.Errorf("platformNameFromSlug(%q) = %q, want %q", slug, got, want)
+		}
+	}
+}
+
+func TestScanSmallRetroROMs(t *testing.T) {
+	cfg := newTestConfig(t)
+	jobs := newTestJobs(t)
+	m := New(cfg, jobs, nil)
+	for _, file := range []string{"atari2600/Adventure.a26", "gb/Tetris.gb", "sms/Alex Kidd.sms", "gbc-hacks/Translation [T+Eng].gbc", "genesis/Sonic.md"} {
+		writeFileT(t, filepath.Join(cfg.GamesRomsPath, file), bytes.Repeat([]byte("R"), 32768))
+	}
+	writeFileT(t, filepath.Join(cfg.GamesRomsPath, "gb", "Empty.gb"), nil)
+	writeFileT(t, filepath.Join(cfg.GamesRomsPath, "gb", "README.md"), []byte("docs"))
+	m.ScanLibraryDirs()
+	if got := jobs.LibraryTotal(); got != 5 {
+		t.Fatalf("scanned %d small ROMs, want 5", got)
+	}
+	m.ScanLibraryDirs()
+	if got := jobs.LibraryTotal(); got != 5 {
+		t.Fatalf("rescan duplicated ROMs: %d", got)
 	}
 }

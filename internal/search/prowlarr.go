@@ -33,14 +33,7 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 		return nil
 	}
 
-	var filterCategories map[int]bool
-	if platformSlug != "" && platformSlug != "all" {
-		cats := platform.GetCategoriesForPlatform(platformSlug)
-		filterCategories = make(map[int]bool, len(cats))
-		for _, c := range cats {
-			filterCategories[c] = true
-		}
-	}
+	filtered := platformSlug != "" && platformSlug != "all"
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	var allItems []map[string]interface{}
@@ -86,28 +79,30 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 	for _, item := range allItems {
 		size := jsonInt64(item, "size")
 		cats := jsonArray(item, "categories")
-		detected := platform.DetectPlatform(cats)
+		title := jsonStr(item, "title")
+
+		var detected platform.PlatformInfo
+		if filtered {
+			// Search context: a result the categories do not place anywhere
+			// else is filed under the platform that was searched for, and one
+			// they place on another platform is dropped.
+			info, keep, assigned := platform.SearchContext(platformSlug, extractCatIDs(cats))
+			if !keep {
+				continue
+			}
+			// A PC repack name is positive evidence the categories lacked.
+			if assigned && pcRepackRe.MatchString(title) {
+				continue
+			}
+			detected = info
+		} else {
+			detected = platform.DetectPlatform(cats)
+		}
 
 		// Fallback: PC repack detection from title
 		if detected.Name == "Unknown" {
-			title, _ := item["title"].(string)
 			if pcRepackRe.MatchString(title) {
 				detected = platform.PlatformInfo{Name: "PC", IsPC: true}
-			}
-		}
-
-		// Category filter
-		if filterCategories != nil {
-			catIDs := extractCatIDs(cats)
-			matched := false
-			for _, id := range catIDs {
-				if filterCategories[id] {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
 			}
 		}
 
@@ -140,18 +135,7 @@ func SearchProwlarr(cfg *config.Config, query string, platformSlug string) []*mo
 }
 
 func extractCatIDs(cats []interface{}) []int {
-	var ids []int
-	for _, c := range cats {
-		switch v := c.(type) {
-		case float64:
-			ids = append(ids, int(v))
-		case map[string]interface{}:
-			if id, ok := v["id"].(float64); ok {
-				ids = append(ids, int(id))
-			}
-		}
-	}
-	return ids
+	return platform.CategoryIDs(cats)
 }
 
 func jsonStr(m map[string]interface{}, key string) string {

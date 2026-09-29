@@ -219,3 +219,19 @@ func TestResultToItem_LinkSelection(t *testing.T) {
 
 // ensure handler is reachable via stdlib http
 var _ http.Handler = (*Handler)(nil)
+
+// CategoryForPlatform now reads the registry; the categories it reported
+// before must not move, since *arr instances route on them.
+func TestCategoryForPlatformFromRegistry(t *testing.T) {
+	want := map[string]string{
+		"pc": "4050", "nds": "1010", "3ds": "1010", "psp": "1020", "psvita": "1020",
+		"wii": "1030", "wiiu": "1030", "xbox": "1040", "xbox360": "1050", "ps3": "1080",
+		"snes": "1090", "switch": "1090", "ps2": "1090", "gbc": "1090", "tg16": "1090",
+		"": "1090", "nonsense": "1090",
+	}
+	for slug, cat := range want {
+		if got := CategoryForPlatform(slug); got != cat {
+			t.Errorf("CategoryForPlatform(%q) = %s, want %s", slug, got, cat)
+		}
+	}
+}

@@ -161,13 +161,8 @@ func SearchMyrient(reg *sources.Registry, query string, platformSlug string) []*
 			// Find platform display name
 			platName := "Unknown"
 			isPC := false
-			for catID, info := range platform.PlatformMap {
-				if info.Slug == slug {
-					platName = info.Name
-					isPC = info.IsPC
-					_ = catID
-					break
-				}
+			if p, ok := platform.Lookup(slug); ok {
+				platName, isPC = p.Name, p.IsPC
 			}
 
 			results = append(results, &models.SearchResult{

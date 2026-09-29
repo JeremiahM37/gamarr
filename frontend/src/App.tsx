@@ -983,6 +983,7 @@ function DownloadsTab({
   toast: (text: string, kind: Toast["kind"]) => void;
 }) {
   const [items, setItems] = useState<Download[]>([]);
+  const platforms = usePlatforms(call);
   const [archiveOpen, setArchiveOpen] = useState<Record<string,boolean>>({});
   const load = useCallback(async () => {
     const data = await call<{ downloads?: Download[] }>("/api/downloads");
@@ -1016,7 +1017,7 @@ function DownloadsTab({
   const organize = async (item: Download) => {
     if (!item.hash) return;
     const platform = window.prompt(
-      "Platform? (pc, switch, ps2, ps3, psp, nds, 3ds, wii, ngc, dc, psx, gba, n64, snes, nes, gb, genesis, saturn, xbox, xbox360)",
+      `Platform? (${platforms.filter((p) => p.id !== "all").map((p) => p.id).join(", ")})`,
       "pc",
     );
     if (!platform) return;
@@ -1094,6 +1095,7 @@ function DownloadsTab({
                   {!isArchive && item.status === "completed_unorganized" && item.hash && (
                     <button
                       onClick={() => void organize(item)}
+                      disabled={platforms.length === 0}
                       className="secondary"
                     >
                       Organize

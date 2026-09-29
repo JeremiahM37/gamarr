@@ -284,6 +284,9 @@ def test_download_progress_and_actions_match_download_api(page, app):
         requests.append((request.method, path, request.post_data))
         if path == "/auth/status":
             route.fulfill(content_type="application/json", body='{"auth_required":false,"authenticated":false}')
+        elif path == "/platforms":
+            # Organize now uses the real platform registry, not a hardcoded list.
+            route.continue_()
         elif path == "/downloads":
             route.fulfill(content_type="application/json", body=json.dumps(downloads))
         elif path == "/stats":
