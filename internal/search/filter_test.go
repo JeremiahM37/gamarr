@@ -111,6 +111,10 @@ func TestTitleRelevant(t *testing.T) {
 		{"stopword only query", "the", "The Game", false},
 		{"empty query", "", "Some Title", false},
 		{"empty title", "query", "", false},
+		{"underscore separated title", "space quest", "Space_Quest_Remastered-GROUP", true},
+		{"underscore title with version", "space quest", "Space_Quest_Update_v1.2.3-GROUP", true},
+		{"underscore separated query", "space_quest", "Space Quest Remastered", true},
+		{"underscore title no match", "halo", "Space_Quest_Remastered-GROUP", false},
 	}
 
 	for _, tt := range tests {
@@ -323,6 +327,36 @@ func TestSuspiciousRegex(t *testing.T) {
 			got := suspiciousRe.MatchString(tt.title)
 			if got != tt.want {
 				t.Errorf("suspiciousRe.MatchString(%q) = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnderscoreSearchPipeline(t *testing.T) {
+	for _, tt := range []struct {
+		query string
+		score int
+	}{
+		{"space quest", 40},
+		{"Space_Quest", 35}, // Literal query substrings retain their existing score.
+		{"__space__quest__", 40},
+		{"the_space_quest", 40},
+	} {
+		t.Run(tt.query, func(t *testing.T) {
+			// Both spellings represent the same release. The better-seeded
+			// underscore result should survive relevance filtering and dedup.
+			weak := &models.SearchResult{Title: "Space.Quest.Remastered-GROUP", Seeders: 2, Size: 1_000_000_000, Age: 10}
+			strong := &models.SearchResult{Title: "Space_Quest_Remastered-GROUP", Seeders: 50, Size: 1_000_000_000, Age: 10}
+			unrelated := &models.SearchResult{Title: "Spaceship_Explorer-GROUP", Seeders: 50, Size: 1_000_000_000, Age: 10}
+			for _, results := range [][]*models.SearchResult{{weak, strong, unrelated}, {strong, unrelated, weak}} {
+				filtered := FilterGameResults(results, tt.query)
+				if len(filtered) != 1 || filtered[0] != strong {
+					t.Fatalf("filtered = %+v, want only the better-seeded underscore release", filtered)
+				}
+				scored := ScoreResults(filtered, tt.query, "")
+				if got := scored[0].ScoreBreakdown.TitleMatch; got != tt.score {
+					t.Errorf("title score = %d, want %d", got, tt.score)
+				}
 			}
 		})
 	}

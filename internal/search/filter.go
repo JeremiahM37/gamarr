@@ -41,7 +41,11 @@ var trustedGroups = map[string]bool{
 
 var riskyExtRe = regexp.MustCompile(`(?i)\.(scr|bat|cmd|vbs|vbe|js|jse|wsf|wsh|ps1|msi|hta|cpl|reg)$`)
 var doubleExtRe = regexp.MustCompile(`\.(\w{2,4})\.(\w{2,4})$`)
-var wordRe = regexp.MustCompile(`\w+`)
+
+// wordRe splits on anything that is not an ASCII letter or digit. `\w` would
+// keep `_` inside words, so underscore-separated release names
+// (Title_Name_v1.0-GROUP) would become one token and never match a query.
+var wordRe = regexp.MustCompile(`[a-zA-Z0-9]+`)
 
 // IsNonEnglish checks if a title appears to be non-English.
 func IsNonEnglish(title string) bool {
