@@ -111,6 +111,10 @@ func TestTitleRelevant(t *testing.T) {
 		{"stopword only query", "the", "The Game", false},
 		{"empty query", "", "Some Title", false},
 		{"empty title", "query", "", false},
+		{"underscore separated title", "space quest", "Space_Quest_Remastered-GROUP", true},
+		{"underscore title with version", "space quest", "Space_Quest_Update_v1.2.3-GROUP", true},
+		{"underscore separated query", "space_quest", "Space Quest Remastered", true},
+		{"underscore title no match", "halo", "Space_Quest_Remastered-GROUP", false},
 	}
 
 	for _, tt := range tests {
