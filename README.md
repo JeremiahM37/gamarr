@@ -1,10 +1,29 @@
-# Gamarr
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/gamarr-lockup-dark.svg">
+    <img alt="Gamarr" src="docs/brand/gamarr-lockup-light.svg" width="420">
+  </picture>
+</p>
 
-[![Build & Test](https://github.com/JeremiahM37/gamarr/actions/workflows/test.yml/badge.svg)](https://github.com/JeremiahM37/gamarr/actions/workflows/test.yml)
-[![Release](https://img.shields.io/github/v/release/JeremiahM37/gamarr?include_prereleases)](https://github.com/JeremiahM37/gamarr/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<h3 align="center">The missing *arr for games.</h3>
 
-**The missing *arr for games.** Self-hosted game and ROM search, download, and library manager.
+<p align="center">
+  <a href="https://github.com/JeremiahM37/gamarr/actions/workflows/test.yml"><img alt="Build &amp; Test" src="https://github.com/JeremiahM37/gamarr/actions/workflows/test.yml/badge.svg"></a>
+  <a href="https://github.com/JeremiahM37/gamarr/releases"><img alt="Release" src="https://img.shields.io/github/v/release/JeremiahM37/gamarr?include_prereleases"></a>
+  <img alt="Go" src="https://img.shields.io/github/go-mod/go-version/JeremiahM37/gamarr">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+  <a href="https://github.com/JeremiahM37/gamarr/pkgs/container/gamarr"><img alt="Docker image" src="https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&amp;logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> &middot;
+  <a href="#features">Features</a> &middot;
+  <a href="#configuration">Configuration</a> &middot;
+  <a href="https://github.com/JeremiahM37/gamarr/releases">Releases</a> &middot;
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+Self-hosted game and ROM search, download, and library manager.
 
 Gamarr searches across all configured indexers (Torznab proxies, direct-download archive listings, web-scrape sources, and Minerva Archive browse listings) in parallel for 24 platforms. Results are scored for safety and quality, downloads are managed through your choice of torrent or Usenet client, and files are automatically organized into your game vault and ROM library.
 
@@ -13,6 +32,97 @@ Single ~17MB Go binary, no runtime dependencies — **~9MB RSS idle** in a real 
 [^1]: Measured on the current main in an LXC on Debian 12 (Mar 2026). Reference: ROMM ≈ 320MB, GameVault backend ≈ 157MB on the same host.
 
 ![Gamarr library view — game cards across PC, NES, SNES, GBA and Genesis with platform badges, file sizes, and RomM/GameVault links](docs/screenshot.png)
+
+## Quick Start
+
+### Docker (recommended)
+
+```yaml
+services:
+  gamarr:
+    image: ghcr.io/jeremiahm37/gamarr:latest
+    container_name: gamarr
+    ports:
+      - "5001:5001"
+    volumes:
+      # One mount spanning the download directory and the library, so hardlink
+      # imports work. Gamarr's defaults live under /data: the database in
+      # /data/gamarr, downloads in /data/incoming, the library in /data/vault
+      # and /data/roms. See "Hardlink import: volume layout" below before
+      # splitting this into a volume per directory.
+      - /srv/gamarr:/data
+    environment:
+      - PROWLARR_URL=http://prowlarr:9696
+      - PROWLARR_API_KEY=your-prowlarr-api-key
+      - QB_URL=http://qbittorrent:8080
+      - QB_USER=admin
+      - QB_PASS=changeme
+      # qBittorrent >= 5.2 can issue an API key instead. When set it replaces
+      # user/pass, so leave it out entirely rather than blank:
+      # - QB_API_KEY=qbt_your-api-key
+      # Optional, for Vimm downloads behind Turnstile:
+      # - FLARESOLVERR_URL=http://flaresolverr:8191
+      # - FLARESOLVERR_MAX_TIMEOUT=55000
+      # - FLARESOLVERR_TABS_TILL_VERIFY=74
+    restart: unless-stopped
+```
+
+```bash
+docker compose up -d
+```
+
+Open `http://localhost:5001`.
+
+#### Docker images
+
+Images are published to the GitHub Container Registry at
+[`ghcr.io/jeremiahm37/gamarr`](https://github.com/JeremiahM37/gamarr/pkgs/container/gamarr).
+The registry is public — pulling needs no login.
+
+| Tag | Points at | Use it when |
+|-----|-----------|-------------|
+| `latest` | the newest release | you want the current stable build |
+| `vX.Y.Z` | that release, forever | you want a pin that never moves |
+| `edge` | the current `main` | you want unreleased fixes and can take churn |
+
+```bash
+docker pull ghcr.io/jeremiahm37/gamarr:latest
+```
+
+Every image is a multi-arch manifest covering `linux/amd64` and `linux/arm64`,
+so the same tag works on x86 hosts and on a Raspberry Pi 4/5 or Apple-silicon
+Docker Desktop — the daemon picks the right one. (Releases up to and including
+`v1.3.0` predate multi-arch support and are amd64-only. `edge` and every release
+after `v1.3.0` carry both architectures.)
+
+#### Building from source instead
+
+The prebuilt image is the supported path; build locally only if you are
+modifying Gamarr. Swap the `image:` line above for `build: .` from a clone of
+this repo, or:
+
+```bash
+docker build -t gamarr:local .
+```
+
+### Binary
+
+```bash
+# Build
+go build -o gamarr ./cmd/gamarr/
+
+# Configure
+export PROWLARR_URL=http://localhost:9696
+export PROWLARR_API_KEY=your-prowlarr-api-key
+export QB_URL=http://localhost:8080
+# ... set other env vars as needed
+
+# Run
+./gamarr
+```
+
+Open `http://localhost:5001` in your browser.
+
 
 ## Features
 
@@ -151,96 +261,6 @@ Arcade is deliberately not a platform: MAME sets are tied to an emulator version
 - **Categories.** A result tagged with a category in the table is that platform. Every platform is advertised to Torznab consumers (anything without its own Newznab subcategory goes out as Console/Other).
 - **Search context.** Most trackers and Usenet indexers have no category for retro systems, so their releases arrive as `Console`, `Console/Other`, an unmapped tracker category, or nothing. When a search is filtered to a platform, those results are kept and filed under the platform searched for. A result whose categories positively name something else (another platform, PC, Movies, TV, ...) is dropped from that search.
 - **Files.** When a job has no platform, the downloaded files decide it: ROM extensions unique to one platform (`.gbc`, `.sms`, `.pce`, `.a78`, `.adf`, ...), including files inside a `.zip`, and failing that the release name. As a sanity check, a console job whose files include none of its platform's formats but whose ROM extensions plainly belong to another platform is refiled there (a platform chosen by hand with the Organize button is left alone). Disc formats shared by many systems (`.iso`, `.chd`, `.cue`, `.bin`) and formats that overlap ordinary files (`.md`, `.vb`, `.crt`) never decide a platform on their own. Those ROMs need a platform selection or a recognized title hint. Library scans retain small retro ROMs; empty files are skipped.
-
-## Quick Start
-
-### Docker (recommended)
-
-```yaml
-services:
-  gamarr:
-    image: ghcr.io/jeremiahm37/gamarr:latest
-    container_name: gamarr
-    ports:
-      - "5001:5001"
-    volumes:
-      # One mount spanning the download directory and the library, so hardlink
-      # imports work. Gamarr's defaults live under /data: the database in
-      # /data/gamarr, downloads in /data/incoming, the library in /data/vault
-      # and /data/roms. See "Hardlink import: volume layout" below before
-      # splitting this into a volume per directory.
-      - /srv/gamarr:/data
-    environment:
-      - PROWLARR_URL=http://prowlarr:9696
-      - PROWLARR_API_KEY=your-prowlarr-api-key
-      - QB_URL=http://qbittorrent:8080
-      - QB_USER=admin
-      - QB_PASS=changeme
-      # qBittorrent >= 5.2 can issue an API key instead. When set it replaces
-      # user/pass, so leave it out entirely rather than blank:
-      # - QB_API_KEY=qbt_your-api-key
-      # Optional, for Vimm downloads behind Turnstile:
-      # - FLARESOLVERR_URL=http://flaresolverr:8191
-      # - FLARESOLVERR_MAX_TIMEOUT=55000
-      # - FLARESOLVERR_TABS_TILL_VERIFY=74
-    restart: unless-stopped
-```
-
-```bash
-docker compose up -d
-```
-
-Open `http://localhost:5001`.
-
-#### Docker images
-
-Images are published to the GitHub Container Registry at
-[`ghcr.io/jeremiahm37/gamarr`](https://github.com/JeremiahM37/gamarr/pkgs/container/gamarr).
-The registry is public — pulling needs no login.
-
-| Tag | Points at | Use it when |
-|-----|-----------|-------------|
-| `latest` | the newest release | you want the current stable build |
-| `vX.Y.Z` | that release, forever | you want a pin that never moves |
-| `edge` | the current `main` | you want unreleased fixes and can take churn |
-
-```bash
-docker pull ghcr.io/jeremiahm37/gamarr:latest
-```
-
-Every image is a multi-arch manifest covering `linux/amd64` and `linux/arm64`,
-so the same tag works on x86 hosts and on a Raspberry Pi 4/5 or Apple-silicon
-Docker Desktop — the daemon picks the right one. (Releases up to and including
-`v1.3.0` predate multi-arch support and are amd64-only. `edge` and every release
-after `v1.3.0` carry both architectures.)
-
-#### Building from source instead
-
-The prebuilt image is the supported path; build locally only if you are
-modifying Gamarr. Swap the `image:` line above for `build: .` from a clone of
-this repo, or:
-
-```bash
-docker build -t gamarr:local .
-```
-
-### Binary
-
-```bash
-# Build
-go build -o gamarr ./cmd/gamarr/
-
-# Configure
-export PROWLARR_URL=http://localhost:9696
-export PROWLARR_API_KEY=your-prowlarr-api-key
-export QB_URL=http://localhost:8080
-# ... set other env vars as needed
-
-# Run
-./gamarr
-```
-
-Open `http://localhost:5001` in your browser.
 
 ## Configuration
 

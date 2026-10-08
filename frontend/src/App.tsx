@@ -192,9 +192,7 @@ function AuthGate({
     >
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-3 mb-6 justify-center">
-          <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center text-xl">
-            🎮
-          </div>
+          <img src="/static/logo.svg" alt="" aria-hidden="true" className="w-10 h-10" />
           <h1 className="text-2xl font-bold text-white">Gamarr</h1>
         </div>
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
@@ -512,11 +510,14 @@ function AppShell({
     <div id="app-root" className="min-h-screen flex flex-col">
       <header className="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div>
+          <div className="flex items-center gap-3">
+            <img src="/static/logo.svg" alt="" aria-hidden="true" className="h-8 w-8" />
+            <div>
             <h1 className="font-bold text-white">Gamarr</h1>
             <p className="text-xs text-slate-400 hidden sm:block">
               Game Search &amp; Download
             </p>
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-slate-500 hidden sm:block">

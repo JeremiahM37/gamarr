@@ -9188,9 +9188,11 @@ function b({ auth: e, expired: t, onSignedIn: n }) {
 			className: "w-full max-w-sm",
 			children: [/* @__PURE__ */ (0, m.jsxs)("div", {
 				className: "flex items-center gap-3 mb-6 justify-center",
-				children: [/* @__PURE__ */ (0, m.jsx)("div", {
-					className: "w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center text-xl",
-					children: "🎮"
+				children: [/* @__PURE__ */ (0, m.jsx)("img", {
+					src: "/static/logo.svg",
+					alt: "",
+					"aria-hidden": "true",
+					className: "w-10 h-10"
 				}), /* @__PURE__ */ (0, m.jsx)("h1", {
 					className: "text-2xl font-bold text-white",
 					children: "Gamarr"
@@ -9436,13 +9438,21 @@ function ne({ auth: e, tab: t, setTab: n, menu: r, setMenu: i, unauthorized: a, 
 			className: "bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-30",
 			children: [/* @__PURE__ */ (0, m.jsxs)("div", {
 				className: "max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between",
-				children: [/* @__PURE__ */ (0, m.jsxs)("div", { children: [/* @__PURE__ */ (0, m.jsx)("h1", {
-					className: "font-bold text-white",
-					children: "Gamarr"
-				}), /* @__PURE__ */ (0, m.jsx)("p", {
-					className: "text-xs text-slate-400 hidden sm:block",
-					children: "Game Search & Download"
-				})] }), /* @__PURE__ */ (0, m.jsxs)("div", {
+				children: [/* @__PURE__ */ (0, m.jsxs)("div", {
+					className: "flex items-center gap-3",
+					children: [/* @__PURE__ */ (0, m.jsx)("img", {
+						src: "/static/logo.svg",
+						alt: "",
+						"aria-hidden": "true",
+						className: "h-8 w-8"
+					}), /* @__PURE__ */ (0, m.jsxs)("div", { children: [/* @__PURE__ */ (0, m.jsx)("h1", {
+						className: "font-bold text-white",
+						children: "Gamarr"
+					}), /* @__PURE__ */ (0, m.jsx)("p", {
+						className: "text-xs text-slate-400 hidden sm:block",
+						children: "Game Search & Download"
+					})] })]
+				}), /* @__PURE__ */ (0, m.jsxs)("div", {
 					className: "flex items-center gap-3",
 					children: [
 						/* @__PURE__ */ (0, m.jsxs)("span", {
