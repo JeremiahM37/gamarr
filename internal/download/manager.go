@@ -4,7 +4,6 @@ package download
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2066,9 +2065,7 @@ func (m *Manager) fetchWithFlareSolverr(ctx context.Context, apiURL, targetURL s
 
 func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	jar, _ := cookiejar.New(nil)
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
+	transport := search.NewVimmTransport()
 	client := &http.Client{
 		Timeout:   60 * time.Second,
 		Transport: transport,

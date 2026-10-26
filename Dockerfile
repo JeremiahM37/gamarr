@@ -10,7 +10,7 @@ COPY frontend/ ./
 COPY web/index.html ../web/index.html
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Empty by default, and the -X below is applied only when it is set, so an
 # unset VERSION falls through to the default compiled into main.go. A literal
@@ -38,7 +38,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata p7zip && \
+# clamav-clamdscan: internal/safety/scanner.go shells out to clamdscan; without
+# it every scan logs "clamdscan not installed" and is skipped.
+RUN apk add --no-cache ca-certificates tzdata p7zip clamav-clamdscan && \
     adduser -D -u 1000 gamarr
 
 COPY --from=builder /gamarr /usr/local/bin/gamarr

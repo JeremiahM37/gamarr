@@ -3,12 +3,108 @@ package search
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"gamarr/internal/sources"
 )
+
+func stubProxy(t *testing.T, proxy string) {
+	t.Helper()
+	orig := proxyFromEnvironment
+	t.Cleanup(func() { proxyFromEnvironment = orig })
+	proxyFromEnvironment = func(*http.Request) (*url.URL, error) {
+		if proxy == "" {
+			return nil, nil
+		}
+		return url.Parse(proxy)
+	}
+}
+
+func TestVimmProxy_IsolatesSocksRequests(t *testing.T) {
+	stubProxy(t, "socks5://tor:9050")
+	req := httptest.NewRequest("GET", "https://vimm.net/vault/", nil)
+	first, err := VimmProxy(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := VimmProxy(req)
+	if first.Host != "tor:9050" || first.Scheme != "socks5" {
+		t.Errorf("proxy = %v, want socks5://tor:9050", first)
+	}
+	if first.User == nil || first.User.String() == second.User.String() {
+		t.Errorf("expected distinct SOCKS credentials per request, got %v and %v", first.User, second.User)
+	}
+}
+
+func TestVimmProxy_LeavesOtherProxiesAlone(t *testing.T) {
+	req := httptest.NewRequest("GET", "https://vimm.net/vault/", nil)
+	for _, proxy := range []string{"http://proxy:8118", "socks5://me:secret@tor:9050"} {
+		stubProxy(t, proxy)
+		got, _ := VimmProxy(req)
+		if got.String() != proxy {
+			t.Errorf("VimmProxy changed %q to %q", proxy, got)
+		}
+	}
+	stubProxy(t, "")
+	if got, _ := VimmProxy(req); got != nil {
+		t.Errorf("no proxy configured, got %v", got)
+	}
+}
+
+// dropConnection closes the TCP connection without answering, the way an
+// unreachable route or a dead proxy exit looks to the client.
+func dropConnection(w http.ResponseWriter) {
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err == nil {
+		_ = conn.Close()
+	}
+}
+
+func TestSearchVimm_RetriesFailedConnection(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			dropConnection(w)
+			return
+		}
+		_, _ = w.Write([]byte(`<a href="/vault/12345">Super Mario World</a>`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { RecordSearchSuccess("vimm") })
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+
+	results := SearchVimm(reg, "mario", "snes")
+	if len(results) != 1 || results[0].VimmID != "12345" {
+		t.Fatalf("expected the retry to return 1 result, got %d", len(results))
+	}
+	if calls.Load() != 2 {
+		t.Errorf("expected 2 requests (1 failed + 1 retry), got %d", calls.Load())
+	}
+}
+
+func TestSearchVimm_GivesUpAfterAttempts(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		dropConnection(w)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { RecordSearchSuccess("vimm") })
+	reg := testRegistry(t)
+	reg.Vimm.BaseURL = srv.URL + "/"
+
+	if results := SearchVimm(reg, "mario", "snes"); results != nil {
+		t.Fatalf("expected no results, got %d", len(results))
+	}
+	if int(calls.Load()) != vimmAttempts {
+		t.Errorf("expected %d attempts, got %d", vimmAttempts, calls.Load())
+	}
+}
 
 // vimmListHTML is a stripped-down Vimm search-results table: hidden
 // rating-sort sentinels, the same game listed per region, and a duplicate

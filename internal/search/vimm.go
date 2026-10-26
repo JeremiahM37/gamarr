@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gamarr/internal/models"
@@ -232,6 +233,41 @@ func systemFromRow(row string) string {
 	return ""
 }
 
+// vimmAttempts is how many times a search tries a request that fails before
+// any response arrives (refused, reset, timed out). HTTP errors are not retried.
+const vimmAttempts = 3
+
+// proxyFromEnvironment is http.ProxyFromEnvironment. Tests replace it, since
+// the standard library reads the environment only once per process.
+var proxyFromEnvironment = http.ProxyFromEnvironment
+
+var vimmCircuit atomic.Uint64
+
+// VimmProxy is the Proxy func for Vimm's transports. It honours HTTP_PROXY,
+// HTTPS_PROXY and NO_PROXY, which a bare http.Transport ignores, so a
+// configured proxy was previously bypassed for Vimm searches and downloads.
+//
+// For a SOCKS5 proxy without credentials it also adds unique ones. Tor
+// (IsolateSOCKSAuth, on by default) then builds a separate circuit per
+// request, so a retry does not reuse an exit node that cannot reach the vault.
+func VimmProxy(r *http.Request) (*url.URL, error) {
+	p, err := proxyFromEnvironment(r)
+	if err != nil || p == nil || !strings.HasPrefix(p.Scheme, "socks5") || p.User != nil {
+		return p, err
+	}
+	isolated := *p
+	isolated.User = url.UserPassword(fmt.Sprintf("gamarr-%d", vimmCircuit.Add(1)), "x")
+	return &isolated, nil
+}
+
+// NewVimmTransport returns the transport used for Vimm requests.
+func NewVimmTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:           VimmProxy,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+}
+
 // SearchVimm searches Vimm's Lair for ROMs.
 func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*models.SearchResult {
 	if IsCircuitOpen("vimm") {
@@ -258,16 +294,21 @@ func SearchVimm(reg *sources.Registry, query string, platformSlug string) []*mod
 		return nil
 	}
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
+	client := &http.Client{Timeout: 15 * time.Second}
 	req, _ := http.NewRequest("GET", reg.Vimm.BaseURL+"?"+params.Encode(), nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-	resp, err := client.Do(req)
+	var resp *http.Response
+	var err error
+	for attempt := 1; attempt <= vimmAttempts; attempt++ {
+		// A fresh transport per attempt: no pooled connection over a route
+		// that just failed, and behind Tor a fresh circuit (see VimmProxy).
+		client.Transport = NewVimmTransport()
+		if resp, err = client.Do(req); err == nil {
+			break
+		}
+		slog.Debug("Vimm request failed", "attempt", attempt, "error", err)
+	}
 	if err != nil {
 		slog.Warn("Vimm search error", "error", err)
 		RecordSearchFail("vimm", err.Error())
