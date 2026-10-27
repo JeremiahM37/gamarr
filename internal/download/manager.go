@@ -1838,6 +1838,29 @@ func vimmIsChallenge(pageText string) bool {
 	return vimmChallengeRe.MatchString(pageText)
 }
 
+// The gate page keeps the system's letter index (#, A–Z) above the Turnstile
+// widget. A letter with no games is a grey span rather than a link.
+var (
+	vimmLetterIndexRe = regexp.MustCompile(`(?is)<nav\b[^>]*\bid=["']vaultMenu["'][^>]*>(.*?)</nav\s*>`)
+	vimmEmptyLetterRe = regexp.MustCompile(`(?is)<span\b[^>]*>\s*(?:#|[A-Z])\s*</span>`)
+)
+
+// vimmGateTabs fits the configured Tab count to one gate page. The count is
+// for a system whose index links every letter; each letter without games is
+// one Tab stop fewer before the checkbox (GameCube has no Q games, so 73
+// rather than 74). A page without the index keeps the configured count.
+func vimmGateTabs(pageText string, tabsTillVerify int) int {
+	index := vimmLetterIndexRe.FindStringSubmatch(pageText)
+	if index == nil {
+		return tabsTillVerify
+	}
+	fitted := tabsTillVerify - len(vimmEmptyLetterRe.FindAllString(index[1], -1))
+	if flaresolverr.ValidateTabsTillVerify(fitted) != nil {
+		return tabsTillVerify
+	}
+	return fitted
+}
+
 // vimmDownloadPause is the courtesy delay between fetching the vault page and
 // hitting the download host. Tests set it to 0.
 var vimmDownloadPause = 3 * time.Second
@@ -2117,6 +2140,11 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	if vimmIsChallenge(pageText) {
 		apiURL, maxTimeout, tabsTillVerify := m.flareSolverrOptions()
 		if apiURL != "" {
+			if fitted := vimmGateTabs(pageText, tabsTillVerify); fitted != tabsTillVerify {
+				slog.Info("Vimm letter index has letters without games", "game_id", gameID,
+					"configured_tabs", tabsTillVerify, "tabs", fitted)
+				tabsTillVerify = fitted
+			}
 			m.jobs.Update(jobID, "detail", "Fetching Vimm page through FlareSolverr...")
 			search.WaitVimmRateLimit()
 			solution, solveErr := m.fetchWithFlareSolverr(context.Background(), apiURL, gameURL, maxTimeout, tabsTillVerify)

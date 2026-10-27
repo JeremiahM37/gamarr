@@ -310,7 +310,7 @@ The active indexer list (base URLs, per-platform path mappings) is loaded at sta
 | `RAWG_API_KEY` | | RAWG.io API key (enables metadata, calendar) |
 | `FLARESOLVERR_URL` | | Optional FlareSolverr API base URL, for example `http://flaresolverr:8191` |
 | `FLARESOLVERR_MAX_TIMEOUT` | `55000` | Maximum FlareSolverr solve time in milliseconds (`20000`–`55000`) |
-| `FLARESOLVERR_TABS_TILL_VERIFY` | `74` | Tab presses used by FlareSolverr 3.5.0+ to focus Vimm's Turnstile verification control (`1`–`1000`) |
+| `FLARESOLVERR_TABS_TILL_VERIFY` | `74` | Tab presses used by FlareSolverr 3.5.0+ to focus Vimm's Turnstile verification control on a system whose letter index links every letter; Gamarr presses one fewer for each letter without games (`1`–`1000`) |
 
 #### Vimm downloads with FlareSolverr
 
@@ -335,8 +335,11 @@ after it recognizes Vimm's Turnstile page. Each gated page gets a temporary
 browser session. If FlareSolverr reports a stale-element error after Turnstile
 submits, Gamarr retrieves the navigated page in the same session and then
 destroys that session, including on error paths. The default is `74` tab
-presses; because focus order is layout-dependent, override it when Vimm's page
-changes. The timeout defaults to its `55000` ms maximum; overrides down to the
+presses, which reaches the checkbox on a system whose letter index (#, A–Z)
+links every letter. The gate page shows a letter without games as plain text,
+which takes no Tab stop, so Gamarr presses one fewer for each such letter
+(GameCube has no Q games: 73). Because focus order is layout-dependent,
+override it when Vimm's page changes. The timeout defaults to its `55000` ms maximum; overrides down to the
 `20000` ms minimum are accepted.
 Use **Settings → Connection Tests → FlareSolverr** to verify the configured
 service is reachable.
