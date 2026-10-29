@@ -22,8 +22,10 @@ const (
 	// DefaultMaxTimeout leaves margin above the observed Vimm Turnstile solve.
 	// Values are milliseconds because that is the FlareSolverr API unit.
 	DefaultMaxTimeout = 55_000
-	// DefaultVimmTabsTillVerify is Vimm's manual-focus preset. Tab order is
-	// layout-dependent, so deployments can override it through configuration.
+	// DefaultVimmTabsTillVerify is Vimm's manual-focus preset for a system
+	// whose letter index links every letter; the download manager subtracts
+	// the letters without games. Tab order is layout-dependent, so deployments
+	// can override it through configuration.
 	DefaultVimmTabsTillVerify = 74
 	// Twenty seconds is sufficient for the verified Vimm Turnstile flow while
 	// still leaving enough time for FlareSolverr to drive the browser.

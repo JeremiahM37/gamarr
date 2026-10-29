@@ -825,3 +825,103 @@ func TestRetryJobRefusesWhileVimmWorkerIsStillActive(t *testing.T) {
 		t.Errorf("refused retry changed the job: %v", job)
 	}
 }
+
+// vimmGatePage is a Turnstile gate page with the system's letter index. Letters
+// in empty are greyed out the way Vimm shows a letter without games.
+func vimmGatePage(system, empty string) string {
+	var b strings.Builder
+	b.WriteString(`<html><body><nav id="vaultMenu" class="menu" style="white-space:nowrap">` + "\n")
+	for _, letter := range "#ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
+		switch {
+		case strings.ContainsRune(empty, letter):
+			fmt.Fprintf(&b, `<span style="color:#404040">%c</span>`, letter)
+		case letter == '#':
+			fmt.Fprintf(&b, `<a href="/vault/?p=list&amp;system=%s&amp;section=number">#</a>`, system)
+		default:
+			fmt.Fprintf(&b, `<a href="/vault/%s/%c">%c</a>`, system, letter, letter)
+		}
+	}
+	b.WriteString("  </nav>\n")
+	b.WriteString(`<p id="turnstile-message">Checking if you are human.</p>
+<form id="turnstile-form" method="POST"><div class="cf-turnstile" data-sitekey="0x4AAAAAAAcFgS2_wvnSBZF1" data-callback="onTurnstileSuccess"></div></form>
+</body></html>`)
+	return b.String()
+}
+
+func TestVimmGateTabs(t *testing.T) {
+	cases := []struct {
+		name string
+		page string
+		tabs int
+		want int
+	}{
+		{"every letter linked", vimmGatePage("PS2", ""), 74, 74},
+		{"GameCube has no Q games", vimmGatePage("GameCube", "Q"), 74, 73},
+		{"Virtual Boy has twelve empty letters", vimmGatePage("VB", "#AEGIOQUXYZK"), 74, 62},
+		{"configured count is the full-index count", vimmGatePage("GameCube", "Q"), 80, 79},
+		{"page without the index", vimmChallengePageHTML, 74, 74},
+		{"grey text outside the index", `<span>Q</span>` + vimmGatePage("PS2", ""), 74, 74},
+		{"never below the minimum", vimmGatePage("VB", "#AEGIOQUXYZK"), 5, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := vimmGateTabs(tc.page, tc.tabs); got != tc.want {
+				t.Errorf("vimmGateTabs = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDownloadVimmGame_FitsFlareSolverrTabsToLetterIndex(t *testing.T) {
+	var srv *httptest.Server
+	var tabs []*int
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/vault/"):
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			_, _ = io.WriteString(w, vimmGatePage("GameCube", "Q"))
+		case r.URL.Path == "/v1":
+			var req struct {
+				Command        string `json:"cmd"`
+				Session        string `json:"session"`
+				TabsTillVerify *int   `json:"tabs_till_verify"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			w.Header().Set("Content-Type", "application/json")
+			switch req.Command {
+			case "sessions.create":
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status": "ok", "message": "Session created successfully.", "session": req.Session,
+				})
+			case "request.get":
+				tabs = append(tabs, req.TabsTillVerify)
+				page := fmt.Sprintf(`<html><body><form action="%s/download" id="dl_form"></form><script>let allMedia = [{"ID":6350,"Region":"USA"}];</script></body></html>`, srv.URL)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status": "ok", "solution": map[string]interface{}{"status": 200, "response": page},
+				})
+			case "sessions.destroy":
+				_, _ = io.WriteString(w, `{"status":"ok","message":"The session has been removed."}`)
+			}
+		case r.URL.Path == "/download":
+			w.Header().Set("Content-Disposition", `attachment; filename="Need for Speed - Underground (USA).7z"`)
+			w.Header().Set("Content-Type", "application/x-7z-compressed")
+			_, _ = w.Write([]byte("7z\xbc\xaf\x27\x1c"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	m, jobs := newVimmManager(t, srv.URL+"/vault/")
+	m.cfg.FlareSolverrURL = srv.URL
+	jobID := newJobID()
+	jobs.Set(jobID, map[string]interface{}{"status": "downloading"})
+
+	if got := m.downloadVimmGame("7571", m.cfg.QBSavePath, jobID); got == "" {
+		job, _ := jobs.Get(jobID)
+		t.Fatalf("download failed: %+v", job)
+	}
+	if len(tabs) != 1 || tabs[0] == nil || *tabs[0] != 73 {
+		t.Errorf("FlareSolverr tabs = %v, want one request with 73", tabs)
+	}
+}

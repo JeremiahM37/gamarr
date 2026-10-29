@@ -1713,16 +1713,25 @@ func (m *Manager) ddlSourceName(dlURL, vimmID string) string {
 }
 
 func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
-	client := &http.Client{Timeout: 5 * time.Minute}
-	req, _ := http.NewRequest("GET", dlURL, nil)
+	// No client Timeout: it would also bound reading the body, and a large file
+	// on a slow host takes longer than any fixed limit. The guard ends the
+	// request only when the server stops sending.
+	client := &http.Client{}
+	ctx, guard, stopGuard := newStallGuard(downloadStallTimeout)
+	defer stopGuard()
+	req, _ := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
 	req.Header.Set("User-Agent", "Gamarr/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if guard.Stalled() {
+			err = fmt.Errorf("no response from server for %s", downloadStallTimeout)
+		}
 		slog.Error("DDL download failed", "url", sanitizeLog(dlURL), "error", err)
 		return "", err
 	}
 	defer resp.Body.Close()
+	guard.Progress()
 	if resp.StatusCode != 200 {
 		slog.Error("DDL download failed", "url", sanitizeLog(dlURL), "status", resp.StatusCode)
 		return "", fmt.Errorf("HTTP %d from server", resp.StatusCode)
@@ -1762,6 +1771,7 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			guard.Progress()
 			if _, writeErr = f.Write(buf[:n]); writeErr != nil {
 				break
 			}
@@ -1774,7 +1784,9 @@ func (m *Manager) downloadDDL(dlURL, destPath, jobID string) (string, error) {
 			}
 		}
 		if readErr != nil {
-			if readErr != io.EOF {
+			if guard.Stalled() {
+				writeErr = fmt.Errorf("no data for %s", downloadStallTimeout)
+			} else if readErr != io.EOF {
 				writeErr = readErr
 			}
 			break
@@ -1824,6 +1836,29 @@ const vimmFlareSolverrChallengeError = "FlareSolverr returned Vimm's Turnstile p
 // vimmIsChallenge reports whether a Vimm response is the Turnstile gate.
 func vimmIsChallenge(pageText string) bool {
 	return vimmChallengeRe.MatchString(pageText)
+}
+
+// The gate page keeps the system's letter index (#, A–Z) above the Turnstile
+// widget. A letter with no games is a grey span rather than a link.
+var (
+	vimmLetterIndexRe = regexp.MustCompile(`(?is)<nav\b[^>]*\bid=["']vaultMenu["'][^>]*>(.*?)</nav\s*>`)
+	vimmEmptyLetterRe = regexp.MustCompile(`(?is)<span\b[^>]*>\s*(?:#|[A-Z])\s*</span>`)
+)
+
+// vimmGateTabs fits the configured Tab count to one gate page. The count is
+// for a system whose index links every letter; each letter without games is
+// one Tab stop fewer before the checkbox (GameCube has no Q games, so 73
+// rather than 74). A page without the index keeps the configured count.
+func vimmGateTabs(pageText string, tabsTillVerify int) int {
+	index := vimmLetterIndexRe.FindStringSubmatch(pageText)
+	if index == nil {
+		return tabsTillVerify
+	}
+	fitted := tabsTillVerify - len(vimmEmptyLetterRe.FindAllString(index[1], -1))
+	if flaresolverr.ValidateTabsTillVerify(fitted) != nil {
+		return tabsTillVerify
+	}
+	return fitted
 }
 
 // vimmDownloadPause is the courtesy delay between fetching the vault page and
@@ -2105,6 +2140,11 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	if vimmIsChallenge(pageText) {
 		apiURL, maxTimeout, tabsTillVerify := m.flareSolverrOptions()
 		if apiURL != "" {
+			if fitted := vimmGateTabs(pageText, tabsTillVerify); fitted != tabsTillVerify {
+				slog.Info("Vimm letter index has letters without games", "game_id", gameID,
+					"configured_tabs", tabsTillVerify, "tabs", fitted)
+				tabsTillVerify = fitted
+			}
 			m.jobs.Update(jobID, "detail", "Fetching Vimm page through FlareSolverr...")
 			search.WaitVimmRateLimit()
 			solution, solveErr := m.fetchWithFlareSolverr(context.Background(), apiURL, gameURL, maxTimeout, tabsTillVerify)
@@ -2171,27 +2211,36 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	// Use the form action host only — downloadN.vimm.net is not a real hostname.
 	dlURLs := vimmDownloadURLs(actionURL, mediaID)
 
+	// Vimm caps transfer speed, so a disc image streams for far longer than any
+	// fixed client Timeout would allow. Each request instead gets a stall guard.
 	streamClient := &http.Client{
-		Timeout:   10 * time.Minute,
 		Transport: transport,
 		Jar:       jar,
 	}
 
 	var dlResp *http.Response
+	var guard *stallGuard
+	stopStream := func() {}
 	sawHTML, sawChallenge := false, false
 	for _, dlURL := range dlURLs {
-		req, _ := http.NewRequest(http.MethodGet, dlURL, nil)
+		ctx, g, stopGuard := newStallGuard(downloadStallTimeout)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
 		req.Header.Set("User-Agent", ua)
 		req.Header.Set("Referer", gameURL)
 		req.Header.Set("Origin", origin)
 		r, err := streamClient.Do(req)
 		if err != nil {
+			stopGuard()
+			if g.Stalled() {
+				err = fmt.Errorf("no response for %s", downloadStallTimeout)
+			}
 			slog.Warn("Vimm download failed", "url", dlURL, "error", err)
 			continue
 		}
 		if vimmLooksLikeFile(r) {
 			slog.Info("Vimm download started", "url", dlURL, "status", r.StatusCode)
-			dlResp = r
+			g.Progress()
+			dlResp, guard, stopStream = r, g, stopGuard
 			break
 		}
 		if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "text/html") {
@@ -2203,6 +2252,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 			}
 		}
 		r.Body.Close()
+		stopGuard()
 		slog.Warn("Vimm download rejected", "url", dlURL, "status", r.StatusCode, "content_type", r.Header.Get("Content-Type"))
 	}
 
@@ -2219,6 +2269,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 		})
 		return ""
 	}
+	defer stopStream()
 	defer dlResp.Body.Close()
 
 	total := dlResp.ContentLength
@@ -2251,6 +2302,7 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	for {
 		n, readErr := dlResp.Body.Read(buf)
 		if n > 0 {
+			guard.Progress()
 			if _, writeErr = f.Write(buf[:n]); writeErr != nil {
 				break
 			}
@@ -2272,9 +2324,13 @@ func (m *Manager) downloadVimmGame(gameID, destPath, jobID string) string {
 	// finished download — it would land in the library as a complete game.
 	if writeErr != nil || (total > 0 && downloaded != total) {
 		os.Remove(fp)
+		errMsg := fmt.Sprintf("Vimm download incomplete (%s of %s)", search.HumanSize(downloaded), search.HumanSize(total))
+		if guard.Stalled() {
+			errMsg = fmt.Sprintf("Vimm download stalled: no data for %s (%s of %s)",
+				downloadStallTimeout, search.HumanSize(downloaded), search.HumanSize(total))
+		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("Vimm download incomplete (%s of %s)", search.HumanSize(downloaded), search.HumanSize(total)),
+			"status": "error", "error": errMsg,
 		})
 		return ""
 	}
