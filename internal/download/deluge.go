@@ -86,7 +86,8 @@ func (d *DelugeClient) login() error {
 	return nil
 }
 
-// AddTorrent adds a torrent to Deluge by URL or magnet link.
+// AddTorrent adds a torrent to Deluge by URL or magnet link. Deluge has one RPC
+// for each, and its URL RPC can only fetch http(s).
 func (d *DelugeClient) AddTorrent(url string, options map[string]interface{}) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -95,13 +96,28 @@ func (d *DelugeClient) AddTorrent(url string, options map[string]interface{}) (s
 		options = map[string]interface{}{}
 	}
 
-	resp, err := d.call("core.add_torrent_url", []interface{}{url, options})
+	if isMagnetLink(url) {
+		return d.add("core.add_torrent_magnet", url, options)
+	}
+	id, err := d.add("core.add_torrent_url", url, options)
+	if err != nil {
+		// An indexer proxy's download link can redirect to a magnet, which Deluge
+		// follows and then fails on with an error that does not say so.
+		if magnet, ok := d.magnetRedirect(url); ok {
+			return d.add("core.add_torrent_magnet", magnet, options)
+		}
+	}
+	return id, err
+}
+
+func (d *DelugeClient) add(method, url string, options map[string]interface{}) (string, error) {
+	resp, err := d.call(method, []interface{}{url, options})
 	if err != nil || resp.Error.isAuthError() {
 		// Transport/parse failure or expired session: re-auth once and retry.
 		if loginErr := d.login(); loginErr != nil {
 			return "", fmt.Errorf("deluge re-auth: %w", loginErr)
 		}
-		resp, err = d.call("core.add_torrent_url", []interface{}{url, options})
+		resp, err = d.call(method, []interface{}{url, options})
 		if err != nil {
 			return "", err
 		}
@@ -116,6 +132,27 @@ func (d *DelugeClient) AddTorrent(url string, options map[string]interface{}) (s
 		return "", fmt.Errorf("deluge: invalid torrent ID response")
 	}
 	return torrentID, nil
+}
+
+// magnetRedirect returns the magnet a download link redirects to, if any.
+func (d *DelugeClient) magnetRedirect(url string) (string, bool) {
+	noFollow := &http.Client{
+		Timeout: d.client.Timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := noFollow.Get(url)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	location := resp.Header.Get("Location")
+	return location, isMagnetLink(location)
+}
+
+func isMagnetLink(url string) bool {
+	return strings.HasPrefix(strings.ToLower(url), "magnet:")
 }
 
 // GetTorrentStatus returns status info for a specific torrent.
