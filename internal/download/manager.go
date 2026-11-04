@@ -133,8 +133,10 @@ func jobCompleted(detail string) map[string]interface{} {
 
 // DownloadTorrent starts a torrent download.
 // Tries clients in order: qBittorrent -> Transmission -> Deluge (first available).
-// When selectFiles is true (Minerva archive magnets), the torrent is added
-// paused, matching files are prioritized, and then started.
+// When selectFiles is true (Minerva archive magnets), the torrent is held until
+// matching files are prioritized, then started. Only qBittorrent can do that, so
+// such a download never falls back to another client: the rest of the archive
+// would come with it.
 func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, isPC, selectFiles bool) (string, error) {
 	if url == "" {
 		return "", fmt.Errorf("no download URL")
@@ -195,7 +197,7 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	}
 
 	// Try Transmission.
-	if !added && m.transmission != nil {
+	if !added && !selectFiles && m.transmission != nil {
 		m.jobs.Update(jobID, "detail", "Sending to Transmission...")
 		_, err := m.transmission.AddTorrent(url, m.cfg.QBSavePath)
 		if err == nil {
@@ -207,7 +209,7 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	}
 
 	// Try Deluge.
-	if !added && m.deluge != nil {
+	if !added && !selectFiles && m.deluge != nil {
 		m.jobs.Update(jobID, "detail", "Sending to Deluge...")
 		opts := map[string]interface{}{
 			"download_location": m.cfg.QBSavePath,
@@ -222,9 +224,13 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	}
 
 	if !added {
+		reason := "Failed to add torrent to any download client"
+		if selectFiles {
+			reason = "Archive downloads need qBittorrent, the only client Gamarr can select single files with"
+		}
 		m.jobs.UpdateMulti(jobID, map[string]interface{}{
 			"status": "error",
-			"error":  "Failed to add torrent to any download client",
+			"error":  reason,
 		})
 		return jobID, nil
 	}
@@ -248,20 +254,15 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 				slog.Warn("no infohash from client, matching on title", "title", title)
 			}
 		}
-		if selectFiles && clientUsed == "qBittorrent" && hash != "" {
-			m.maybeRenameArchiveTorrent(hash, platf, platSlug)
-			m.jobs.Update(jobID, "detail", "Selecting files in archive torrent...")
-			if err := m.selectArchiveFiles(hash, title, jobID); err != nil {
-				slog.Warn("archive file selection failed", "title", title, "hash", hash, "error", err)
-			} else {
-				for _, item := range m.jobs.Items() {
-					ih, _ := item.Data["info_hash"].(string)
-					if strings.EqualFold(ih, hash) {
-						m.jobs.Update(item.ID, "detail", "Downloading...")
-					}
-				}
+		if selectFiles && clientUsed == "qBittorrent" {
+			if err := m.startArchiveSelection(hash, title, platf, platSlug, jobID); err != nil {
+				slog.Error("archive torrent not started", "title", title, "hash", hash, "error", err)
+				m.jobs.UpdateMulti(jobID, map[string]interface{}{
+					"status": "error",
+					"error":  "Archive download not started: " + err.Error(),
+				})
+				return
 			}
-			m.qb.StartTorrent(hash)
 		}
 		m.watchGameTorrent(jobID, hash, title, platf, platSlug, isPC)
 	}()
@@ -286,14 +287,48 @@ func (m *Manager) hashInCategory(infoHash string) bool {
 	return false
 }
 
+// How long an archive magnet may take to deliver its metadata, and how long
+// qBittorrent gets to report priorities it has just been given. Vars so tests
+// need not wait them out.
+var (
+	archiveMetadataTimeout = 10 * time.Minute
+	archiveMetadataPoll    = 2 * time.Second
+	archiveVerifyAttempts  = 5
+	archiveVerifyPoll      = time.Second
+)
+
+// startArchiveSelection enables only the wanted ROM in a shared archive and then
+// starts the torrent. Any error leaves it unstarted: the archive can run to
+// terabytes, so an unverified selection must not be allowed to download.
+func (m *Manager) startArchiveSelection(hash, title, platf, platSlug, jobID string) error {
+	if hash == "" {
+		return fmt.Errorf("the download client did not report an infohash")
+	}
+	m.maybeRenameArchiveTorrent(hash, platf, platSlug)
+	m.jobs.Update(jobID, "detail", "Selecting files in archive torrent...")
+	if err := m.selectArchiveFiles(hash, title, jobID); err != nil {
+		return err
+	}
+	if !m.qb.StartTorrent(hash) {
+		return fmt.Errorf("qBittorrent refused to start the torrent")
+	}
+	for _, item := range m.jobs.Items() {
+		ih, _ := item.Data["info_hash"].(string)
+		if strings.EqualFold(ih, hash) {
+			m.jobs.Update(item.ID, "detail", "Downloading...")
+		}
+	}
+	return nil
+}
+
 // selectArchiveFiles waits for metadata, then sets file priorities so only the
 // ROM matching title (plus files wanted by other active jobs on this hash) download.
 func (m *Manager) selectArchiveFiles(hash, title, jobID string) error {
 	files := m.waitTorrentFiles(hash)
-	if files == nil {
-		return fmt.Errorf("file list unavailable")
+	if len(files) == 0 {
+		return fmt.Errorf("no file list after %s; the torrent stays stopped and can be retried", archiveMetadataTimeout)
 	}
-	if len(files) <= 1 {
+	if len(files) == 1 {
 		return nil
 	}
 	matched := matchTorrentFileIndexes(files, title)
@@ -325,8 +360,7 @@ func (m *Manager) selectArchiveFiles(hash, title, jobID string) error {
 		}
 	}
 	var keep, skip []int
-	for _, f := range files {
-		idx := f.Index
+	for _, idx := range torrentFileIndexes(files) {
 		if wanted[idx] {
 			keep = append(keep, idx)
 		} else {
@@ -339,7 +373,45 @@ func (m *Manager) selectArchiveFiles(hash, title, jobID string) error {
 	if len(keep) > 0 && !m.qb.SetFilePriority(hash, keep, 1) {
 		return fmt.Errorf("failed to enable %d files", len(keep))
 	}
+	if err := m.verifyArchiveSelection(hash, wanted); err != nil {
+		return err
+	}
 	slog.Info("archive file selection applied", "hash", hash, "title", title, "keep", len(keep), "skip", len(skip))
+	return nil
+}
+
+// verifyArchiveSelection reads the priorities back: a request qBittorrent
+// accepted is not yet proof that only the wanted files are enabled.
+func (m *Manager) verifyArchiveSelection(hash string, wanted map[int]bool) error {
+	var mismatch error
+	for attempt := 0; attempt < archiveVerifyAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(archiveVerifyPoll)
+		}
+		if mismatch = archiveSelectionMismatch(m.qb.GetTorrentFiles(hash), wanted); mismatch == nil {
+			return nil
+		}
+	}
+	return mismatch
+}
+
+func archiveSelectionMismatch(files []qbit.TorrentFile, wanted map[int]bool) error {
+	if len(files) == 0 {
+		return fmt.Errorf("could not read file priorities back")
+	}
+	indexes := torrentFileIndexes(files)
+	enabled := 0
+	for i, idx := range indexes {
+		if files[i].Priority > 0 {
+			enabled++
+		}
+		if (files[i].Priority > 0) != wanted[idx] {
+			return fmt.Errorf("file %d has priority %d after selection", idx, files[i].Priority)
+		}
+	}
+	if enabled == 0 {
+		return fmt.Errorf("no file is enabled after selection")
+	}
 	return nil
 }
 
@@ -391,14 +463,34 @@ func (m *Manager) maybeRenameArchiveTorrent(hash, platf, platSlug string) {
 }
 
 func (m *Manager) waitTorrentFiles(hash string) []qbit.TorrentFile {
-	for attempt := 0; attempt < 60; attempt++ {
+	deadline := time.Now().Add(archiveMetadataTimeout)
+	for {
 		files := m.qb.GetTorrentFiles(hash)
-		if len(files) > 0 {
+		if len(files) > 0 || time.Now().After(deadline) {
 			return files
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(archiveMetadataPoll)
 	}
-	return m.qb.GetTorrentFiles(hash)
+}
+
+// torrentFileIndexes returns the id qBittorrent knows each file by. Its API has
+// not always reported one: when every index reads 0 the position is the id.
+func torrentFileIndexes(files []qbit.TorrentFile) []int {
+	allZero := true
+	for _, f := range files {
+		if f.Index != 0 {
+			allZero = false
+			break
+		}
+	}
+	out := make([]int, len(files))
+	for i, f := range files {
+		out[i] = f.Index
+		if allZero {
+			out[i] = i
+		}
+	}
+	return out
 }
 
 // matchTorrentFileIndexes returns torrent file indexes whose basename matches
@@ -410,23 +502,12 @@ func matchTorrentFileIndexes(files []qbit.TorrentFile, title string) []int {
 	}
 	wantBase := strings.ToLower(path.Base(want))
 	wantStem := stripFileExt(wantBase)
-	allZero := true
-	for _, f := range files {
-		if f.Index != 0 {
-			allZero = false
-			break
-		}
-	}
-	usePos := allZero && len(files) > 1
+	indexes := torrentFileIndexes(files)
 	var out []int
 	for i, f := range files {
-		idx := f.Index
-		if usePos {
-			idx = i
-		}
 		base := strings.ToLower(path.Base(f.Name))
 		if base == want || base == wantBase || (wantStem != "" && stripFileExt(base) == wantStem) {
-			out = append(out, idx)
+			out = append(out, indexes[i])
 		}
 	}
 	return out

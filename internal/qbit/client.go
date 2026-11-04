@@ -213,9 +213,13 @@ func (c *Client) AddTorrent(torrentURL, title, savePath, category string) bool {
 	return c.AddTorrentOpts(torrentURL, title, savePath, category, false)
 }
 
-// AddTorrentOpts adds a torrent. When paused is true the torrent is added
-// stopped so callers can set file priorities before any payload downloads.
-func (c *Client) AddTorrentOpts(torrentURL, title, savePath, category string, paused bool) bool {
+// AddTorrentOpts adds a torrent. When hold is true no payload downloads until
+// the caller starts it, so file priorities can be set first. A magnet has to run
+// to fetch its metadata - added stopped it reports no files, indefinitely - so it
+// is added running and stops itself once metadata arrives (qBittorrent 4.5+). A
+// .torrent URL already carries its metadata and that stop condition would never
+// fire, so it is added stopped.
+func (c *Client) AddTorrentOpts(torrentURL, title, savePath, category string, hold bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureAuth()
@@ -225,10 +229,14 @@ func (c *Client) AddTorrentOpts(torrentURL, title, savePath, category string, pa
 		"savepath": {savePath},
 		"category": {category},
 	}
-	if paused {
-		// qBittorrent ≤4.x uses paused; ≥5 prefers stopped. Send both.
-		data.Set("paused", "true")
-		data.Set("stopped", "true")
+	if hold {
+		if strings.HasPrefix(strings.ToLower(torrentURL), "magnet:") {
+			data.Set("stopCondition", "MetadataReceived")
+		} else {
+			// qBittorrent ≤4.x uses paused; ≥5 prefers stopped. Send both.
+			data.Set("paused", "true")
+			data.Set("stopped", "true")
+		}
 	}
 	resp, err := c.postForm("/api/v2/torrents/add", data)
 	if err != nil {
@@ -258,6 +266,11 @@ func (c *Client) AddTorrentOpts(torrentURL, title, savePath, category string, pa
 	return ok
 }
 
+// filePriorityBatch caps the indexes in one filePrio request. A shared archive
+// holds thousands of files, and one oversized request can outlast the client
+// timeout while qBittorrent is still applying it.
+const filePriorityBatch = 1000
+
 // SetFilePriority sets the download priority for the given file indexes.
 // Priority 0 skips the file; 1 is normal.
 func (c *Client) SetFilePriority(hash string, indexes []int, priority int) bool {
@@ -271,19 +284,22 @@ func (c *Client) SetFilePriority(hash string, indexes []int, priority int) bool 
 	defer c.mu.Unlock()
 	c.ensureAuth()
 
-	ids := make([]string, len(indexes))
-	for i, idx := range indexes {
-		ids[i] = fmt.Sprintf("%d", idx)
-	}
-	data := url.Values{
-		"hash":     {hash},
-		"id":       {strings.Join(ids, "|")},
-		"priority": {fmt.Sprintf("%d", priority)},
-	}
-	status := c.postWithReauth("/api/v2/torrents/filePrio", data)
-	if !is2xx(status) {
-		slog.Warn("qBittorrent filePrio failed", "hash", hash, "status", status, "count", len(indexes), "priority", priority)
-		return false
+	for start := 0; start < len(indexes); start += filePriorityBatch {
+		batch := indexes[start:min(start+filePriorityBatch, len(indexes))]
+		ids := make([]string, len(batch))
+		for i, idx := range batch {
+			ids[i] = fmt.Sprintf("%d", idx)
+		}
+		data := url.Values{
+			"hash":     {hash},
+			"id":       {strings.Join(ids, "|")},
+			"priority": {fmt.Sprintf("%d", priority)},
+		}
+		status := c.postWithReauth("/api/v2/torrents/filePrio", data)
+		if !is2xx(status) {
+			slog.Warn("qBittorrent filePrio failed", "hash", hash, "status", status, "count", len(batch), "priority", priority)
+			return false
+		}
 	}
 	return true
 }

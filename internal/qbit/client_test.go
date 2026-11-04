@@ -764,29 +764,89 @@ func TestStartTorrent_FallsBackToResume(t *testing.T) {
 	}
 }
 
-func TestAddTorrentOpts_Paused(t *testing.T) {
-	var paused, stopped string
+func TestAddTorrentOpts_Hold(t *testing.T) {
+	tests := []struct {
+		name, url, wantPaused, wantStopped, wantCondition string
+	}{
+		// A stopped magnet never fetches metadata, so there would be no files to select.
+		{"magnet runs until metadata", "magnet:?xt=urn:btih:abc", "", "", "MetadataReceived"},
+		{"magnet scheme is case-insensitive", "MAGNET:?xt=urn:btih:abc", "", "", "MetadataReceived"},
+		// A .torrent has metadata already, so the stop condition would never fire.
+		{"torrent file is added stopped", "http://indexer/a.torrent", "true", "true", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var paused, stopped, condition string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v2/auth/login" {
+					w.Write([]byte("Ok."))
+					return
+				}
+				if r.URL.Path == "/api/v2/torrents/add" {
+					r.ParseForm()
+					paused = r.Form.Get("paused")
+					stopped = r.Form.Get("stopped")
+					condition = r.Form.Get("stopCondition")
+					w.Write([]byte("Ok."))
+					return
+				}
+				w.WriteHeader(404)
+			}))
+			defer srv.Close()
+
+			c := New(srv.URL, "admin", "pass")
+			if !c.AddTorrentOpts(tt.url, "T", "/dl", "console", true) {
+				t.Fatal("AddTorrentOpts failed")
+			}
+			if paused != tt.wantPaused || stopped != tt.wantStopped || condition != tt.wantCondition {
+				t.Fatalf("paused=%q stopped=%q stopCondition=%q", paused, stopped, condition)
+			}
+		})
+	}
+}
+
+func TestSetFilePriority_Batches(t *testing.T) {
+	var batches [][]string
+	var failAt int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v2/auth/login" {
 			w.Write([]byte("Ok."))
 			return
 		}
-		if r.URL.Path == "/api/v2/torrents/add" {
-			r.ParseForm()
-			paused = r.Form.Get("paused")
-			stopped = r.Form.Get("stopped")
-			w.Write([]byte("Ok."))
-			return
+		r.ParseForm()
+		batches = append(batches, strings.Split(r.Form.Get("id"), "|"))
+		if failAt > 0 && len(batches) == failAt {
+			w.WriteHeader(500)
 		}
-		w.WriteHeader(404)
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "admin", "pass")
-	if !c.AddTorrentOpts("magnet:?xt=urn:btih:abc", "T", "/dl", "console", true) {
-		t.Fatal("AddTorrentOpts failed")
+	indexes := make([]int, filePriorityBatch*2+1)
+	for i := range indexes {
+		indexes[i] = i
 	}
-	if paused != "true" || stopped != "true" {
-		t.Fatalf("paused=%q stopped=%q", paused, stopped)
+	c := New(srv.URL, "admin", "pass")
+	if !c.SetFilePriority("abc", indexes, 0) {
+		t.Fatal("SetFilePriority failed")
+	}
+	seen := map[string]bool{}
+	for _, b := range batches {
+		if len(b) > filePriorityBatch {
+			t.Fatalf("batch of %d exceeds %d", len(b), filePriorityBatch)
+		}
+		for _, id := range b {
+			seen[id] = true
+		}
+	}
+	if len(batches) != 3 || len(seen) != len(indexes) {
+		t.Fatalf("batches=%d distinct ids=%d, want 3 and %d", len(batches), len(seen), len(indexes))
+	}
+
+	batches, failAt = nil, 2
+	if c.SetFilePriority("abc", indexes, 0) {
+		t.Fatal("a failed batch must fail the call")
+	}
+	if len(batches) != 2 {
+		t.Fatalf("sent %d batches after a failure, want to stop at 2", len(batches))
 	}
 }
