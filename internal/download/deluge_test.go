@@ -141,7 +141,7 @@ func TestDelugeAddTorrent(t *testing.T) {
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "secret")
-		id, err := c.AddTorrent("magnet:x", map[string]interface{}{"download_location": "/dl"})
+		id, err := c.AddTorrent("http://indexer/a.torrent", map[string]interface{}{"download_location": "/dl"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -150,7 +150,7 @@ func TestDelugeAddTorrent(t *testing.T) {
 		}
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
-		if rec.requests[0].Params[0] != "magnet:x" {
+		if rec.requests[0].Params[0] != "http://indexer/a.torrent" {
 			t.Errorf("url param = %v", rec.requests[0].Params[0])
 		}
 		opts, _ := rec.requests[0].Params[1].(map[string]interface{})
@@ -168,7 +168,7 @@ func TestDelugeAddTorrent(t *testing.T) {
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "secret")
-		if _, err := c.AddTorrent("magnet:x", nil); err != nil {
+		if _, err := c.AddTorrent("http://indexer/a.torrent", nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		rec.mu.Lock()
@@ -187,7 +187,7 @@ func TestDelugeAddTorrent(t *testing.T) {
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "secret")
-		_, err := c.AddTorrent("magnet:x", nil)
+		_, err := c.AddTorrent("http://indexer/a.torrent", nil)
 		if err == nil || !strings.Contains(err.Error(), "invalid torrent file") {
 			t.Fatalf("err = %v, want invalid torrent file", err)
 		}
@@ -203,7 +203,7 @@ func TestDelugeAddTorrent(t *testing.T) {
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "secret")
-		_, err := c.AddTorrent("magnet:x", nil)
+		_, err := c.AddTorrent("http://indexer/a.torrent", nil)
 		if err == nil || !strings.Contains(err.Error(), "invalid torrent ID") {
 			t.Fatalf("err = %v, want invalid torrent ID", err)
 		}
@@ -231,7 +231,7 @@ func TestDelugeAddTorrent(t *testing.T) {
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "secret")
-		id, err := c.AddTorrent("magnet:x", nil)
+		id, err := c.AddTorrent("http://indexer/a.torrent", nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -270,7 +270,7 @@ func TestDelugeAddTorrent(t *testing.T) {
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "secret")
-		id, err := c.AddTorrent("magnet:x", nil)
+		id, err := c.AddTorrent("http://indexer/a.torrent", nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -301,9 +301,91 @@ func TestDelugeAddTorrent(t *testing.T) {
 		defer srv.Close()
 
 		c := newDeluge(srv.URL, "wrong")
-		_, err := c.AddTorrent("magnet:x", nil)
+		_, err := c.AddTorrent("http://indexer/a.torrent", nil)
 		if err == nil || !strings.Contains(err.Error(), "re-auth") {
 			t.Fatalf("err = %v, want re-auth error", err)
+		}
+	})
+}
+
+func TestDelugeAddTorrent_RoutesByScheme(t *testing.T) {
+	tests := []struct {
+		name, url, want string
+	}{
+		{"magnet", "magnet:?xt=urn:btih:abc", "core.add_torrent_magnet"},
+		{"magnet in capitals", "MAGNET:?xt=urn:btih:abc", "core.add_torrent_magnet"},
+		{"http", "http://indexer/a.torrent", "core.add_torrent_url"},
+		{"https", "https://indexer/a.torrent", "core.add_torrent_url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &dlRecorder{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rec.record(r)
+				fmt.Fprint(w, `{"id":1,"result":"hash123","error":null}`)
+			}))
+			defer srv.Close()
+
+			if _, err := newDeluge(srv.URL, "secret").AddTorrent(tt.url, nil); err != nil {
+				t.Fatalf("AddTorrent: %v", err)
+			}
+			if got := rec.methods(); len(got) != 1 || got[0] != tt.want {
+				t.Fatalf("methods = %v, want [%s]", got, tt.want)
+			}
+			if rec.requests[0].Params[0] != tt.url {
+				t.Fatalf("params = %v", rec.requests[0].Params)
+			}
+		})
+	}
+}
+
+func TestDelugeAddTorrent_DownloadLinkRedirectingToMagnet(t *testing.T) {
+	const magnet = "magnet:?xt=urn:btih:abc"
+	// What a real Deluge 2 daemon answers when the URL redirects to a magnet.
+	const rejected = `{"id":1,"result":null,"error":{"message":"Failure: Invalid URI b''","code":5}}`
+
+	t.Run("retried as a magnet", func(t *testing.T) {
+		indexer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, magnet, http.StatusFound)
+		}))
+		defer indexer.Close()
+		rec := &dlRecorder{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if rec.record(r).Method == "core.add_torrent_url" {
+				fmt.Fprint(w, rejected)
+				return
+			}
+			fmt.Fprint(w, `{"id":2,"result":"hash123","error":null}`)
+		}))
+		defer srv.Close()
+
+		id, err := newDeluge(srv.URL, "secret").AddTorrent(indexer.URL, nil)
+		if err != nil || id != "hash123" {
+			t.Fatalf("id=%q err=%v", id, err)
+		}
+		if rec.requests[1].Method != "core.add_torrent_magnet" || rec.requests[1].Params[0] != magnet {
+			t.Fatalf("second request = %+v", rec.requests[1])
+		}
+	})
+
+	t.Run("the original error stands without a magnet to retry", func(t *testing.T) {
+		indexer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer indexer.Close()
+		rec := &dlRecorder{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec.record(r)
+			fmt.Fprint(w, rejected)
+		}))
+		defer srv.Close()
+
+		_, err := newDeluge(srv.URL, "secret").AddTorrent(indexer.URL, nil)
+		if err == nil || !strings.Contains(err.Error(), "Invalid URI") {
+			t.Fatalf("err = %v", err)
+		}
+		if got := rec.methods(); len(got) != 1 {
+			t.Fatalf("methods = %v", got)
 		}
 	})
 }

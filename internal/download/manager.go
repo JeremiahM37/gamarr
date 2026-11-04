@@ -238,6 +238,14 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 	m.jobs.Update(jobID, "detail", fmt.Sprintf("Downloading via %s...", clientUsed))
 	slog.Info("torrent added", "client", clientUsed, "title", title)
 
+	// Progress and import are only implemented against qBittorrent. Watching it
+	// for a torrent another client holds would poll, and log in to, a client that
+	// may not exist, for days.
+	if clientUsed != "qBittorrent" {
+		m.jobs.Update(jobID, "detail", fmt.Sprintf("Sent to %s. Gamarr does not track or import from this client.", clientUsed))
+		return jobID, nil
+	}
+
 	go func() {
 		hash := infoHash
 		// An indexer is not obliged to publish an infohash - FitGirl rows carry
@@ -245,7 +253,7 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 		// repack's release title and torrent name have nothing in common. The
 		// client knows the hash, so ask it rather than giving up the binding.
 		// Off the request path because it polls.
-		if hash == "" && clientUsed == "qBittorrent" {
+		if hash == "" {
 			if resolved, ok := m.resolveAddedHash(knownBefore, title); ok {
 				hash = resolved
 				m.jobs.Update(jobID, "info_hash", resolved)
@@ -254,7 +262,7 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 				slog.Warn("no infohash from client, matching on title", "title", title)
 			}
 		}
-		if selectFiles && clientUsed == "qBittorrent" {
+		if selectFiles {
 			if err := m.startArchiveSelection(hash, title, platf, platSlug, jobID); err != nil {
 				slog.Error("archive torrent not started", "title", title, "hash", hash, "error", err)
 				m.jobs.UpdateMulti(jobID, map[string]interface{}{
@@ -272,7 +280,7 @@ func (m *Manager) DownloadTorrent(url, infoHash, title, platf, platSlug string, 
 // hashInCategory reports whether qBittorrent already holds this infohash in the
 // configured category.
 func (m *Manager) hashInCategory(infoHash string) bool {
-	if infoHash == "" || m.qb == nil {
+	if infoHash == "" || m.qb == nil || !m.cfg.HasQBittorrent() {
 		return false
 	}
 	torrents, err := m.qb.GetTorrents(m.cfg.QBCategory)
