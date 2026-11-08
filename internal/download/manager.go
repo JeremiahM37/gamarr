@@ -442,6 +442,45 @@ func isGenericArchiveTorrentName(name string) bool {
 	}
 }
 
+// isArchiveTorrent reports whether a torrent is a shared Minerva archive. The
+// name alone is not enough: maybeRenameArchiveTorrent relabels the torrent with
+// its platform ("Wii"), but every archive still downloads into a root folder
+// named Minerva_Myrient, which is what content_path ends with.
+func isArchiveTorrent(t qbit.Torrent) bool {
+	if isGenericArchiveTorrentName(t.Name) {
+		return true
+	}
+	if t.ContentPath == "" {
+		return false
+	}
+	return isGenericArchiveTorrentName(filepath.Base(filepath.Clean(t.ContentPath)))
+}
+
+// isArchiveShellTitle reports whether a job title only names the archive
+// torrent (its relabelled name or Minerva_Myrient) rather than a ROM in it.
+func isArchiveShellTitle(title, torrentName string) bool {
+	return strings.EqualFold(title, torrentName) || isGenericArchiveTorrentName(title)
+}
+
+// refuseArchiveRoot fails an import whose content is a shared archive's root
+// folder. A Minerva archive is imported one ROM at a time by the jobs that
+// selected its files; the root holds every console's tree that the client
+// shares, and every archive's root has the same name, so importing it copies
+// unrelated downloads and collides with the previous archive at the
+// destination (vault/Minerva_Myrient).
+func (m *Manager) refuseArchiveRoot(jobID, contentPath string) bool {
+	if !isGenericArchiveTorrentName(filepath.Base(filepath.Clean(contentPath))) {
+		return false
+	}
+	m.jobs.UpdateMulti(jobID, map[string]interface{}{
+		"status": "error",
+		"error":  fmt.Sprintf("Not importing %s: it is the root folder of a shared archive torrent", contentPath),
+		"detail": "Archive ROMs are imported by the jobs that selected them; this job names no ROM in the archive.",
+	})
+	slog.Warn("refused to import a shared archive's root folder", "job_id", jobID, "path", sanitizeLog(contentPath))
+	return true
+}
+
 // maybeRenameArchiveTorrent replaces the generic Minerva magnet name with the
 // platform label so qBittorrent lists one archive per console, not "Minerva_Myrient".
 func (m *Manager) maybeRenameArchiveTorrent(hash, platf, platSlug string) {
@@ -1183,6 +1222,9 @@ const occupiedDetail = "Something is already stored at this destination, so the 
 
 func (m *Manager) organizeGame(jobID string, torrent *qbit.Torrent, platf, platSlug string, isPC bool, attempt int) (retryable bool) {
 	contentPath := m.resolveImportContentPath(jobID, torrent)
+	if m.refuseArchiveRoot(jobID, contentPath) {
+		return false
+	}
 	torrentName := torrent.Name
 	torrentHash := torrent.Hash
 	importName := filepath.Base(contentPath)
@@ -1653,6 +1695,9 @@ func (m *Manager) torrentByHash(hash string) (qbit.Torrent, bool, error) {
 // retryable signal organizeGame does.
 func (m *Manager) organizeWithScan(jobID string, torrent *qbit.Torrent, platf, platSlug string, isPC bool, attempt int) (retryable bool) {
 	contentPath := m.resolveImportContentPath(jobID, torrent)
+	if m.refuseArchiveRoot(jobID, contentPath) {
+		return false
+	}
 	tName := torrent.Name
 	scanPath := contentPath
 
@@ -2556,6 +2601,7 @@ func (m *Manager) RecoverOrphanedTorrents() {
 		// Reuse the row already tracking this torrent. Recovery is not a
 		// once-per-install routine, so minting an id per pass accumulated a
 		// duplicate row per torrent every time it ran.
+		archive := isArchiveTorrent(t)
 		jobID, known := m.jobForTorrent(t.Hash, t.Name)
 		if known {
 			// A finished import is terminal, and organizeGame leaves the torrent
@@ -2570,11 +2616,23 @@ func (m *Manager) RecoverOrphanedTorrents() {
 				// Archive magnets are claimed by ROM-titled jobs sharing one
 				// infohash. Never rewrite those titles to the torrent name.
 				title, _ := job["title"].(string)
-				if title != "" && !strings.EqualFold(title, t.Name) {
+				if title != "" && !strings.EqualFold(title, t.Name) && !isGenericArchiveTorrentName(title) {
+					continue
+				}
+				// A row that only names the archive is a shell an earlier pass
+				// minted: organizing it would import the whole shared root.
+				if archive && isArchiveShellTitle(title, t.Name) {
+					m.jobs.Delete(jobID)
+					slog.Info("dropped archive shell job", "job_id", jobID, "torrent", sanitizeLog(t.Name))
 					continue
 				}
 			}
 		} else if m.infoHashTracked(t.Hash) {
+			continue
+		} else if archive {
+			// A shared archive whose ROM jobs are gone (finished and cleared) is
+			// left seeding: there is nothing in it for a torrent-wide job to do.
+			slog.Info("orphan recovery: leaving shared archive torrent alone", "torrent", sanitizeLog(t.Name))
 			continue
 		} else {
 			jobID = newJobID()
