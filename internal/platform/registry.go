@@ -288,6 +288,13 @@ var Registry = []Platform{
 
 	// Sega
 	{
+		Slug: "sg1000", Name: "SG-1000",
+		Extensions: []string{".sg"},
+		MinSize:    4e3, MaxSize: 1e6,
+		Aliases:   []string{"sega sg-1000", "sg-1000"},
+		TitleHint: `\bsg-?1000\b`,
+	},
+	{
 		Slug: "sms", Name: "Master System",
 		Extensions: []string{".sms"},
 		MinSize:    8e3, MaxSize: 4e6,
@@ -323,7 +330,7 @@ var Registry = []Platform{
 	},
 	{
 		Slug: "saturn", Name: "Sega Saturn",
-		Formats: []string{".chd", ".cue", ".bin", ".iso"},
+		Formats: []string{".chd", ".cue", ".bin", ".iso", ".nrg"},
 		MinSize: 50e6, MaxSize: 1e9,
 		RAWGIDs: []int{107}, RAWGNames: []string{"sega saturn"},
 		TitleHint: `\bsega\s*saturn\b`,
@@ -728,6 +735,11 @@ func PlatformsAccepting(ext string) []Platform {
 // Markdown, Visual Basic source, certificates, firmware images. They are
 // game files only inside their own platform's folder.
 var nonROMCollisions = map[string]bool{".md": true, ".vb": true, ".crt": true, ".rom": true}
+
+// sharedDiscFormats are generic disc image formats that a registry entry lists
+// but that any disc-based console (or a PC game) can ship in. A lone file in
+// one of them doesn't name its console, even when only one entry accepts it.
+var sharedDiscFormats = map[string]bool{".nrg": true}
 
 // KnownExtensions returns every extension and format in the registry that is
 // a game file wherever it turns up, sorted. Formats that collide with common

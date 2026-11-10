@@ -226,6 +226,7 @@ Every platform lives in one table, `internal/platform/registry.go`. Category map
 | PS Vita | `psvita` | 1120 | -- | Yes | -- |
 | Xbox | `xbox` | 1040, 100013 | Yes | Yes | Yes |
 | Xbox 360 | `xbox360` | 1050, 100014 | Yes | Yes | Yes |
+| SG-1000 | `sg1000` | -- | Yes | -- | -- |
 | Master System | `sms` | -- | -- | -- | -- |
 | Sega Genesis / Mega Drive | `genesis` | -- | Yes | Yes | Yes |
 | Sega CD | `segacd` | -- | -- | -- | -- |

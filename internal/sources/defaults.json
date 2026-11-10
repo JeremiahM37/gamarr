@@ -17,6 +17,7 @@
       "psp":     "Redump/Sony - PlayStation Portable/",
       "dc":      "Redump/Sega - Dreamcast/",
       "saturn":  "Redump/Sega - Saturn/",
+      "sg1000":  "No-Intro/Sega - SG-1000/",
       "genesis": "No-Intro/Sega - Mega Drive - Genesis/",
       "ngc":     "Redump/Nintendo - GameCube - NKit RVZ [zstd-19-128k]/",
       "wii":     "Redump/Nintendo - Wii - NKit RVZ [zstd-19-128k]/",
