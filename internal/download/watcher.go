@@ -95,6 +95,13 @@ func (w *Watcher) checkCompleted() {
 			continue
 		}
 
+		// A shared archive's ROMs are imported by the jobs that selected them.
+		// With none left the torrent is only seeding: auto-importing it would
+		// organize the whole archive root as a PC game.
+		if isArchiveTorrent(t) {
+			continue
+		}
+
 		w.processing.Store(t.Hash, struct{}{})
 		go w.importTorrent(t)
 	}
