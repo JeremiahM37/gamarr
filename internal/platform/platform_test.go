@@ -261,6 +261,19 @@ func TestDetectPlatformFromFiles(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name:   "lone Nero image names no console",
+			files:  []string{"Some Game.nrg"},
+			title:  "Some Game",
+			wantOK: false,
+		},
+		{
+			name:     "Nero image with a Saturn title",
+			files:    []string{"Some Game.nrg"},
+			title:    "Some Game (Sega Saturn)",
+			wantSlug: "saturn",
+			wantOK:   true,
+		},
+		{
 			name:     "title keyword Switch",
 			files:    []string{"data.bin"},
 			title:    "Zelda [NSP] Switch",

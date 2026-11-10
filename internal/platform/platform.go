@@ -180,7 +180,7 @@ func DetectROMPlatform(contentPath string) (PlatformInfo, bool) {
 		slog.Info("platform detected from ROM extensions", "platform", info.Name)
 		return info, true
 	}
-	if scan.single != "" && !nonROMCollisions[scan.single] {
+	if scan.single != "" && !nonROMCollisions[scan.single] && !sharedDiscFormats[scan.single] {
 		var only []Platform
 		for _, p := range PlatformsAccepting(scan.single) {
 			if !p.IsPC {

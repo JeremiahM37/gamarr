@@ -736,6 +736,11 @@ func PlatformsAccepting(ext string) []Platform {
 // game files only inside their own platform's folder.
 var nonROMCollisions = map[string]bool{".md": true, ".vb": true, ".crt": true, ".rom": true}
 
+// sharedDiscFormats are generic disc image formats that a registry entry lists
+// but that any disc-based console (or a PC game) can ship in. A lone file in
+// one of them doesn't name its console, even when only one entry accepts it.
+var sharedDiscFormats = map[string]bool{".nrg": true}
+
 // KnownExtensions returns every extension and format in the registry that is
 // a game file wherever it turns up, sorted. Formats that collide with common
 // non-ROM files are left out; Platform.Accepts still reports them for their
