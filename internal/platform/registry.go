@@ -288,6 +288,13 @@ var Registry = []Platform{
 
 	// Sega
 	{
+		Slug: "sg1000", Name: "SG-1000",
+		Extensions: []string{".sg"},
+		MinSize:    4e3, MaxSize: 1e6,
+		Aliases:   []string{"sega sg-1000", "sg-1000"},
+		TitleHint: `\bsg-?1000\b`,
+	},
+	{
 		Slug: "sms", Name: "Master System",
 		Extensions: []string{".sms"},
 		MinSize:    8e3, MaxSize: 4e6,
@@ -323,7 +330,7 @@ var Registry = []Platform{
 	},
 	{
 		Slug: "saturn", Name: "Sega Saturn",
-		Formats: []string{".chd", ".cue", ".bin", ".iso"},
+		Formats: []string{".chd", ".cue", ".bin", ".iso", ".nrg"},
 		MinSize: 50e6, MaxSize: 1e9,
 		RAWGIDs: []int{107}, RAWGNames: []string{"sega saturn"},
 		TitleHint: `\bsega\s*saturn\b`,

@@ -254,6 +254,13 @@ func TestDetectPlatformFromFiles(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name:     "SG-1000 extension",
+			files:    []string{"Pitfall II (SG-1000).sg"},
+			title:    "Pitfall II",
+			wantSlug: "sg1000",
+			wantOK:   true,
+		},
+		{
 			name:     "title keyword Switch",
 			files:    []string{"data.bin"},
 			title:    "Zelda [NSP] Switch",

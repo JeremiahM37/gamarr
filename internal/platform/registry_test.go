@@ -86,7 +86,7 @@ func TestRegistryExcludesArcadeAndCurrentGen(t *testing.T) {
 
 func TestRegistryHasRetroPlatforms(t *testing.T) {
 	for _, slug := range []string{
-		"gbc", "sms", "gamegear", "segacd", "sega32", "tg16", "turbografx-cd",
+		"gbc", "sg1000", "sms", "gamegear", "segacd", "sega32", "tg16", "turbografx-cd",
 		"neogeoaes", "neo-geo-cd", "atari2600", "atari5200", "atari7800", "lynx",
 		"colecovision", "fds", "virtualboy", "wonderswan-color", "ngp", "3do",
 		"cdi", "msx", "c64", "amiga", "dos", "pc98", "vectrex", "satellaview",
