@@ -281,6 +281,21 @@ func TestDetectPlatformFromFiles(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			// A Windows repack can name a console in its title without
+			// carrying any console ROM; setup.exe plus fg bins is a PC package.
+			name:   "Windows repack with a Switch title",
+			files:  []string{"setup.exe", "fg-01.bin", "fg-02.bin"},
+			title:  "Mario Kart World [FitGirl Switch 2 Repack]",
+			wantOK: false,
+		},
+		{
+			name:     "Switch ROM alongside a Windows installer",
+			files:    []string{"setup.exe", "game.nsp"},
+			title:    "Mario Kart World [FitGirl Switch 2 Repack]",
+			wantSlug: "switch",
+			wantOK:   true,
+		},
+		{
 			name:     "title keyword PS3",
 			files:    []string{"data.bin"},
 			title:    "Gran Turismo PS3",

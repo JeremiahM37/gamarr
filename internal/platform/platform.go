@@ -161,11 +161,35 @@ func DetectPlatformFromFiles(contentPath, title string) (PlatformInfo, bool) {
 	if info, ok := DetectROMPlatform(contentPath); ok {
 		return info, true
 	}
-	if info, ok := DetectPlatformFromTitle(title); ok {
-		slog.Info("platform detected from title keyword", "platform", info.Name)
-		return info, true
+	info, ok := DetectPlatformFromTitle(title)
+	if !ok {
+		return PlatformInfo{}, false
 	}
-	return PlatformInfo{}, false
+	// A title hint cannot turn a PC package into a console ROM. Plenty of PC
+	// release titles contain "switch", and a Windows repack (setup.exe, fg
+	// bins, no ROM file) carries nothing else to go on.
+	if pcPackagePayload(contentPath) {
+		slog.Info("ignoring title platform hint for a PC package", "platform", info.Name)
+		return PlatformInfo{}, false
+	}
+	slog.Info("platform detected from title keyword", "platform", info.Name)
+	return info, true
+}
+
+// pcPackagePayload reports whether the content carries a format PC installs
+// from. DetectROMPlatform has already ruled out a console ROM extension by the
+// time this is consulted, so a package format is the only evidence left.
+func pcPackagePayload(contentPath string) bool {
+	pc, ok := Lookup("pc")
+	if !ok {
+		return false
+	}
+	for ext := range scanContent(contentPath).exts {
+		if pc.Accepts(ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // DetectROMPlatform classifies content from its ROM files alone: loose files,
